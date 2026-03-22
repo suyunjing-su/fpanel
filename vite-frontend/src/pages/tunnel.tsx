@@ -22,7 +22,7 @@ import {
 
 interface ChainTunnel {
   nodeId: number;
-  protocol?: string; // 'tcp' | 'udp' | 'udp+quic' | 'udp+kcp' | 'mptcp' - 转发链协议
+  protocol?: string; // 'tcp' | 'udp+quic' | 'udp+kcp' | 'mptcp' - 转发链协议
   strategy?: string; // 'fifo' | 'round' | 'rand' - 仅转发链需要
   chainType?: number; // 1: 入口, 2: 转发链, 3: 出口
   inx?: number; // 转发链序号
@@ -31,7 +31,6 @@ interface ChainTunnel {
 const DEFAULT_CHAIN_PROTOCOL = 'tcp';
 const CHAIN_PROTOCOL_OPTIONS = [
   { key: 'tcp', label: 'TCP' },
-  { key: 'udp', label: 'UDP' },
   { key: 'udp+quic', label: 'UDP+QUIC' },
   { key: 'udp+kcp', label: 'UDP+KCP' },
   { key: 'mptcp', label: 'MPTCP' }
@@ -41,6 +40,7 @@ const normalizeProtocol = (protocol?: string): string => {
   if (!protocol) return DEFAULT_CHAIN_PROTOCOL;
   const value = protocol.toLowerCase();
   if (value === 'mtcp') return 'mptcp';
+  if (value === 'udp') return 'tcp';
   if (value === 'tls' || value === 'wss' || value === 'mtls' || value === 'mwss') return 'tcp';
   if (CHAIN_PROTOCOL_OPTIONS.some(item => item.key === value)) return value;
   return DEFAULT_CHAIN_PROTOCOL;

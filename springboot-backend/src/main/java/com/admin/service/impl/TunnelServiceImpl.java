@@ -34,7 +34,6 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
 
     private static final Set<String> SUPPORTED_CHAIN_PROTOCOLS = Set.of(
             GostUtil.PROTOCOL_TCP,
-            GostUtil.PROTOCOL_UDP,
             GostUtil.PROTOCOL_UDP_QUIC,
             GostUtil.PROTOCOL_UDP_KCP,
             GostUtil.PROTOCOL_MPTCP,
@@ -575,29 +574,34 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                             for (ChainTunnel nextNode : chainNodesList.get(i + 1)) {
                                 Node toNode = nodeService.getById(nextNode.getNodeId());
                                 if (toNode != null) {
-                                    DiagnosisResult result = performTcpPingDiagnosisWithConnectionCheck(
-                                            fromNode, toNode.getServerIp(), nextNode.getPort(),
+                                    addHopDiagnosisResults(
+                                            results,
+                                            fromNode,
+                                            toNode,
+                                            nextNode,
+                                            2,
+                                            currentNode.getInx(),
+                                            2,
+                                            nextNode.getInx(),
                                             "第" + (i + 1) + "跳(" + fromNode.getName() + ")->第" + (i + 2) + "跳(" + toNode.getName() + ")"
                                     );
-                                    result.setFromChainType(2);
-                                    result.setFromInx(currentNode.getInx());
-                                    result.setToChainType(2);
-                                    result.setToInx(nextNode.getInx());
-                                    results.add(result);
                                 }
                             }
                         } else if (!outNodes.isEmpty()) {
                             for (ChainTunnel outNode : outNodes) {
                                 Node toNode = nodeService.getById(outNode.getNodeId());
                                 if (toNode != null) {
-                                    DiagnosisResult result = performTcpPingDiagnosisWithConnectionCheck(
-                                            fromNode, toNode.getServerIp(), outNode.getPort(),
+                                    addHopDiagnosisResults(
+                                            results,
+                                            fromNode,
+                                            toNode,
+                                            outNode,
+                                            2,
+                                            currentNode.getInx(),
+                                            3,
+                                            null,
                                             "第" + (i + 1) + "跳(" + fromNode.getName() + ")->出口(" + toNode.getName() + ")"
                                     );
-                                    result.setFromChainType(2);
-                                    result.setFromInx(currentNode.getInx());
-                                    result.setToChainType(3);
-                                    results.add(result);
                                 }
                             }
                         }
@@ -703,9 +707,28 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         String baseDesc = "入口(" + fromNode.getName() + ")->" +
                 (toChainType == 3 ? "出口(" + toNode.getName() + ")" : "第1跳(" + toNode.getName() + ")");
 
+        addHopDiagnosisResults(results, fromNode, toNode, targetTunnel, 1, null, toChainType, toInx, baseDesc);
+    }
+
+    private void addHopDiagnosisResults(List<DiagnosisResult> results,
+                                        Node fromNode,
+                                        Node toNode,
+                                        ChainTunnel targetTunnel,
+                                        int fromChainType,
+                                        Integer fromInx,
+                                        int toChainType,
+                                        Integer toInx,
+                                        String baseDesc) {
+        if (targetTunnel.getPort() == null) {
+            return;
+        }
+
         String protocol = GostUtil.normalizeChainProtocol(targetTunnel.getProtocol());
         if (GostUtil.isHybridUdpProtocol(protocol)) {
             Integer udpPort = GostUtil.resolveChainListenPort(targetTunnel.getPort(), protocol, GostUtil.PROTOCOL_UDP);
+            if (udpPort == null) {
+                return;
+            }
             DiagnosisResult udpResult = performTransportPingDiagnosisWithConnectionCheck(
                     fromNode,
                     toNode.getServerIp(),
@@ -714,7 +737,8 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                     "UdpPing",
                     "UDP连接成功"
             );
-            udpResult.setFromChainType(1);
+                    udpResult.setFromChainType(fromChainType);
+                    udpResult.setFromInx(fromInx);
             udpResult.setToChainType(toChainType);
             udpResult.setToInx(toInx);
             results.add(udpResult);
@@ -729,7 +753,8 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                     commandType,
                     successMsg
             );
-            mixedResult.setFromChainType(1);
+            mixedResult.setFromChainType(fromChainType);
+            mixedResult.setFromInx(fromInx);
             mixedResult.setToChainType(toChainType);
             mixedResult.setToInx(toInx);
             results.add(mixedResult);
@@ -739,7 +764,8 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         DiagnosisResult result = performTcpPingDiagnosisWithConnectionCheck(
                 fromNode, toNode.getServerIp(), targetTunnel.getPort(), baseDesc
         );
-        result.setFromChainType(1);
+        result.setFromChainType(fromChainType);
+        result.setFromInx(fromInx);
         result.setToChainType(toChainType);
         result.setToInx(toInx);
         results.add(result);

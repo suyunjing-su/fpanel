@@ -258,9 +258,9 @@ public class GostUtil {
 
         String normalized = protocol.trim().toLowerCase();
         return switch (normalized) {
-            case PROTOCOL_TCP, PROTOCOL_UDP, PROTOCOL_UDP_QUIC, PROTOCOL_UDP_KCP, PROTOCOL_MPTCP -> normalized;
+            case PROTOCOL_TCP, PROTOCOL_UDP_QUIC, PROTOCOL_UDP_KCP, PROTOCOL_MPTCP -> normalized;
             case "mtcp" -> PROTOCOL_MPTCP;
-            case "tls", "wss", "mtls", "mwss" -> PROTOCOL_TCP;
+            case "udp", "tls", "wss", "mtls", "mwss" -> PROTOCOL_TCP;
             default -> PROTOCOL_TCP;
         };
     }
