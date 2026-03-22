@@ -36,6 +36,7 @@ import {
   Pagination as PaginationType 
 } from '@/types';
 import {
+  batchDeleteUsers,
   getAllUsers,
   createUser,
   updateUser,
@@ -48,6 +49,7 @@ import {
   getSpeedLimitList,
   resetUserFlow
 } from '@/api';
+import { useBatchDeleteSelection } from '@/hooks/useBatchDeleteSelection';
 import { SearchIcon, EditIcon, DeleteIcon, UserIcon, SettingsIcon } from '@/components/icons';
 import { parseDate } from "@internationalized/date";
 
@@ -152,9 +154,6 @@ export default function UserPage() {
   // 删除确认相关状态
   const { isOpen: isDeleteModalOpen, onOpen: onDeleteModalOpen, onClose: onDeleteModalClose } = useDisclosure();
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
-  const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
-  const [batchDeleteModalOpen, setBatchDeleteModalOpen] = useState(false);
-  const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
 
   // 删除隧道权限确认相关状态
   const { isOpen: isDeleteTunnelModalOpen, onOpen: onDeleteTunnelModalOpen, onClose: onDeleteTunnelModalClose } = useDisclosure();
@@ -195,7 +194,6 @@ export default function UserPage() {
         const data = response.data || {};
         const latestUsers: User[] = data || [];
         setUsers(latestUsers);
-        setSelectedUserIds(prev => prev.filter(id => latestUsers.some(user => user.id === id)));
       } else {
         toast.error(response.msg || '获取用户列表失败');
       }
@@ -243,6 +241,13 @@ export default function UserPage() {
       setTunnelListLoading(false);
     }
   };
+
+  const batchSelection = useBatchDeleteSelection<User>({
+    items: users,
+    entityLabel: '用户',
+    batchDeleteApi: batchDeleteUsers,
+    reloadData: loadUsers
+  });
 
   // 用户管理操作
   const handleSearch = () => {
@@ -303,54 +308,6 @@ export default function UserPage() {
     }
   };
 
-  const toggleUserSelection = (userId: number) => {
-    setSelectedUserIds(prev => (
-      prev.includes(userId)
-        ? prev.filter(id => id !== userId)
-        : [...prev, userId]
-    ));
-  };
-
-  const handleBatchDeleteUsers = () => {
-    if (selectedUserIds.length === 0) {
-      toast.error('请先选择要删除的用户');
-      return;
-    }
-    setBatchDeleteModalOpen(true);
-  };
-
-  const confirmBatchDeleteUsers = async () => {
-    if (selectedUserIds.length === 0) return;
-
-    setBatchDeleteLoading(true);
-    try {
-      const results = await Promise.all(
-        selectedUserIds.map(async (id) => {
-          const res = await deleteUser(id);
-          return { id, code: res.code };
-        })
-      );
-
-      const failed = results.filter(item => item.code !== 0).length;
-      const successCount = results.length - failed;
-
-      if (successCount > 0) {
-        toast.success(`成功删除 ${successCount} 个用户`);
-      }
-      if (failed > 0) {
-        toast.error(`有 ${failed} 个用户删除失败`);
-      }
-
-      setBatchDeleteModalOpen(false);
-      setSelectedUserIds([]);
-      await loadUsers();
-    } catch (error) {
-      toast.error('批量删除失败');
-    } finally {
-      setBatchDeleteLoading(false);
-    }
-  };
-
   const handleSubmitUser = async () => {
     if (!userForm.user || (!userForm.pwd && !isEdit) || !userForm.expTime) {
       toast.error('请填写完整信息');
@@ -369,7 +326,7 @@ export default function UserPage() {
       }
 
       const response = isEdit ? await updateUser(submitData) : await createUser(submitData);
-      
+
       if (response.code === 0) {
         toast.success(isEdit ? '更新成功' : '创建成功');
         onUserModalClose();
@@ -614,13 +571,30 @@ export default function UserPage() {
           </div>
           
           <div className="flex items-center gap-2">
-            {selectedUserIds.length > 0 && (
+            {batchSelection.selectedCount > 0 && (
               <Button
                 variant="flat"
                 color="danger"
-                onPress={handleBatchDeleteUsers}
+                onPress={batchSelection.openBatchDeleteModal}
               >
-                删除({selectedUserIds.length})
+                删除({batchSelection.selectedCount})
+              </Button>
+            )}
+            <Button
+              variant="flat"
+              color="default"
+              onPress={batchSelection.toggleSelectAll}
+              isDisabled={users.length === 0}
+            >
+              {batchSelection.isAllSelected ? '取消全选' : '全选'}
+            </Button>
+            {batchSelection.selectedCount > 0 && (
+              <Button
+                variant="flat"
+                color="default"
+                onPress={batchSelection.clearSelection}
+              >
+                清空选择
               </Button>
             )}
             <Button
@@ -676,8 +650,8 @@ export default function UserPage() {
                       <input
                         type="checkbox"
                         className="mt-0.5 h-4 w-4 rounded border-default-300 text-danger focus:ring-danger"
-                        checked={selectedUserIds.includes(user.id)}
-                        onChange={() => toggleUserSelection(user.id)}
+                        checked={batchSelection.selectedIds.includes(user.id)}
+                        onChange={() => batchSelection.toggleItemSelection(user.id)}
                         aria-label={`选择用户 ${user.user}`}
                       />
                       <div className="flex-1 min-w-0">
@@ -1339,8 +1313,8 @@ export default function UserPage() {
       </Modal>
 
       <Modal
-        isOpen={batchDeleteModalOpen}
-        onOpenChange={setBatchDeleteModalOpen}
+        isOpen={batchSelection.modalOpen}
+        onOpenChange={batchSelection.setModalOpen}
         size="2xl"
         scrollBehavior="outside"
         backdrop="blur"
@@ -1354,22 +1328,37 @@ export default function UserPage() {
               </ModalHeader>
               <ModalBody>
                 <p className="text-foreground">
-                  确定要删除已选择的 <span className="font-semibold text-danger">{selectedUserIds.length}</span> 个用户吗？
+                  确定要删除已选择的 <span className="font-semibold text-danger">{batchSelection.selectedCount}</span> 个用户吗？
                 </p>
                 <p className="text-small text-default-500 mt-1">
                   此操作不可撤销，相关用户数据将被永久删除。
                 </p>
+                {batchSelection.lastResult && batchSelection.failures.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    <p className="text-small text-warning">
+                      已成功删除 {batchSelection.lastResult.successCount} 个，失败 {batchSelection.lastResult.failureCount} 个
+                    </p>
+                    <div className="max-h-48 overflow-y-auto rounded border border-warning-200 bg-warning-50 p-2 text-xs">
+                      {batchSelection.failures.map((item) => (
+                        <p key={item.id} className="text-warning-700">
+                          {item.name}: {item.reason}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </ModalBody>
               <ModalFooter>
-                <Button variant="light" onPress={onClose}>
-                  取消
+                <Button variant="light" onPress={batchSelection.closeModal}>
+                  {batchSelection.failures.length > 0 ? '关闭' : '取消'}
                 </Button>
                 <Button
                   color="danger"
-                  onPress={confirmBatchDeleteUsers}
-                  isLoading={batchDeleteLoading}
+                  onPress={batchSelection.confirmBatchDelete}
+                  isLoading={batchSelection.deleting}
+                  isDisabled={batchSelection.failures.length > 0}
                 >
-                  确认删除
+                  {batchSelection.failures.length > 0 ? '已完成' : '确认删除'}
                 </Button>
               </ModalFooter>
             </>

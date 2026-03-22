@@ -15,12 +15,14 @@ import axios from 'axios';
 
 
 import { 
+  batchDeleteNodes,
   createNode, 
   getNodeList, 
   updateNode, 
   deleteNode,
   getNodeInstallCommand
 } from "@/api";
+import { useBatchDeleteSelection } from "@/hooks/useBatchDeleteSelection";
 
 interface Node {
   id: number;
@@ -71,9 +73,6 @@ export default function NodePage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
-  const [selectedNodeIds, setSelectedNodeIds] = useState<number[]>([]);
-  const [batchDeleteModalOpen, setBatchDeleteModalOpen] = useState(false);
-  const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
   const [protocolDisabled, setProtocolDisabled] = useState(false);
   const [protocolDisabledReason, setProtocolDisabledReason] = useState('');
   const [form, setForm] = useState<NodeForm>({
@@ -122,7 +121,6 @@ export default function NodePage() {
           copyLoading: false
         }));
         setNodeList(latestNodeList);
-        setSelectedNodeIds(prev => prev.filter(id => latestNodeList.some((node: Node) => node.id === id)));
       } else {
         toast.error(res.msg || '加载节点列表失败');
       }
@@ -132,6 +130,13 @@ export default function NodePage() {
       setLoading(false);
     }
   };
+
+  const batchSelection = useBatchDeleteSelection<Node>({
+    items: nodeList,
+    entityLabel: '节点',
+    batchDeleteApi: batchDeleteNodes,
+    reloadData: loadNodes
+  });
 
   // 初始化WebSocket连接
   const initWebSocket = () => {
@@ -511,55 +516,6 @@ export default function NodePage() {
     }
   };
 
-  const toggleNodeSelection = (nodeId: number) => {
-    setSelectedNodeIds(prev => (
-      prev.includes(nodeId)
-        ? prev.filter(id => id !== nodeId)
-        : [...prev, nodeId]
-    ));
-  };
-
-  const handleBatchDelete = () => {
-    if (selectedNodeIds.length === 0) {
-      toast.error('请先选择要删除的节点');
-      return;
-    }
-    setBatchDeleteModalOpen(true);
-  };
-
-  const confirmBatchDelete = async () => {
-    if (selectedNodeIds.length === 0) return;
-
-    setBatchDeleteLoading(true);
-    try {
-      const results = await Promise.all(
-        selectedNodeIds.map(async (id) => {
-          const res = await deleteNode(id);
-          return { id, code: res.code };
-        })
-      );
-
-      const failed = results.filter(item => item.code !== 0).length;
-      const successCount = results.length - failed;
-
-      if (successCount > 0) {
-        toast.success(`成功删除 ${successCount} 个节点`);
-      }
-      if (failed > 0) {
-        toast.error(`有 ${failed} 个节点删除失败`);
-      }
-
-      setBatchDeleteModalOpen(false);
-      setSelectedNodeIds([]);
-      await loadNodes();
-    } catch (error) {
-      console.error('批量删除节点失败:', error);
-      toast.error('批量删除失败');
-    } finally {
-      setBatchDeleteLoading(false);
-    }
-  };
-
   // 复制安装命令
   const handleCopyInstallCommand = async (node: Node) => {
     setNodeList(prev => prev.map(n => 
@@ -672,14 +628,33 @@ export default function NodePage() {
         </div>
 
         <div className="flex items-center gap-3">
-        {selectedNodeIds.length > 0 && (
+        {batchSelection.selectedCount > 0 && (
           <Button
             size="sm"
             variant="flat"
             color="danger"
-            onPress={handleBatchDelete}
+            onPress={batchSelection.openBatchDeleteModal}
           >
-            删除({selectedNodeIds.length})
+            删除({batchSelection.selectedCount})
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="flat"
+          color="default"
+          onPress={batchSelection.toggleSelectAll}
+          isDisabled={nodeList.length === 0}
+        >
+          {batchSelection.isAllSelected ? '取消全选' : '全选'}
+        </Button>
+        {batchSelection.selectedCount > 0 && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="default"
+            onPress={batchSelection.clearSelection}
+          >
+            清空选择
           </Button>
         )}
 
@@ -733,8 +708,8 @@ export default function NodePage() {
                       <input
                         type="checkbox"
                         className="mt-0.5 h-4 w-4 rounded border-default-300 text-danger focus:ring-danger"
-                        checked={selectedNodeIds.includes(node.id)}
-                        onChange={() => toggleNodeSelection(node.id)}
+                        checked={batchSelection.selectedIds.includes(node.id)}
+                        onChange={() => batchSelection.toggleItemSelection(node.id)}
                         aria-label={`选择节点 ${node.name}`}
                       />
                       <h3 className="font-semibold text-foreground truncate text-sm">{node.name}</h3>
@@ -1145,8 +1120,8 @@ export default function NodePage() {
         </Modal>
 
         <Modal
-          isOpen={batchDeleteModalOpen}
-          onOpenChange={setBatchDeleteModalOpen}
+          isOpen={batchSelection.modalOpen}
+          onOpenChange={batchSelection.setModalOpen}
           size="2xl"
           scrollBehavior="outside"
           backdrop="blur"
@@ -1159,19 +1134,34 @@ export default function NodePage() {
                   <h2 className="text-xl font-bold text-danger">确认批量删除</h2>
                 </ModalHeader>
                 <ModalBody>
-                  <p>确定要删除已选择的 <strong>{selectedNodeIds.length}</strong> 个节点吗？</p>
+                  <p>确定要删除已选择的 <strong>{batchSelection.selectedCount}</strong> 个节点吗？</p>
                   <p className="text-small text-default-500">此操作不可恢复，请谨慎操作。</p>
+                  {batchSelection.lastResult && batchSelection.failures.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-small text-warning">
+                        已成功删除 {batchSelection.lastResult.successCount} 个，失败 {batchSelection.lastResult.failureCount} 个
+                      </p>
+                      <div className="max-h-48 overflow-y-auto rounded border border-warning-200 bg-warning-50 p-2 text-xs">
+                        {batchSelection.failures.map((item) => (
+                          <p key={item.id} className="text-warning-700">
+                            {item.name}: {item.reason}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </ModalBody>
                 <ModalFooter>
-                  <Button variant="light" onPress={onClose}>
-                    取消
+                  <Button variant="light" onPress={batchSelection.closeModal}>
+                    {batchSelection.failures.length > 0 ? '关闭' : '取消'}
                   </Button>
                   <Button
                     color="danger"
-                    onPress={confirmBatchDelete}
-                    isLoading={batchDeleteLoading}
+                    onPress={batchSelection.confirmBatchDelete}
+                    isLoading={batchSelection.deleting}
+                    isDisabled={batchSelection.failures.length > 0}
                   >
-                    确认删除
+                    {batchSelection.failures.length > 0 ? '已完成' : '确认删除'}
                   </Button>
                 </ModalFooter>
               </>

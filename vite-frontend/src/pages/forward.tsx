@@ -34,6 +34,7 @@ import { CSS } from '@dnd-kit/utilities';
 
 import { 
   createForward, 
+  batchDeleteForwards,
   getForwardList, 
   updateForward, 
   deleteForward,
@@ -45,6 +46,7 @@ import {
   updateForwardOrder
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
+import { useBatchDeleteSelection } from "@/hooks/useBatchDeleteSelection";
 
 interface Forward {
   id: number;
@@ -165,9 +167,6 @@ export default function ForwardPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
   const [forwardToDelete, setForwardToDelete] = useState<Forward | null>(null);
-  const [selectedForwardIds, setSelectedForwardIds] = useState<number[]>([]);
-  const [batchDeleteModalOpen, setBatchDeleteModalOpen] = useState(false);
-  const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
   const [currentDiagnosisForward, setCurrentDiagnosisForward] = useState<Forward | null>(null);
   const [diagnosisResult, setDiagnosisResult] = useState<DiagnosisResult | null>(null);
   const [addressModalTitle, setAddressModalTitle] = useState('');
@@ -283,7 +282,6 @@ export default function ForwardPage() {
           serviceRunning: forward.status === 1
         })) || [];
         setForwards(forwardsData);
-        setSelectedForwardIds(prev => prev.filter(id => forwardsData.some((forward: Forward) => forward.id === id)));
         
         // 初始化拖拽排序顺序
         if (viewMode === 'direct') {
@@ -351,6 +349,15 @@ export default function ForwardPage() {
       setLoading(false);
     }
   };
+
+  const batchSelection = useBatchDeleteSelection<Forward>({
+    items: forwards,
+    entityLabel: '转发',
+    batchDeleteApi: batchDeleteForwards,
+    reloadData: async () => {
+      await loadData(false);
+    }
+  });
 
   // 按用户和隧道分组转发数据
   const groupForwardsByUserAndTunnel = (): UserGroup[] => {
@@ -508,57 +515,6 @@ export default function ForwardPage() {
       toast.error('删除失败');
     } finally {
       setDeleteLoading(false);
-    }
-  };
-
-  const toggleForwardSelection = (forwardId: number) => {
-    setSelectedForwardIds(prev => (
-      prev.includes(forwardId)
-        ? prev.filter(id => id !== forwardId)
-        : [...prev, forwardId]
-    ));
-  };
-
-  const handleBatchDelete = () => {
-    if (selectedForwardIds.length === 0) {
-      toast.error('请先选择要删除的转发');
-      return;
-    }
-    setBatchDeleteModalOpen(true);
-  };
-
-  const confirmBatchDelete = async () => {
-    if (selectedForwardIds.length === 0) return;
-
-    setBatchDeleteLoading(true);
-    try {
-      const selectedSet = new Set(selectedForwardIds);
-      const selectedForwards = forwards.filter(forward => selectedSet.has(forward.id));
-      const results = await Promise.all(
-        selectedForwards.map(async (forward) => {
-          const res = await deleteForward(forward.id);
-          return { id: forward.id, name: forward.name, code: res.code, msg: res.msg };
-        })
-      );
-
-      const failed = results.filter(item => item.code !== 0);
-      const successCount = results.length - failed.length;
-
-      if (successCount > 0) {
-        toast.success(`成功删除 ${successCount} 个转发`);
-      }
-      if (failed.length > 0) {
-        toast.error(`有 ${failed.length} 个转发删除失败`);
-      }
-
-      setBatchDeleteModalOpen(false);
-      setSelectedForwardIds([]);
-      await loadData(false);
-    } catch (error) {
-      console.error('批量删除失败:', error);
-      toast.error('批量删除失败');
-    } finally {
-      setBatchDeleteLoading(false);
     }
   };
 
@@ -1258,8 +1214,8 @@ export default function ForwardPage() {
               <input
                 type="checkbox"
                 className="mt-0.5 h-4 w-4 rounded border-default-300 text-danger focus:ring-danger"
-                checked={selectedForwardIds.includes(forward.id)}
-                onChange={() => toggleForwardSelection(forward.id)}
+                checked={batchSelection.selectedIds.includes(forward.id)}
+                onChange={() => batchSelection.toggleItemSelection(forward.id)}
                 aria-label={`选择转发 ${forward.name}`}
               />
               <div className="flex-1 min-w-0">
@@ -1441,14 +1397,33 @@ export default function ForwardPage() {
           <div className="flex-1">
           </div>
           <div className="flex items-center gap-3">
-            {selectedForwardIds.length > 0 && (
+            {batchSelection.selectedCount > 0 && (
               <Button
                 size="sm"
                 variant="flat"
                 color="danger"
-                onPress={handleBatchDelete}
+                onPress={batchSelection.openBatchDeleteModal}
               >
-                删除({selectedForwardIds.length})
+                删除({batchSelection.selectedCount})
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="flat"
+              color="default"
+              onPress={batchSelection.toggleSelectAll}
+              isDisabled={forwards.length === 0}
+            >
+              {batchSelection.isAllSelected ? '取消全选' : '全选'}
+            </Button>
+            {batchSelection.selectedCount > 0 && (
+              <Button
+                size="sm"
+                variant="flat"
+                color="default"
+                onPress={batchSelection.clearSelection}
+              >
+                清空选择
               </Button>
             )}
             {/* 显示模式切换按钮 */}
@@ -1799,8 +1774,8 @@ export default function ForwardPage() {
         </Modal>
 
         <Modal
-          isOpen={batchDeleteModalOpen}
-          onOpenChange={setBatchDeleteModalOpen}
+          isOpen={batchSelection.modalOpen}
+          onOpenChange={batchSelection.setModalOpen}
           size="2xl"
           scrollBehavior="outside"
           backdrop="blur"
@@ -1814,22 +1789,37 @@ export default function ForwardPage() {
                 </ModalHeader>
                 <ModalBody>
                   <p className="text-default-600">
-                    确定要删除已选择的 <span className="font-semibold text-foreground">{selectedForwardIds.length}</span> 个转发吗？
+                    确定要删除已选择的 <span className="font-semibold text-foreground">{batchSelection.selectedCount}</span> 个转发吗？
                   </p>
                   <p className="text-small text-default-500 mt-2">
                     此操作无法撤销，删除后对应转发将永久消失。
                   </p>
+                  {batchSelection.lastResult && batchSelection.failures.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-small text-warning">
+                        已成功删除 {batchSelection.lastResult.successCount} 个，失败 {batchSelection.lastResult.failureCount} 个
+                      </p>
+                      <div className="max-h-48 overflow-y-auto rounded border border-warning-200 bg-warning-50 p-2 text-xs">
+                        {batchSelection.failures.map((item) => (
+                          <p key={item.id} className="text-warning-700">
+                            {item.name}: {item.reason}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </ModalBody>
                 <ModalFooter>
-                  <Button variant="light" onPress={onClose}>
-                    取消
+                  <Button variant="light" onPress={batchSelection.closeModal}>
+                    {batchSelection.failures.length > 0 ? '关闭' : '取消'}
                   </Button>
                   <Button
                     color="danger"
-                    onPress={confirmBatchDelete}
-                    isLoading={batchDeleteLoading}
+                    onPress={batchSelection.confirmBatchDelete}
+                    isLoading={batchSelection.deleting}
+                    isDisabled={batchSelection.failures.length > 0}
                   >
-                    确认删除
+                    {batchSelection.failures.length > 0 ? '已完成' : '确认删除'}
                   </Button>
                 </ModalFooter>
               </>

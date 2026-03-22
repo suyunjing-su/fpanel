@@ -12,6 +12,7 @@ import toast from 'react-hot-toast';
 
 
 import { 
+  batchDeleteTunnels,
   createTunnel, 
   getTunnelList,
   updateTunnel, 
@@ -19,6 +20,7 @@ import {
   getNodeList,
   diagnoseTunnel
 } from "@/api";
+import { useBatchDeleteSelection } from "@/hooks/useBatchDeleteSelection";
 
 interface ChainTunnel {
   nodeId: number;
@@ -116,9 +118,6 @@ export default function TunnelPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
   const [tunnelToDelete, setTunnelToDelete] = useState<Tunnel | null>(null);
-  const [selectedTunnelIds, setSelectedTunnelIds] = useState<number[]>([]);
-  const [batchDeleteModalOpen, setBatchDeleteModalOpen] = useState(false);
-  const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
   const [currentDiagnosisTunnel, setCurrentDiagnosisTunnel] = useState<Tunnel | null>(null);
   const [diagnosisResult, setDiagnosisResult] = useState<DiagnosisResult | null>(null);
   
@@ -153,8 +152,6 @@ export default function TunnelPage() {
       
       if (tunnelsRes.code === 0) {
         setTunnels(tunnelsRes.data || []);
-        const latestTunnels: Tunnel[] = tunnelsRes.data || [];
-        setSelectedTunnelIds(prev => prev.filter(id => latestTunnels.some(tunnel => tunnel.id === id)));
       } else {
         toast.error(tunnelsRes.msg || '获取隧道列表失败');
       }
@@ -171,6 +168,13 @@ export default function TunnelPage() {
       setLoading(false);
     }
   };
+
+  const batchSelection = useBatchDeleteSelection<Tunnel>({
+    items: tunnels,
+    entityLabel: '隧道',
+    batchDeleteApi: batchDeleteTunnels,
+    reloadData: loadData
+  });
 
   // 表单验证
   const validateForm = (): boolean => {
@@ -299,54 +303,6 @@ export default function TunnelPage() {
       toast.error('删除失败');
     } finally {
       setDeleteLoading(false);
-    }
-  };
-
-  const toggleTunnelSelection = (tunnelId: number) => {
-    setSelectedTunnelIds(prev => (
-      prev.includes(tunnelId)
-        ? prev.filter(id => id !== tunnelId)
-        : [...prev, tunnelId]
-    ));
-  };
-
-  const handleBatchDelete = () => {
-    if (selectedTunnelIds.length === 0) {
-      toast.error('请先选择要删除的隧道');
-      return;
-    }
-    setBatchDeleteModalOpen(true);
-  };
-
-  const confirmBatchDelete = async () => {
-    if (selectedTunnelIds.length === 0) return;
-
-    setBatchDeleteLoading(true);
-    try {
-      const results = await Promise.all(
-        selectedTunnelIds.map(async (id) => {
-          const res = await deleteTunnel(id);
-          return { id, code: res.code };
-        })
-      );
-      const failed = results.filter(item => item.code !== 0).length;
-      const successCount = results.length - failed;
-
-      if (successCount > 0) {
-        toast.success(`成功删除 ${successCount} 个隧道`);
-      }
-      if (failed > 0) {
-        toast.error(`有 ${failed} 个隧道删除失败`);
-      }
-
-      setBatchDeleteModalOpen(false);
-      setSelectedTunnelIds([]);
-      await loadData();
-    } catch (error) {
-      console.error('批量删除隧道失败:', error);
-      toast.error('批量删除失败');
-    } finally {
-      setBatchDeleteLoading(false);
     }
   };
 
@@ -582,14 +538,33 @@ export default function TunnelPage() {
         </div>
 
         <div className="flex items-center gap-3">
-        {selectedTunnelIds.length > 0 && (
+        {batchSelection.selectedCount > 0 && (
           <Button
             size="sm"
             variant="flat"
             color="danger"
-            onPress={handleBatchDelete}
+            onPress={batchSelection.openBatchDeleteModal}
           >
-            删除({selectedTunnelIds.length})
+            删除({batchSelection.selectedCount})
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="flat"
+          color="default"
+          onPress={batchSelection.toggleSelectAll}
+          isDisabled={tunnels.length === 0}
+        >
+          {batchSelection.isAllSelected ? '取消全选' : '全选'}
+        </Button>
+        {batchSelection.selectedCount > 0 && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="default"
+            onPress={batchSelection.clearSelection}
+          >
+            清空选择
           </Button>
         )}
 
@@ -620,8 +595,8 @@ export default function TunnelPage() {
                         <input
                           type="checkbox"
                           className="mt-0.5 h-4 w-4 rounded border-default-300 text-danger focus:ring-danger"
-                          checked={selectedTunnelIds.includes(tunnel.id)}
-                          onChange={() => toggleTunnelSelection(tunnel.id)}
+                          checked={batchSelection.selectedIds.includes(tunnel.id)}
+                          onChange={() => batchSelection.toggleItemSelection(tunnel.id)}
                           aria-label={`选择隧道 ${tunnel.name}`}
                         />
                         <div className="flex-1 min-w-0">
@@ -1362,8 +1337,8 @@ export default function TunnelPage() {
         </Modal>
 
         <Modal
-          isOpen={batchDeleteModalOpen}
-          onOpenChange={setBatchDeleteModalOpen}
+          isOpen={batchSelection.modalOpen}
+          onOpenChange={batchSelection.setModalOpen}
           size="2xl"
           scrollBehavior="outside"
           backdrop="blur"
@@ -1377,22 +1352,37 @@ export default function TunnelPage() {
                 </ModalHeader>
                 <ModalBody>
                   <p className="text-default-600">
-                    确定要删除已选择的 <span className="font-semibold text-foreground">{selectedTunnelIds.length}</span> 个隧道吗？
+                    确定要删除已选择的 <span className="font-semibold text-foreground">{batchSelection.selectedCount}</span> 个隧道吗？
                   </p>
                   <p className="text-small text-default-500 mt-2">
                     此操作无法撤销，删除后相关配置将永久消失。
                   </p>
+                  {batchSelection.lastResult && batchSelection.failures.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-small text-warning">
+                        已成功删除 {batchSelection.lastResult.successCount} 个，失败 {batchSelection.lastResult.failureCount} 个
+                      </p>
+                      <div className="max-h-48 overflow-y-auto rounded border border-warning-200 bg-warning-50 p-2 text-xs">
+                        {batchSelection.failures.map((item) => (
+                          <p key={item.id} className="text-warning-700">
+                            {item.name}: {item.reason}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </ModalBody>
                 <ModalFooter>
-                  <Button variant="light" onPress={onClose}>
-                    取消
+                  <Button variant="light" onPress={batchSelection.closeModal}>
+                    {batchSelection.failures.length > 0 ? '关闭' : '取消'}
                   </Button>
                   <Button
                     color="danger"
-                    onPress={confirmBatchDelete}
-                    isLoading={batchDeleteLoading}
+                    onPress={batchSelection.confirmBatchDelete}
+                    isLoading={batchSelection.deleting}
+                    isDisabled={batchSelection.failures.length > 0}
                   >
-                    确认删除
+                    {batchSelection.failures.length > 0 ? '已完成' : '确认删除'}
                   </Button>
                 </ModalFooter>
               </>
