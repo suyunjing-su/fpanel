@@ -50,11 +50,6 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
             return false;
         }
 
-        if (!StringUtils.hasText(type)) {
-            log.info("WebSocket握手缺少类型标识，IP: {}", getClientIp(request));
-            return false;
-        }
-
         if (Objects.equals(type, "1")) {
             String secret = resolveWebSocketToken(servletRequest);
             if (!StringUtils.hasText(secret)) {
@@ -199,7 +194,7 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
             }
         }
 
-        return null;
+        return "0";
     }
 
 

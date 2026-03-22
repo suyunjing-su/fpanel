@@ -146,10 +146,9 @@ export default function NodePage() {
     const token = localStorage.getItem('token') || '';
     
     try {
-      const protocols = token
-        ? ['flux-type-0', 'auth-token', token]
-        : ['flux-type-0'];
-      websocketRef.current = new WebSocket(wsUrl, protocols);
+      websocketRef.current = token
+        ? new WebSocket(wsUrl, ['auth-token', token])
+        : new WebSocket(wsUrl);
       
       websocketRef.current.onopen = () => {
         reconnectAttemptsRef.current = 0;
