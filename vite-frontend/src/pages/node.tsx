@@ -71,6 +71,9 @@ export default function NodePage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<number[]>([]);
+  const [batchDeleteModalOpen, setBatchDeleteModalOpen] = useState(false);
+  const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
   const [protocolDisabled, setProtocolDisabled] = useState(false);
   const [protocolDisabledReason, setProtocolDisabledReason] = useState('');
   const [form, setForm] = useState<NodeForm>({
@@ -112,12 +115,14 @@ export default function NodePage() {
     try {
       const res = await getNodeList();
       if (res.code === 0) {
-        setNodeList(res.data.map((node: any) => ({
+        const latestNodeList = res.data.map((node: any) => ({
           ...node,
           connectionStatus: node.status === 1 ? 'online' : 'offline',
           systemInfo: null,
           copyLoading: false
-        })));
+        }));
+        setNodeList(latestNodeList);
+        setSelectedNodeIds(prev => prev.filter(id => latestNodeList.some((node: Node) => node.id === id)));
       } else {
         toast.error(res.msg || '加载节点列表失败');
       }
@@ -506,6 +511,55 @@ export default function NodePage() {
     }
   };
 
+  const toggleNodeSelection = (nodeId: number) => {
+    setSelectedNodeIds(prev => (
+      prev.includes(nodeId)
+        ? prev.filter(id => id !== nodeId)
+        : [...prev, nodeId]
+    ));
+  };
+
+  const handleBatchDelete = () => {
+    if (selectedNodeIds.length === 0) {
+      toast.error('请先选择要删除的节点');
+      return;
+    }
+    setBatchDeleteModalOpen(true);
+  };
+
+  const confirmBatchDelete = async () => {
+    if (selectedNodeIds.length === 0) return;
+
+    setBatchDeleteLoading(true);
+    try {
+      const results = await Promise.all(
+        selectedNodeIds.map(async (id) => {
+          const res = await deleteNode(id);
+          return { id, code: res.code };
+        })
+      );
+
+      const failed = results.filter(item => item.code !== 0).length;
+      const successCount = results.length - failed;
+
+      if (successCount > 0) {
+        toast.success(`成功删除 ${successCount} 个节点`);
+      }
+      if (failed > 0) {
+        toast.error(`有 ${failed} 个节点删除失败`);
+      }
+
+      setBatchDeleteModalOpen(false);
+      setSelectedNodeIds([]);
+      await loadNodes();
+    } catch (error) {
+      console.error('批量删除节点失败:', error);
+      toast.error('批量删除失败');
+    } finally {
+      setBatchDeleteLoading(false);
+    }
+  };
+
   // 复制安装命令
   const handleCopyInstallCommand = async (node: Node) => {
     setNodeList(prev => prev.map(n => 
@@ -617,6 +671,18 @@ export default function NodePage() {
         <div className="flex-1">
         </div>
 
+        <div className="flex items-center gap-3">
+        {selectedNodeIds.length > 0 && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="danger"
+            onPress={handleBatchDelete}
+          >
+            删除({selectedNodeIds.length})
+          </Button>
+        )}
+
         <Button
               size="sm"
               variant="flat"
@@ -626,6 +692,7 @@ export default function NodePage() {
             >
               新增
             </Button>
+        </div>
      
         </div>
 
@@ -662,7 +729,14 @@ export default function NodePage() {
               >
                 <CardHeader className="pb-2">
                   <div className="flex justify-between items-start w-full">
-                    <div className="flex-1 min-w-0">
+                    <div className="flex items-start gap-2 flex-1 min-w-0">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 h-4 w-4 rounded border-default-300 text-danger focus:ring-danger"
+                        checked={selectedNodeIds.includes(node.id)}
+                        onChange={() => toggleNodeSelection(node.id)}
+                        aria-label={`选择节点 ${node.name}`}
+                      />
                       <h3 className="font-semibold text-foreground truncate text-sm">{node.name}</h3>
                     </div>
                     <div className="flex items-center gap-1.5 ml-2">
@@ -1063,6 +1137,41 @@ export default function NodePage() {
                     isLoading={deleteLoading}
                   >
                     {deleteLoading ? '删除中...' : '确认删除'}
+                  </Button>
+                </ModalFooter>
+              </>
+            )}
+          </ModalContent>
+        </Modal>
+
+        <Modal
+          isOpen={batchDeleteModalOpen}
+          onOpenChange={setBatchDeleteModalOpen}
+          size="2xl"
+          scrollBehavior="outside"
+          backdrop="blur"
+          placement="center"
+        >
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader className="flex flex-col gap-1">
+                  <h2 className="text-xl font-bold text-danger">确认批量删除</h2>
+                </ModalHeader>
+                <ModalBody>
+                  <p>确定要删除已选择的 <strong>{selectedNodeIds.length}</strong> 个节点吗？</p>
+                  <p className="text-small text-default-500">此操作不可恢复，请谨慎操作。</p>
+                </ModalBody>
+                <ModalFooter>
+                  <Button variant="light" onPress={onClose}>
+                    取消
+                  </Button>
+                  <Button
+                    color="danger"
+                    onPress={confirmBatchDelete}
+                    isLoading={batchDeleteLoading}
+                  >
+                    确认删除
                   </Button>
                 </ModalFooter>
               </>
