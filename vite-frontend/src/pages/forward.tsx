@@ -697,46 +697,89 @@ export default function ForwardPage() {
     return (value / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
   };
 
+  const isValidPort = (value: string): boolean => {
+    const port = Number(value);
+    return Number.isInteger(port) && port >= 1 && port <= 65535;
+  };
+
+  const isValidHostPortAddress = (input: string): boolean => {
+    const addr = input.trim();
+    if (!addr) return false;
+
+    // Bracketed IPv6 format: [IPv6]:port
+    const bracketedIpv6 = addr.match(/^\[([0-9a-fA-F:]+)\]:(\d+)$/);
+    if (bracketedIpv6) {
+      return isValidPort(bracketedIpv6[2]);
+    }
+
+    const lastColon = addr.lastIndexOf(':');
+    if (lastColon <= 0 || lastColon === addr.length - 1) {
+      return false;
+    }
+
+    const host = addr.slice(0, lastColon);
+    const port = addr.slice(lastColon + 1);
+    if (!isValidPort(port)) {
+      return false;
+    }
+
+    // Unbracketed IPv6 with port: 2602:...:7198:12006
+    if (host.includes(':')) {
+      return !host.includes('[') && !host.includes(']');
+    }
+
+    // IPv4 / domain with port
+    return host.length > 0;
+  };
+
+  const normalizeAddressForDisplay = (rawAddress: string, fallbackPort?: number): string => {
+    const value = rawAddress.trim();
+    if (!value) return '';
+
+    const bracketedWithPort = value.match(/^\[([^\]]+)\]:(\d+)$/);
+    if (bracketedWithPort) {
+      return value;
+    }
+
+    const bracketedWithoutPort = value.match(/^\[([^\]]+)\]$/);
+    if (bracketedWithoutPort) {
+      return fallbackPort ? `[${bracketedWithoutPort[1]}]:${fallbackPort}` : value;
+    }
+
+    const lastColon = value.lastIndexOf(':');
+    if (lastColon > 0 && lastColon < value.length - 1) {
+      const host = value.slice(0, lastColon);
+      const port = value.slice(lastColon + 1);
+      if (isValidPort(port) && host.includes(':')) {
+        return `[${host}]:${port}`;
+      }
+      if (isValidPort(port)) {
+        return value;
+      }
+    }
+
+    if (fallbackPort) {
+      if (value.includes(':')) {
+        return `[${value}]:${fallbackPort}`;
+      }
+      return `${value}:${fallbackPort}`;
+    }
+
+    return value;
+  };
+
   // 格式化入口地址
   const formatInAddress = (ipString: string, port: number): string => {
     if (!ipString) return '';
     
     const items = ipString.split(',').map(item => item.trim()).filter(item => item);
     if (items.length === 0) return '';
-    
-    // 检查第一项是否已经包含端口（格式：IP:端口）
-    const firstItem = items[0];
-    const hasPort = /:\d+$/.test(firstItem);
-    
-    if (hasPort) {
-      // inIp 已经包含完整的 IP:Port 组合
-      if (items.length === 1) {
-        return items[0];
-      }
-      return `${items[0]} (+${items.length - 1}个)`;
+
+    const normalized = items.map(item => normalizeAddressForDisplay(item, port || undefined));
+    if (normalized.length === 1) {
+      return normalized[0];
     }
-    
-    // inIp 只包含IP，需要添加端口（兼容旧数据）
-    if (!port) return '';
-    
-    if (items.length === 1) {
-      const ip = items[0];
-      if (ip.includes(':') && !ip.startsWith('[')) {
-        return `[${ip}]:${port}`;
-      } else {
-        return `${ip}:${port}`;
-      }
-    }
-    
-    const firstIp = items[0];
-    let formattedFirstIp;
-    if (firstIp.includes(':') && !firstIp.startsWith('[')) {
-      formattedFirstIp = `[${firstIp}]`;
-    } else {
-      formattedFirstIp = firstIp;
-    }
-    
-    return `${formattedFirstIp}:${port} (+${items.length - 1}个)`;
+    return `${normalized[0]} (+${normalized.length - 1}个)`;
   };
 
   // 格式化远程地址
@@ -769,22 +812,8 @@ export default function ForwardPage() {
         copyToClipboard(formatInAddress(addressString, port), title);
         return;
       }
-      
-      // 检查是否已经包含端口
-      const hasPort = /:\d+$/.test(items[0]);
-      if (hasPort) {
-        // 已经包含完整的 IP:Port 组合，直接使用
-        addresses = items;
-      } else {
-        // 只包含IP，需要添加端口
-        addresses = items.map(ip => {
-          if (ip.includes(':') && !ip.startsWith('[')) {
-            return `[${ip}]:${port}`;
-          } else {
-            return `${ip}:${port}`;
-          }
-        });
-      }
+
+      addresses = items.map(item => normalizeAddressForDisplay(item, port));
     } else {
       // 远程地址处理
       addresses = addressString.split(',').map(addr => addr.trim()).filter(addr => addr);
@@ -947,14 +976,13 @@ export default function ForwardPage() {
 
         // 验证远程地址格式 - 支持单个地址或多个地址用逗号分隔
         const addresses = remoteAddr.trim().split(',');
-        const addressPattern = /^[^:]+:\d+$/;
-        const isValidFormat = addresses.every(addr => addressPattern.test(addr.trim()));
+        const isValidFormat = addresses.every(addr => isValidHostPortAddress(addr));
         
         if (!isValidFormat) {
           setImportResults(prev => [{
             line,
             success: false,
-            message: '目标地址格式错误，应为 地址:端口 格式，多个地址用逗号分隔'
+            message: '目标地址格式错误，应为 地址:端口 或 [IPv6]:端口 格式，多个地址用逗号分隔'
           }, ...prev]);
           continue;
         }
