@@ -131,19 +131,54 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
             return true;
         }
 
-        String forwardedProto = request.getHeader("X-Forwarded-Proto");
-        if (isTrustedProxySource(request) && StringUtils.hasText(forwardedProto)) {
-            String[] protocols = forwardedProto.split(",");
-            for (String proto : protocols) {
-                String normalized = proto == null ? "" : proto.trim().toLowerCase();
-                if ("https".equals(normalized) || "wss".equals(normalized)) {
-                    return true;
-                }
-            }
+        if (isTrustedProxySource(request) && hasSecureProxySignal(request)) {
+            return true;
         }
 
         String scheme = request.getScheme();
         return "https".equalsIgnoreCase(scheme) || "wss".equalsIgnoreCase(scheme);
+    }
+
+    private boolean hasSecureProxySignal(HttpServletRequest request) {
+        if (containsSecureProto(request.getHeader("X-Forwarded-Proto"))) {
+            return true;
+        }
+
+        String forwarded = request.getHeader("Forwarded");
+        if (StringUtils.hasText(forwarded) && forwarded.toLowerCase().contains("proto=https")) {
+            return true;
+        }
+
+        String cfVisitor = request.getHeader("CF-Visitor");
+        if (StringUtils.hasText(cfVisitor)) {
+            String normalized = cfVisitor.toLowerCase().replace(" ", "");
+            if (normalized.contains("\"scheme\":\"https\"") || normalized.contains("\"scheme\":\"wss\"")) {
+                return true;
+            }
+        }
+
+        String xForwardedSsl = request.getHeader("X-Forwarded-Ssl");
+        if (StringUtils.hasText(xForwardedSsl) && "on".equalsIgnoreCase(xForwardedSsl.trim())) {
+            return true;
+        }
+
+        String frontEndHttps = request.getHeader("Front-End-Https");
+        return StringUtils.hasText(frontEndHttps) && "on".equalsIgnoreCase(frontEndHttps.trim());
+    }
+
+    private boolean containsSecureProto(String headerValue) {
+        if (!StringUtils.hasText(headerValue)) {
+            return false;
+        }
+
+        String[] protocols = headerValue.split(",");
+        for (String proto : protocols) {
+            String normalized = proto == null ? "" : proto.trim().toLowerCase();
+            if ("https".equals(normalized) || "wss".equals(normalized)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isTrustedProxySource(HttpServletRequest request) {
