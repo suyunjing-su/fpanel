@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -64,6 +65,35 @@ func buildNodeWebSocketURL(addr string, version string, httpPort int, tlsPort in
 		"&http=" + strconv.Itoa(httpPort) +
 		"&tls=" + strconv.Itoa(tlsPort) +
 		"&socks=" + strconv.Itoa(socksPort), nil
+}
+
+func buildSecureControlBaseURL(addr string) (string, error) {
+	trimmed := strings.TrimSpace(addr)
+	if trimmed == "" {
+		return "", fmt.Errorf("服务器地址为空")
+	}
+
+	if strings.Contains(trimmed, "://") {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("解析服务器地址失败: %v", err)
+		}
+
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			u.Scheme = "https"
+			return strings.TrimRight(u.String(), "/"), nil
+		case "wss":
+			u.Scheme = "https"
+			return strings.TrimRight(u.String(), "/"), nil
+		case "http", "ws":
+			return "", fmt.Errorf("禁止不安全协议: %s，请使用 https 或 wss", u.Scheme)
+		default:
+			return "", fmt.Errorf("不支持的协议: %s", u.Scheme)
+		}
+	}
+
+	return "https://" + strings.TrimRight(trimmed, "/"), nil
 }
 
 // SystemInfo 系统信息结构体
@@ -608,16 +638,148 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 
 	// 发送响应
 	if err != nil {
+		if w.isIncrementalServiceCommand(cmd.Type) && isPortConflictError(err) {
+			recoverErr := w.recoverFromFullConfig(err)
+			if recoverErr == nil {
+				response.Success = true
+				response.Message = "检测到端口冲突，已重新拉取全量配置覆写"
+				w.sendResponse(response)
+				return
+			}
+			response.Success = false
+			response.Message = recoverErr.Error()
+			w.sendResponse(response)
+			return
+		}
+
 		saveConfig()
 		response.Success = false
 		response.Message = err.Error()
 	} else {
+		if w.isIncrementalServiceCommand(cmd.Type) {
+			if conflictErr := w.validateMergedConfigConflicts(); conflictErr != nil {
+				recoverErr := w.recoverFromFullConfig(conflictErr)
+				if recoverErr == nil {
+					response.Success = true
+					response.Message = "检测到端口冲突，已重新拉取全量配置覆写"
+					w.sendResponse(response)
+					return
+				}
+				response.Success = false
+				response.Message = recoverErr.Error()
+				w.sendResponse(response)
+				return
+			}
+		}
+
 		saveConfig()
 		response.Success = true
 		response.Message = "OK"
 	}
 
 	w.sendResponse(response)
+}
+
+func (w *WebSocketReporter) isIncrementalServiceCommand(commandType string) bool {
+	return commandType == "AddService" || commandType == "UpdateService"
+}
+
+func isPortConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "监听") && strings.Contains(msg, "冲突") ||
+		strings.Contains(msg, "port") && strings.Contains(msg, "already")
+}
+
+func (w *WebSocketReporter) validateMergedConfigConflicts() error {
+	cfg := config.Global()
+	serviceAddrIndex := make(map[string]string)
+
+	for _, svc := range cfg.Services {
+		if svc == nil || svc.Listener == nil {
+			continue
+		}
+		addr := strings.TrimSpace(svc.Addr)
+		listenerType := strings.TrimSpace(svc.Listener.Type)
+		if addr == "" || listenerType == "" {
+			continue
+		}
+
+		key := listenerType + "|" + addr
+		if existing, ok := serviceAddrIndex[key]; ok {
+			return fmt.Errorf("检测到监听冲突: %s 与 %s 使用相同监听 %s", existing, svc.Name, key)
+		}
+		serviceAddrIndex[key] = svc.Name
+	}
+
+	return nil
+}
+
+func (w *WebSocketReporter) recoverFromFullConfig(cause error) error {
+	fetchErr := w.fetchAndOverwriteFullConfig()
+	if fetchErr != nil {
+		return fmt.Errorf("检测到端口冲突且全量配置恢复失败: %v, 原始错误: %v", fetchErr, cause)
+	}
+
+	return nil
+}
+
+func (w *WebSocketReporter) fetchAndOverwriteFullConfig() error {
+	baseURL, err := buildSecureControlBaseURL(w.addr)
+	if err != nil {
+		return err
+	}
+
+	endpoint := baseURL + "/flow/conffig/all"
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("创建全量配置请求失败: %v", err)
+	}
+
+	req.Header.Set("User-Agent", "Flux-Agent-Recovery/1.0")
+	if strings.TrimSpace(w.secret) != "" {
+		req.Header.Set("Authorization", "Bearer "+w.secret)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("请求全量配置失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("读取全量配置响应失败: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("全量配置接口状态异常 %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	payload := strings.TrimSpace(string(body))
+	if payload == "" {
+		payload = "{}"
+	}
+
+	var configDoc map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &configDoc); err != nil {
+		return fmt.Errorf("全量配置格式非法: %v", err)
+	}
+
+	serialized, err := json.MarshalIndent(configDoc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化全量配置失败: %v", err)
+	}
+
+	if err := os.WriteFile("gost.json", serialized, 0600); err != nil {
+		return fmt.Errorf("覆写gost.json失败: %v", err)
+	}
+
+	return nil
 }
 
 // Service 命令处理函数
