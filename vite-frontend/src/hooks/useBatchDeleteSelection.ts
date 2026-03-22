@@ -63,22 +63,22 @@ export function useBatchDeleteSelection<T extends { id: number }>(options: UseBa
     setModalOpen(true);
   };
 
-  const confirmBatchDelete = async () => {
-    if (selectedIds.length === 0) {
+  const executeBatchDelete = async (targetIds: number[]) => {
+    if (targetIds.length === 0) {
       return;
     }
 
     setDeleting(true);
     try {
-      const response = await batchDeleteApi(selectedIds);
+      const response = await batchDeleteApi(targetIds);
       if (response.code !== 0) {
         toast.error(response.msg || '批量删除失败');
         return;
       }
 
       const result: BatchDeleteResult = response.data || {
-        totalCount: selectedIds.length,
-        successCount: selectedIds.length,
+        totalCount: targetIds.length,
+        successCount: targetIds.length,
         failureCount: 0,
         failures: []
       };
@@ -113,6 +113,17 @@ export function useBatchDeleteSelection<T extends { id: number }>(options: UseBa
     }
   };
 
+  const confirmBatchDelete = async () => {
+    await executeBatchDelete(selectedIds);
+  };
+
+  const retryFailedDeletes = async () => {
+    if (failures.length === 0) {
+      return;
+    }
+    await executeBatchDelete(failures.map(item => item.id));
+  };
+
   const closeModal = () => {
     setModalOpen(false);
     setFailures([]);
@@ -132,6 +143,7 @@ export function useBatchDeleteSelection<T extends { id: number }>(options: UseBa
     clearSelection,
     openBatchDeleteModal,
     confirmBatchDelete,
+    retryFailedDeletes,
     closeModal,
     setModalOpen
   };

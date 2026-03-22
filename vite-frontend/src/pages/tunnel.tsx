@@ -1376,6 +1376,15 @@ export default function TunnelPage() {
                   <Button variant="light" onPress={batchSelection.closeModal}>
                     {batchSelection.failures.length > 0 ? '关闭' : '取消'}
                   </Button>
+                  {batchSelection.failures.length > 0 && (
+                    <Button
+                      color="warning"
+                      onPress={batchSelection.retryFailedDeletes}
+                      isLoading={batchSelection.deleting}
+                    >
+                      重试失败项
+                    </Button>
+                  )}
                   <Button
                     color="danger"
                     onPress={batchSelection.confirmBatchDelete}
