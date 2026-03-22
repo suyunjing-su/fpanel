@@ -12,11 +12,14 @@ import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.SubProtocolCapable;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import javax.annotation.Resource;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArraySet;
@@ -26,7 +29,9 @@ import java.util.UUID;
 
 
 @Slf4j
-public class WebSocketServer extends TextWebSocketHandler {
+public class WebSocketServer extends TextWebSocketHandler implements SubProtocolCapable {
+
+    private static final List<String> SUPPORTED_SUB_PROTOCOLS = Arrays.asList("auth-token", "bearer", "flux-type-0");
 
     @Resource
     NodeService nodeService;
@@ -61,6 +66,11 @@ public class WebSocketServer extends TextWebSocketHandler {
         public void setData(String data) { this.data = data; }
         public Long getTimestamp() { return timestamp; }
         public void setTimestamp(Long timestamp) { this.timestamp = timestamp; }
+    }
+
+    @Override
+    public List<String> getSubProtocols() {
+        return SUPPORTED_SUB_PROTOCOLS;
     }
 
     //接受客户端消息
