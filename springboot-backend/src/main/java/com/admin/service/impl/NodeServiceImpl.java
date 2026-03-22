@@ -30,6 +30,8 @@ import org.springframework.beans.factory.annotation.Value;
 @Service
 public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements NodeService {
 
+    private static final String RELEASE_VERSION = "3.0.0-beta";
+
 
     @Resource
     @Lazy
@@ -126,7 +128,9 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         ViteConfig viteConfig = viteConfigService.getOne(new QueryWrapper<ViteConfig>().eq("name", "ip"));
         if (viteConfig == null) return R.err("请先前往网站配置中设置ip");
         StringBuilder command = new StringBuilder();
-        command.append("curl -L https://github.com/suyunjing-su/fpanel/releases/download/2.0.7-beta/install.sh")
+        command.append("curl -L https://github.com/suyunjing-su/fpanel/releases/download/")
+            .append(RELEASE_VERSION)
+            .append("/install.sh")
                 .append(" -o ./install.sh && chmod +x ./install.sh && ");
         String processedServerAddr = GostUtil.processServerAddress(viteConfig.getValue());
         command.append("./install.sh")

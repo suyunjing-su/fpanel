@@ -5,11 +5,12 @@ set -e
 export LANG=en_US.UTF-8
 export LC_ALL=C
 
+RELEASE_VERSION="3.0.0-beta"
 
 
 # 全局下载地址配置
-DOCKER_COMPOSEV4_URL="https://github.com/suyunjing-su/fpanel/releases/download/2.0.7-beta/docker-compose-v4.yml"
-DOCKER_COMPOSEV6_URL="https://github.com/suyunjing-su/fpanel/releases/download/2.0.7-beta/docker-compose-v6.yml"
+DOCKER_COMPOSEV4_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/docker-compose-v4.yml"
+DOCKER_COMPOSEV6_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/docker-compose-v6.yml"
 
 COUNTRY=$(curl -s https://ipinfo.io/country)
 if [ "$COUNTRY" = "CN" ]; then

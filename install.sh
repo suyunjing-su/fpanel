@@ -1,5 +1,7 @@
 #!/bin/bash
 
+RELEASE_VERSION="3.0.0-beta"
+
 # 获取系统架构
 get_architecture() {
     ARCH=$(uname -m)
@@ -19,7 +21,7 @@ get_architecture() {
 # 构建下载地址
 build_download_url() {
     local ARCH=$(get_architecture)
-    echo "https://github.com/suyunjing-su/fpanel/releases/download/2.0.7-beta/gost-${ARCH}"
+  echo "https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/gost-${ARCH}"
 }
 
 # 下载地址
