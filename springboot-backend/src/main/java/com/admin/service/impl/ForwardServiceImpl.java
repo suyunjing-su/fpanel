@@ -436,27 +436,14 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                         for (ChainTunnel firstChainNode : chainNodesList.getFirst()) {
                             Node toNode = nodeService.getById(firstChainNode.getNodeId());
                             if (toNode != null) {
-                                DiagnosisResult result = performTcpPingDiagnosisWithConnectionCheck(
-                                        fromNode, toNode.getServerIp(), firstChainNode.getPort(),
-                                        "入口(" + fromNode.getName() + ")->第1跳(" + toNode.getName() + ")"
-                                );
-                                result.setFromChainType(1);
-                                result.setToChainType(2);
-                                result.setToInx(firstChainNode.getInx());
-                                results.add(result);
+                                addEntryDiagnosisResults(results, fromNode, toNode, firstChainNode, 2, firstChainNode.getInx());
                             }
                         }
                     } else if (!outNodes.isEmpty()) {
                         for (ChainTunnel outNode : outNodes) {
                             Node toNode = nodeService.getById(outNode.getNodeId());
                             if (toNode != null) {
-                                DiagnosisResult result = performTcpPingDiagnosisWithConnectionCheck(
-                                        fromNode, toNode.getServerIp(), outNode.getPort(),
-                                        "入口(" + fromNode.getName() + ")->出口(" + toNode.getName() + ")"
-                                );
-                                result.setFromChainType(1);
-                                result.setToChainType(3);
-                                results.add(result);
+                                addEntryDiagnosisResults(results, fromNode, toNode, outNode, 3, null);
                             }
                         }
                     }
@@ -801,6 +788,120 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
         try {
             return performTcpPingDiagnosis(node, targetIp, port, description);
+        } catch (Exception e) {
+            result.setSuccess(false);
+            result.setMessage("连接检查异常: " + e.getMessage());
+            result.setAverageTime(-1.0);
+            result.setPacketLoss(100.0);
+            return result;
+        }
+    }
+
+    private void addEntryDiagnosisResults(List<DiagnosisResult> results,
+                                          Node fromNode,
+                                          Node toNode,
+                                          ChainTunnel targetTunnel,
+                                          int toChainType,
+                                          Integer toInx) {
+        if (targetTunnel.getPort() == null) {
+            return;
+        }
+
+        String baseDesc = "入口(" + fromNode.getName() + ")->" +
+                (toChainType == 3 ? "出口(" + toNode.getName() + ")" : "第1跳(" + toNode.getName() + ")");
+
+        String protocol = GostUtil.normalizeChainProtocol(targetTunnel.getProtocol());
+        if (GostUtil.isHybridUdpProtocol(protocol)) {
+            Integer udpPort = GostUtil.resolveChainListenPort(targetTunnel.getPort(), protocol, GostUtil.PROTOCOL_UDP);
+            DiagnosisResult udpResult = performTransportPingDiagnosisWithConnectionCheck(
+                    fromNode,
+                    toNode.getServerIp(),
+                    udpPort,
+                    baseDesc + " [UDPPing]",
+                    "UdpPing",
+                    "UDP连接成功"
+            );
+            udpResult.setFromChainType(1);
+            udpResult.setToChainType(toChainType);
+            udpResult.setToInx(toInx);
+            results.add(udpResult);
+
+            String commandType = Objects.equals(protocol, GostUtil.PROTOCOL_UDP_QUIC) ? "QuicPing" : "KcpPing";
+            String successMsg = Objects.equals(protocol, GostUtil.PROTOCOL_UDP_QUIC) ? "QUIC连接成功" : "KCP连接成功";
+            DiagnosisResult mixedResult = performTransportPingDiagnosisWithConnectionCheck(
+                    fromNode,
+                    toNode.getServerIp(),
+                    targetTunnel.getPort(),
+                    baseDesc + (Objects.equals(protocol, GostUtil.PROTOCOL_UDP_QUIC) ? " [QUICPing]" : " [KCPPing]"),
+                    commandType,
+                    successMsg
+            );
+            mixedResult.setFromChainType(1);
+            mixedResult.setToChainType(toChainType);
+            mixedResult.setToInx(toInx);
+            results.add(mixedResult);
+            return;
+        }
+
+        DiagnosisResult result = performTcpPingDiagnosisWithConnectionCheck(
+                fromNode, toNode.getServerIp(), targetTunnel.getPort(), baseDesc
+        );
+        result.setFromChainType(1);
+        result.setToChainType(toChainType);
+        result.setToInx(toInx);
+        results.add(result);
+    }
+
+    private DiagnosisResult performTransportPingDiagnosisWithConnectionCheck(Node node,
+                                                                             String targetIp,
+                                                                             int port,
+                                                                             String description,
+                                                                             String commandType,
+                                                                             String successMessage) {
+        DiagnosisResult result = new DiagnosisResult();
+        result.setNodeId(node.getId());
+        result.setNodeName(node.getName());
+        result.setTargetIp(targetIp);
+        result.setTargetPort(port);
+        result.setDescription(description);
+        result.setTimestamp(System.currentTimeMillis());
+
+        try {
+            JSONObject pingData = new JSONObject();
+            pingData.put("ip", targetIp);
+            pingData.put("port", port);
+            pingData.put("count", 4);
+            pingData.put("timeout", 5000);
+
+            GostDto gostResult = WebSocketServer.send_msg(node.getId(), pingData, commandType);
+            if (gostResult != null && "OK".equals(gostResult.getMsg())) {
+                if (gostResult.getData() != null) {
+                    JSONObject pingResponse = (JSONObject) gostResult.getData();
+                    boolean success = pingResponse.getBooleanValue("success");
+                    result.setSuccess(success);
+                    if (success) {
+                        result.setMessage(successMessage);
+                        result.setAverageTime(pingResponse.getDoubleValue("averageTime"));
+                        result.setPacketLoss(pingResponse.getDoubleValue("packetLoss"));
+                    } else {
+                        result.setMessage(pingResponse.getString("errorMessage"));
+                        result.setAverageTime(-1.0);
+                        result.setPacketLoss(100.0);
+                    }
+                } else {
+                    result.setSuccess(true);
+                    result.setMessage(successMessage);
+                    result.setAverageTime(0.0);
+                    result.setPacketLoss(0.0);
+                }
+                return result;
+            }
+
+            result.setSuccess(false);
+            result.setMessage(gostResult != null ? gostResult.getMsg() : "节点无响应");
+            result.setAverageTime(-1.0);
+            result.setPacketLoss(100.0);
+            return result;
         } catch (Exception e) {
             result.setSuccess(false);
             result.setMessage("连接检查异常: " + e.getMessage());
