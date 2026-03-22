@@ -116,6 +116,12 @@ func main() {
 
 	fmt.Println("✅ 配置加载成功 - addr: %s", config.Addr)
 
+	if err := syncFullConfigFromDashboard(config.Addr, config.Secret); err != nil {
+		fmt.Printf("❌ 拉取全量配置失败: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ 已从dashboard拉取并覆写本地gost.json")
+
 	log := xlogger.NewLogger()
 	logger.SetDefault(log)
 
