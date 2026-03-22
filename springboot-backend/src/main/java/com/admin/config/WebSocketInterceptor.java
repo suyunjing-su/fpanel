@@ -38,11 +38,11 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
     public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response, WebSocketHandler wsHandler, Map<String, Object> attributes) throws Exception {
         ServletServerHttpRequest serverHttpRequest = (ServletServerHttpRequest) request;
         HttpServletRequest servletRequest = serverHttpRequest.getServletRequest();
-        String type = serverHttpRequest.getServletRequest().getParameter("type");
-        String version = serverHttpRequest.getServletRequest().getParameter("version");
-        String http = serverHttpRequest.getServletRequest().getParameter("http");
-        String tls = serverHttpRequest.getServletRequest().getParameter("tls");
-        String socks = serverHttpRequest.getServletRequest().getParameter("socks");
+        String type = readHandshakeValue(servletRequest, "type", "X-Flux-Type");
+        String version = readHandshakeValue(servletRequest, "version", "X-Flux-Version");
+        String http = readHandshakeValue(servletRequest, "http", "X-Flux-Http");
+        String tls = readHandshakeValue(servletRequest, "tls", "X-Flux-Tls");
+        String socks = readHandshakeValue(servletRequest, "socks", "X-Flux-Socks");
 
         if (!isSecureTransport(servletRequest)) {
             log.warn("拒绝非安全WebSocket握手，IP: {}", getClientIp(request));
@@ -161,6 +161,16 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
             return remoteAddress.getAddress().getHostAddress();
         }
         return null;
+    }
+
+    private String readHandshakeValue(HttpServletRequest request, String queryKey, String headerKey) {
+        String headerValue = request.getHeader(headerKey);
+        if (StringUtils.hasText(headerValue)) {
+            return headerValue.trim();
+        }
+
+        String queryValue = request.getParameter(queryKey);
+        return StringUtils.hasText(queryValue) ? queryValue.trim() : null;
     }
 
 
