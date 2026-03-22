@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 )
 
 // Config 配置结构体
@@ -37,6 +39,18 @@ func LoadConfig(configPath string) (*Config, error) {
 	// 验证必要的配置项
 	if config.Addr == "" {
 		return nil, fmt.Errorf("服务器地址不能为空")
+	}
+
+	u, err := url.Parse(strings.TrimSpace(config.Addr))
+	if err != nil || u.Scheme == "" {
+		return nil, fmt.Errorf("服务器地址格式错误，必须包含协议，例如 http://127.0.0.1:8534 或 https://clk.qzz.io:443")
+	}
+
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "ws", "wss":
+		// supported schemes
+	default:
+		return nil, fmt.Errorf("不支持的服务器地址协议: %s，仅支持 http/https/ws/wss", u.Scheme)
 	}
 
 	return &config, nil
