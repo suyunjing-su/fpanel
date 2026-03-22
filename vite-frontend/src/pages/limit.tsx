@@ -54,6 +54,9 @@ export default function LimitPage() {
   const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [ruleToDelete, setRuleToDelete] = useState<SpeedLimitRule | null>(null);
+  const [selectedRuleIds, setSelectedRuleIds] = useState<number[]>([]);
+  const [batchDeleteModalOpen, setBatchDeleteModalOpen] = useState(false);
+  const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
   
   // 表单状态
   const [form, setForm] = useState<SpeedLimitForm>({
@@ -81,7 +84,9 @@ export default function LimitPage() {
       ]);
       
       if (rulesRes.code === 0) {
-        setRules(rulesRes.data || []);
+        const latestRules: SpeedLimitRule[] = rulesRes.data || [];
+        setRules(latestRules);
+        setSelectedRuleIds(prev => prev.filter(id => latestRules.some(rule => rule.id === id)));
       } else {
         toast.error(rulesRes.msg || '获取限速规则失败');
       }
@@ -178,6 +183,54 @@ export default function LimitPage() {
     }
   };
 
+  const toggleRuleSelection = (ruleId: number) => {
+    setSelectedRuleIds(prev => (
+      prev.includes(ruleId)
+        ? prev.filter(id => id !== ruleId)
+        : [...prev, ruleId]
+    ));
+  };
+
+  const handleBatchDelete = () => {
+    if (selectedRuleIds.length === 0) {
+      toast.error('请先选择要删除的限速规则');
+      return;
+    }
+    setBatchDeleteModalOpen(true);
+  };
+
+  const confirmBatchDelete = async () => {
+    if (selectedRuleIds.length === 0) return;
+
+    setBatchDeleteLoading(true);
+    try {
+      const results = await Promise.all(
+        selectedRuleIds.map(async (id) => {
+          const res = await deleteSpeedLimit(id);
+          return { id, code: res.code };
+        })
+      );
+      const failed = results.filter(item => item.code !== 0).length;
+      const successCount = results.length - failed;
+
+      if (successCount > 0) {
+        toast.success(`成功删除 ${successCount} 个限速规则`);
+      }
+      if (failed > 0) {
+        toast.error(`有 ${failed} 个限速规则删除失败`);
+      }
+
+      setBatchDeleteModalOpen(false);
+      setSelectedRuleIds([]);
+      await loadData();
+    } catch (error) {
+      console.error('批量删除限速规则失败:', error);
+      toast.error('批量删除失败');
+    } finally {
+      setBatchDeleteLoading(false);
+    }
+  };
+
   // 提交表单
   const handleSubmit = async () => {
     if (!validateForm()) return;
@@ -228,6 +281,18 @@ export default function LimitPage() {
         <div className="flex-1">
         </div>
 
+        <div className="flex items-center gap-3">
+        {selectedRuleIds.length > 0 && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="danger"
+            onPress={handleBatchDelete}
+          >
+            删除({selectedRuleIds.length})
+          </Button>
+        )}
+
         <Button
               size="sm"
               variant="flat"
@@ -238,6 +303,7 @@ export default function LimitPage() {
               新增
             </Button>
         </div>
+        </div>
 
         {/* 统一卡片网格 */}
         {rules.length > 0 ? (
@@ -246,8 +312,15 @@ export default function LimitPage() {
               <Card key={rule.id} className="shadow-sm border border-gray-200 dark:border-gray-700">
                 <CardHeader className="pb-3">
                   <div className="flex justify-between items-start w-full">
-                    <div>
-                      <h3 className="font-semibold text-foreground">{rule.name}</h3>
+                    <div className="flex items-start gap-2 min-w-0">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 h-4 w-4 rounded border-default-300 text-danger focus:ring-danger"
+                        checked={selectedRuleIds.includes(rule.id)}
+                        onChange={() => toggleRuleSelection(rule.id)}
+                        aria-label={`选择限速规则 ${rule.name}`}
+                      />
+                      <h3 className="font-semibold text-foreground truncate">{rule.name}</h3>
                     </div>
                     <Chip 
                       color={rule.status === 1 ? "success" : "danger"} 
@@ -463,6 +536,45 @@ export default function LimitPage() {
                     color="danger" 
                     onPress={confirmDelete}
                     isLoading={deleteLoading}
+                  >
+                    确认删除
+                  </Button>
+                </ModalFooter>
+              </>
+            )}
+          </ModalContent>
+        </Modal>
+
+        <Modal
+          isOpen={batchDeleteModalOpen}
+          onOpenChange={setBatchDeleteModalOpen}
+          size="2xl"
+          scrollBehavior="outside"
+          backdrop="blur"
+          placement="center"
+        >
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader className="flex flex-col gap-1">
+                  <h2 className="text-lg font-bold text-danger">确认批量删除</h2>
+                </ModalHeader>
+                <ModalBody>
+                  <p className="text-default-600">
+                    确定要删除已选择的 <span className="font-semibold text-foreground">{selectedRuleIds.length}</span> 条限速规则吗？
+                  </p>
+                  <p className="text-small text-default-500 mt-2">
+                    此操作无法撤销，删除后对应规则将永久消失。
+                  </p>
+                </ModalBody>
+                <ModalFooter>
+                  <Button variant="light" onPress={onClose}>
+                    取消
+                  </Button>
+                  <Button
+                    color="danger"
+                    onPress={confirmBatchDelete}
+                    isLoading={batchDeleteLoading}
                   >
                     确认删除
                   </Button>

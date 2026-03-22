@@ -116,6 +116,9 @@ export default function TunnelPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
   const [tunnelToDelete, setTunnelToDelete] = useState<Tunnel | null>(null);
+  const [selectedTunnelIds, setSelectedTunnelIds] = useState<number[]>([]);
+  const [batchDeleteModalOpen, setBatchDeleteModalOpen] = useState(false);
+  const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
   const [currentDiagnosisTunnel, setCurrentDiagnosisTunnel] = useState<Tunnel | null>(null);
   const [diagnosisResult, setDiagnosisResult] = useState<DiagnosisResult | null>(null);
   
@@ -150,6 +153,8 @@ export default function TunnelPage() {
       
       if (tunnelsRes.code === 0) {
         setTunnels(tunnelsRes.data || []);
+        const latestTunnels: Tunnel[] = tunnelsRes.data || [];
+        setSelectedTunnelIds(prev => prev.filter(id => latestTunnels.some(tunnel => tunnel.id === id)));
       } else {
         toast.error(tunnelsRes.msg || '获取隧道列表失败');
       }
@@ -294,6 +299,54 @@ export default function TunnelPage() {
       toast.error('删除失败');
     } finally {
       setDeleteLoading(false);
+    }
+  };
+
+  const toggleTunnelSelection = (tunnelId: number) => {
+    setSelectedTunnelIds(prev => (
+      prev.includes(tunnelId)
+        ? prev.filter(id => id !== tunnelId)
+        : [...prev, tunnelId]
+    ));
+  };
+
+  const handleBatchDelete = () => {
+    if (selectedTunnelIds.length === 0) {
+      toast.error('请先选择要删除的隧道');
+      return;
+    }
+    setBatchDeleteModalOpen(true);
+  };
+
+  const confirmBatchDelete = async () => {
+    if (selectedTunnelIds.length === 0) return;
+
+    setBatchDeleteLoading(true);
+    try {
+      const results = await Promise.all(
+        selectedTunnelIds.map(async (id) => {
+          const res = await deleteTunnel(id);
+          return { id, code: res.code };
+        })
+      );
+      const failed = results.filter(item => item.code !== 0).length;
+      const successCount = results.length - failed;
+
+      if (successCount > 0) {
+        toast.success(`成功删除 ${successCount} 个隧道`);
+      }
+      if (failed > 0) {
+        toast.error(`有 ${failed} 个隧道删除失败`);
+      }
+
+      setBatchDeleteModalOpen(false);
+      setSelectedTunnelIds([]);
+      await loadData();
+    } catch (error) {
+      console.error('批量删除隧道失败:', error);
+      toast.error('批量删除失败');
+    } finally {
+      setBatchDeleteLoading(false);
     }
   };
 
@@ -528,6 +581,18 @@ export default function TunnelPage() {
         <div className="flex-1">
         </div>
 
+        <div className="flex items-center gap-3">
+        {selectedTunnelIds.length > 0 && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="danger"
+            onPress={handleBatchDelete}
+          >
+            删除({selectedTunnelIds.length})
+          </Button>
+        )}
+
         <Button
               size="sm"
               variant="flat"
@@ -537,6 +602,7 @@ export default function TunnelPage() {
             >
               新增
             </Button>
+        </div>
      
         </div>
 
@@ -550,7 +616,15 @@ export default function TunnelPage() {
                 <Card key={tunnel.id} className="shadow-sm border border-divider hover:shadow-md transition-shadow duration-200">
                   <CardHeader className="pb-2">
                     <div className="flex justify-between items-start w-full">
-                      <div className="flex-1 min-w-0">
+                      <div className="flex items-start gap-2 flex-1 min-w-0">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 h-4 w-4 rounded border-default-300 text-danger focus:ring-danger"
+                          checked={selectedTunnelIds.includes(tunnel.id)}
+                          onChange={() => toggleTunnelSelection(tunnel.id)}
+                          aria-label={`选择隧道 ${tunnel.name}`}
+                        />
+                        <div className="flex-1 min-w-0">
                         <h3 className="font-semibold text-foreground truncate text-sm">{tunnel.name}</h3>
                         <div className="flex items-center gap-1.5 mt-1">
                           <Chip 
@@ -562,6 +636,7 @@ export default function TunnelPage() {
                             {typeDisplay.text}
                           </Chip>
                          
+                        </div>
                         </div>
                       </div>
                     </div>
@@ -1279,6 +1354,45 @@ export default function TunnelPage() {
                     isLoading={deleteLoading}
                   >
                     {deleteLoading ? '删除中...' : '确认删除'}
+                  </Button>
+                </ModalFooter>
+              </>
+            )}
+          </ModalContent>
+        </Modal>
+
+        <Modal
+          isOpen={batchDeleteModalOpen}
+          onOpenChange={setBatchDeleteModalOpen}
+          size="2xl"
+          scrollBehavior="outside"
+          backdrop="blur"
+          placement="center"
+        >
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader className="flex flex-col gap-1">
+                  <h2 className="text-lg font-bold text-danger">确认批量删除</h2>
+                </ModalHeader>
+                <ModalBody>
+                  <p className="text-default-600">
+                    确定要删除已选择的 <span className="font-semibold text-foreground">{selectedTunnelIds.length}</span> 个隧道吗？
+                  </p>
+                  <p className="text-small text-default-500 mt-2">
+                    此操作无法撤销，删除后相关配置将永久消失。
+                  </p>
+                </ModalBody>
+                <ModalFooter>
+                  <Button variant="light" onPress={onClose}>
+                    取消
+                  </Button>
+                  <Button
+                    color="danger"
+                    onPress={confirmBatchDelete}
+                    isLoading={batchDeleteLoading}
+                  >
+                    确认删除
                   </Button>
                 </ModalFooter>
               </>
