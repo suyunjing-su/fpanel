@@ -14,6 +14,19 @@ export interface LoginResponse {
   requirePasswordChange?: boolean;
 }
 
+export interface BatchDeleteFailure {
+  id: number;
+  name: string;
+  reason: string;
+}
+
+export interface BatchDeleteResult {
+  totalCount: number;
+  successCount: number;
+  failureCount: number;
+  failures: BatchDeleteFailure[];
+}
+
 export const login = (data: LoginData) => Network.post<LoginResponse>("/user/login", data);
 
 // 用户CRUD操作 - 全部使用POST请求
@@ -21,6 +34,7 @@ export const createUser = (data: any) => Network.post("/user/create", data);
 export const getAllUsers = (pageData: any = {}) => Network.post("/user/list", pageData);
 export const updateUser = (data: any) => Network.post("/user/update", data);
 export const deleteUser = (id: number) => Network.post("/user/delete", { id });
+export const batchDeleteUsers = (ids: number[]) => Network.post<BatchDeleteResult>("/user/batch-delete", { ids });
 export const getUserPackageInfo = () => Network.post("/user/package");
 
 // 节点CRUD操作 - 全部使用POST请求
@@ -28,6 +42,7 @@ export const createNode = (data: any) => Network.post("/node/create", data);
 export const getNodeList = () => Network.post("/node/list");
 export const updateNode = (data: any) => Network.post("/node/update", data);
 export const deleteNode = (id: number) => Network.post("/node/delete", { id });
+export const batchDeleteNodes = (ids: number[]) => Network.post<BatchDeleteResult>("/node/batch-delete", { ids });
 export const getNodeInstallCommand = (id: number) => Network.post("/node/install", { id });
 export const checkNodeStatus = (nodeId?: number) => {
   const params = nodeId ? { nodeId } : {};
@@ -40,6 +55,7 @@ export const getTunnelList = () => Network.post("/tunnel/list");
 export const getTunnelById = (id: number) => Network.post("/tunnel/get", { id });
 export const updateTunnel = (data: any) => Network.post("/tunnel/update", data);
 export const deleteTunnel = (id: number) => Network.post("/tunnel/delete", { id });
+export const batchDeleteTunnels = (ids: number[]) => Network.post<BatchDeleteResult>("/tunnel/batch-delete", { ids });
 export const diagnoseTunnel = (tunnelId: number) => Network.post("/tunnel/diagnose", { tunnelId });
 
 // 用户隧道权限管理操作 - 全部使用POST请求
@@ -54,6 +70,7 @@ export const createForward = (data: any) => Network.post("/forward/create", data
 export const getForwardList = () => Network.post("/forward/list");
 export const updateForward = (data: any) => Network.post("/forward/update", data);
 export const deleteForward = (id: number) => Network.post("/forward/delete", { id });
+export const batchDeleteForwards = (ids: number[]) => Network.post<BatchDeleteResult>("/forward/batch-delete", { ids });
 export const forceDeleteForward = (id: number) => Network.post("/forward/force-delete", { id });
 
 // 转发服务控制操作 - 通过Java后端接口
@@ -71,6 +88,7 @@ export const createSpeedLimit = (data: any) => Network.post("/speed-limit/create
 export const getSpeedLimitList = () => Network.post("/speed-limit/list");
 export const updateSpeedLimit = (data: any) => Network.post("/speed-limit/update", data);
 export const deleteSpeedLimit = (id: number) => Network.post("/speed-limit/delete", { id });
+export const batchDeleteSpeedLimits = (ids: number[]) => Network.post<BatchDeleteResult>("/speed-limit/batch-delete", { ids });
 
 // 修改密码接口
 export const updatePassword = (data: any) => Network.post("/user/updatePassword", data);
