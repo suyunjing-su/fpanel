@@ -535,59 +535,62 @@ public class FlowController extends BaseController {
                 continue;
             }
 
-            String chainName = "chains_" + chainTunnel.getTunnelId();
-            if (chainNames.contains(chainName)) {
-                continue;
-            }
-
             List<ChainTunnel> nextHops = getNextHops(chainTunnel, chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", chainTunnel.getTunnelId())));
             if (nextHops.isEmpty()) {
                 continue;
             }
 
-            JSONObject chain = new JSONObject();
-            chain.put("name", chainName);
-
-            JSONObject hop = new JSONObject();
-            hop.put("name", "hop_" + chainTunnel.getTunnelId());
-            if (StringUtils.hasText(node.getInterfaceName())) {
-                hop.put("interface", node.getInterfaceName());
-            }
-
-            JSONObject selector = new JSONObject();
-            selector.put("strategy", nextHops.getFirst().getStrategy());
-            selector.put("maxFails", 1);
-            selector.put("failTimeout", 600000000000L);
-            hop.put("selector", selector);
-
-            JSONArray nodes = new JSONArray();
-            for (ChainTunnel nextHop : nextHops) {
-                Node nextNode = nodeMap.get(nextHop.getNodeId());
-                if (nextNode == null || nextHop.getPort() == null) {
+            for (String trafficProtocol : resolveTrafficProtocols(nextHops)) {
+                String chainName = GostUtil.buildChainName(chainTunnel.getTunnelId(), nextHops.getFirst().getProtocol(), trafficProtocol);
+                if (chainNames.contains(chainName)) {
                     continue;
                 }
-                JSONObject nodeItem = new JSONObject();
-                nodeItem.put("name", "node_" + (nextHop.getInx() == null ? 0 : nextHop.getInx()));
-                nodeItem.put("addr", GostUtil.processServerAddress(nextNode.getServerIp() + ":" + nextHop.getPort()));
 
-                JSONObject connector = new JSONObject();
-                connector.put("type", "relay");
-                nodeItem.put("connector", connector);
+                JSONObject chain = new JSONObject();
+                chain.put("name", chainName);
 
-                JSONObject dialer = GostUtil.createChainDialer(nextHop.getProtocol());
-                nodeItem.put("dialer", dialer);
-                nodes.add(nodeItem);
+                JSONObject hop = new JSONObject();
+                hop.put("name", "hop_" + chainTunnel.getTunnelId());
+                if (StringUtils.hasText(node.getInterfaceName())) {
+                    hop.put("interface", node.getInterfaceName());
+                }
+
+                JSONObject selector = new JSONObject();
+                selector.put("strategy", nextHops.getFirst().getStrategy());
+                selector.put("maxFails", 1);
+                selector.put("failTimeout", 600000000000L);
+                hop.put("selector", selector);
+
+                JSONArray nodes = new JSONArray();
+                for (ChainTunnel nextHop : nextHops) {
+                    Node nextNode = nodeMap.get(nextHop.getNodeId());
+                    if (nextNode == null || nextHop.getPort() == null) {
+                        continue;
+                    }
+                    JSONObject nodeItem = new JSONObject();
+                    nodeItem.put("name", "node_" + (nextHop.getInx() == null ? 0 : nextHop.getInx()));
+                    Integer listenPort = GostUtil.resolveChainListenPort(nextHop.getPort(), nextHop.getProtocol(), trafficProtocol);
+                    nodeItem.put("addr", GostUtil.processServerAddress(nextNode.getServerIp() + ":" + listenPort));
+
+                    JSONObject connector = new JSONObject();
+                    connector.put("type", "relay");
+                    nodeItem.put("connector", connector);
+
+                    JSONObject dialer = GostUtil.createChainDialer(nextHop.getProtocol(), trafficProtocol);
+                    nodeItem.put("dialer", dialer);
+                    nodes.add(nodeItem);
+                }
+
+                if (nodes.isEmpty()) {
+                    continue;
+                }
+                hop.put("nodes", nodes);
+                JSONArray hops = new JSONArray();
+                hops.add(hop);
+                chain.put("hops", hops);
+                chains.add(chain);
+                chainNames.add(chainName);
             }
-
-            if (nodes.isEmpty()) {
-                continue;
-            }
-            hop.put("nodes", nodes);
-            JSONArray hops = new JSONArray();
-            hops.add(hop);
-            chain.put("hops", hops);
-            chains.add(chain);
-            chainNames.add(chainName);
         }
 
         Set<String> serviceNames = new HashSet<>();
@@ -603,38 +606,42 @@ public class FlowController extends BaseController {
                 continue;
             }
 
-            String serviceName = GostUtil.buildChainServiceName(
-                    chainTunnel.getTunnelId(),
-                    chainTunnel.getProtocol()
-            );
-            if (serviceNames.contains(serviceName)) {
-                continue;
+            for (String trafficProtocol : resolveTrafficProtocols(List.of(chainTunnel))) {
+                String serviceName = GostUtil.buildChainServiceName(
+                        chainTunnel.getTunnelId(),
+                        chainTunnel.getProtocol(),
+                        trafficProtocol
+                );
+                if (serviceNames.contains(serviceName)) {
+                    continue;
+                }
+
+                JSONObject service = new JSONObject();
+                service.put("name", serviceName);
+                String normalizedProtocol = GostUtil.normalizeChainProtocol(chainTunnel.getProtocol());
+                String transportType = GostUtil.resolveChainTransportType(normalizedProtocol, trafficProtocol);
+                String listenAddr = GostUtil.isUdpTransport(transportType) ? node.getUdpListenAddr() : node.getTcpListenAddr();
+                Integer listenPort = GostUtil.resolveChainListenPort(chainTunnel.getPort(), normalizedProtocol, trafficProtocol);
+                service.put("addr", listenAddr + ":" + listenPort);
+
+                if (Objects.equals(chainTunnel.getChainType(), 3) && StringUtils.hasText(node.getInterfaceName())) {
+                    JSONObject metadata = new JSONObject();
+                    metadata.put("interface", node.getInterfaceName());
+                    service.put("metadata", metadata);
+                }
+
+                JSONObject handler = new JSONObject();
+                handler.put("type", "relay");
+                if (Objects.equals(chainTunnel.getChainType(), 2)) {
+                    handler.put("chain", GostUtil.buildChainName(chainTunnel.getTunnelId(), chainTunnel.getProtocol(), trafficProtocol));
+                }
+                service.put("handler", handler);
+
+                JSONObject listener = GostUtil.createChainListener(chainTunnel.getProtocol(), trafficProtocol);
+                service.put("listener", listener);
+                services.add(service);
+                serviceNames.add(serviceName);
             }
-
-            JSONObject service = new JSONObject();
-            service.put("name", serviceName);
-            String normalizedProtocol = GostUtil.normalizeChainProtocol(chainTunnel.getProtocol());
-            String transportType = GostUtil.resolveChainTransportType(normalizedProtocol);
-            String listenAddr = GostUtil.isUdpTransport(transportType) ? node.getUdpListenAddr() : node.getTcpListenAddr();
-            service.put("addr", listenAddr + ":" + chainTunnel.getPort());
-
-            if (Objects.equals(chainTunnel.getChainType(), 3) && StringUtils.hasText(node.getInterfaceName())) {
-                JSONObject metadata = new JSONObject();
-                metadata.put("interface", node.getInterfaceName());
-                service.put("metadata", metadata);
-            }
-
-            JSONObject handler = new JSONObject();
-            handler.put("type", "relay");
-            if (Objects.equals(chainTunnel.getChainType(), 2)) {
-                handler.put("chain", "chains_" + chainTunnel.getTunnelId());
-            }
-            service.put("handler", handler);
-
-            JSONObject listener = GostUtil.createChainListener(chainTunnel.getProtocol());
-            service.put("listener", listener);
-            services.add(service);
-            serviceNames.add(serviceName);
         }
 
         Set<Long> limiterIds = new LinkedHashSet<>();
@@ -736,7 +743,7 @@ public class FlowController extends BaseController {
         JSONObject handler = new JSONObject();
         handler.put("type", protocol);
         if (tunnel.getType() == 2) {
-            handler.put("chain", "chains_" + forward.getTunnelId());
+            handler.put("chain", resolveForwardEntryChainName(forward.getTunnelId().longValue(), protocol));
         }
         service.put("handler", handler);
 
@@ -774,6 +781,32 @@ public class FlowController extends BaseController {
         service.put("forwarder", forwarder);
 
         return service;
+    }
+
+    private List<String> resolveTrafficProtocols(List<ChainTunnel> nextHops) {
+        if (nextHops == null || nextHops.isEmpty()) {
+            return List.of(GostUtil.PROTOCOL_TCP);
+        }
+        String protocol = nextHops.getFirst().getProtocol();
+        if (GostUtil.isHybridUdpProtocol(protocol)) {
+            return List.of(GostUtil.PROTOCOL_TCP, GostUtil.PROTOCOL_UDP);
+        }
+        return List.of(GostUtil.PROTOCOL_TCP);
+    }
+
+    private String resolveForwardEntryChainName(Long tunnelId, String trafficProtocol) {
+        List<ChainTunnel> all = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnelId));
+        List<ChainTunnel> firstHop = all.stream()
+                .filter(item -> Objects.equals(item.getChainType(), 2) && Objects.equals(item.getInx(), 1))
+                .toList();
+        if (firstHop.isEmpty()) {
+            firstHop = all.stream().filter(item -> Objects.equals(item.getChainType(), 3)).toList();
+        }
+
+        if (firstHop.isEmpty()) {
+            return "chains_" + tunnelId;
+        }
+        return GostUtil.buildChainName(tunnelId, firstHop.getFirst().getProtocol(), trafficProtocol);
     }
 
     private String convertBitsToMBps(Integer speedInBits) {

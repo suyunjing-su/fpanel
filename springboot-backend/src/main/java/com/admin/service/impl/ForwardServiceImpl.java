@@ -168,6 +168,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         forward.setCreatedTime(System.currentTimeMillis());
         forward.setUpdatedTime(System.currentTimeMillis());
         List<JSONObject> success = new ArrayList<>();
+        String[] entryChainNames = resolveEntryChainNames(tunnel.getId());
         List<ChainTunnel> chainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()).eq("chain_type", 1));
         chainTunnels = get_port(chainTunnels, forwardDto.getInPort(), 0L);
         this.save(forward);
@@ -186,7 +187,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             if (node == null) {
                 return R.err("部分节点不存在");
             }
-            GostDto gostDto = GostUtil.AddAndUpdateService(serviceName, limiter, node, forward, forwardPort, tunnel, "AddService");
+            GostDto gostDto = GostUtil.AddAndUpdateService(serviceName, limiter, node, forward, forwardPort, tunnel, "AddService", entryChainNames[0], entryChainNames[1]);
             if (Objects.equals(gostDto.getMsg(), "OK")) {
                 JSONObject data = new JSONObject();
                 data.put("node_id", node.getId());
@@ -251,6 +252,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
 
         List<ChainTunnel> chainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()).eq("chain_type", 1));
+    String[] entryChainNames = resolveEntryChainNames(tunnel.getId());
 
         // 自己占用的应该不算
         chainTunnels = get_port(chainTunnels, forwardUpdateDto.getInPort(), existForward.getId());
@@ -270,7 +272,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             }
             forwardPort.setPort(chainTunnel.getPort());
             forwardPortService.updateById(forwardPort);
-            GostDto gostDto = GostUtil.AddAndUpdateService(serviceName, limiter, node, existForward, forwardPort, tunnel, "UpdateService");
+            GostDto gostDto = GostUtil.AddAndUpdateService(serviceName, limiter, node, existForward, forwardPort, tunnel, "UpdateService", entryChainNames[0], entryChainNames[1]);
             if (!Objects.equals(gostDto.getMsg(), "OK")) return R.err(gostDto.getMsg());
         }
 
@@ -942,6 +944,27 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     private String buildServiceName(Long forwardId, Integer userId, UserTunnel userTunnel) {
         int userTunnelId = (userTunnel != null) ? userTunnel.getId() : 0;
         return forwardId + "_" + userId + "_" + userTunnelId;
+    }
+
+    private String[] resolveEntryChainNames(Long tunnelId) {
+        String defaultChain = "chains_" + tunnelId;
+        List<ChainTunnel> all = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnelId));
+
+        List<ChainTunnel> firstHop = all.stream()
+                .filter(item -> Objects.equals(item.getChainType(), 2) && Objects.equals(item.getInx(), 1))
+                .toList();
+        if (firstHop.isEmpty()) {
+            firstHop = all.stream().filter(item -> Objects.equals(item.getChainType(), 3)).toList();
+        }
+
+        if (firstHop.isEmpty()) {
+            return new String[]{defaultChain, defaultChain};
+        }
+
+        String protocol = firstHop.getFirst().getProtocol();
+        String tcpChain = GostUtil.buildChainName(tunnelId, protocol, GostUtil.PROTOCOL_TCP);
+        String udpChain = GostUtil.buildChainName(tunnelId, protocol, GostUtil.PROTOCOL_UDP);
+        return new String[]{tcpChain, udpChain};
     }
 
 

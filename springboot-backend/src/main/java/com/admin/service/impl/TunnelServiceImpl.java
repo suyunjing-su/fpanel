@@ -162,24 +162,44 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
             for (ChainTunnel in_node : tunnelDto.getInNodeId()) {
                 // 创建Chain， 指向chainNode的第一跳。如果chainNode为空就是指向出口
                 if (tunnelDto.getChainNodes().isEmpty()) { // 指向出口
-                    GostDto gostDto = GostUtil.AddChains(in_node.getNodeId(), tunnelDto.getOutNodeId(), nodes);
-                    isError(gostDto);
+                    List<String> trafficProtocols = resolveTrafficProtocols(tunnelDto.getOutNodeId());
+                    for (String trafficProtocol : trafficProtocols) {
+                        GostDto gostDto = GostUtil.AddChains(in_node.getNodeId(), tunnelDto.getOutNodeId(), nodes, trafficProtocol);
+                        if (Objects.equals(gostDto.getMsg(), "OK")) {
+                            JSONObject data = new JSONObject();
+                            data.put("node_id", in_node.getNodeId());
+                            data.put("name", GostUtil.buildChainName(tunnel.getId(), tunnelDto.getOutNodeId().getFirst().getProtocol(), trafficProtocol));
+                            chain_success.add(data);
+                        } else {
+                            this.removeById(tunnel.getId());
+                            chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()));
+                            for (JSONObject chainSuccess : chain_success) {
+                                GostDto deleteChains = GostUtil.DeleteChains(chainSuccess.getLong("node_id"), chainSuccess.getString("name"));
+                                System.out.println(deleteChains);
+                            }
+                            return R.err(gostDto.getMsg());
+                        }
+                    }
 
                 } else {
-                    GostDto gostDto = GostUtil.AddChains(in_node.getNodeId(), tunnelDto.getChainNodes().getFirst(), nodes);// 指向第一跳
-                    if (Objects.equals(gostDto.getMsg(), "OK")){
-                        JSONObject data = new JSONObject();
-                        data.put("node_id", in_node.getNodeId());
-                        data.put("name", "chains_" + tunnel.getId());
-                        chain_success.add(data);
-                    }else {
-                        this.removeById(tunnel.getId());
-                        chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()));
-                        for (JSONObject chainSuccess : chain_success) {
-                            GostDto deleteChains = GostUtil.DeleteChains(chainSuccess.getLong("node_id"), chainSuccess.getString("name"));
-                            System.out.println(deleteChains);
+                    List<ChainTunnel> firstHop = tunnelDto.getChainNodes().getFirst();
+                    List<String> trafficProtocols = resolveTrafficProtocols(firstHop);
+                    for (String trafficProtocol : trafficProtocols) {
+                        GostDto gostDto = GostUtil.AddChains(in_node.getNodeId(), firstHop, nodes, trafficProtocol);// 指向第一跳
+                        if (Objects.equals(gostDto.getMsg(), "OK")){
+                            JSONObject data = new JSONObject();
+                            data.put("node_id", in_node.getNodeId());
+                            data.put("name", GostUtil.buildChainName(tunnel.getId(), firstHop.getFirst().getProtocol(), trafficProtocol));
+                            chain_success.add(data);
+                        }else {
+                            this.removeById(tunnel.getId());
+                            chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()));
+                            for (JSONObject chainSuccess : chain_success) {
+                                GostDto deleteChains = GostUtil.DeleteChains(chainSuccess.getLong("node_id"), chainSuccess.getString("name"));
+                                System.out.println(deleteChains);
+                            }
+                            return R.err(gostDto.getMsg());
                         }
-                        return R.err(gostDto.getMsg());
                     }
                 }
             }
@@ -190,44 +210,79 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 for (ChainTunnel chainTunnel : chainTunnels1) {
                     int inx = i+1;
                     if (inx >= tunnelDto.getChainNodes().size()) { // 指向出口
-                        GostDto gostDto = GostUtil.AddChains(chainTunnel.getNodeId(), tunnelDto.getOutNodeId(), nodes);
-                        if (Objects.equals(gostDto.getMsg(), "OK")){
-                            JSONObject data = new JSONObject();
-                            data.put("node_id", chainTunnel.getNodeId());
-                            data.put("name", "chains_" + tunnel.getId());
-                            chain_success.add(data);
-                        }else {
-                            this.removeById(tunnel.getId());
-                            chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()));
-                            for (JSONObject chainSuccess : chain_success) {
-                                GostDto deleteChains = GostUtil.DeleteChains(chainSuccess.getLong("node_id"), chainSuccess.getString("name"));
-                                System.out.println(deleteChains);
+                        List<String> trafficProtocols = resolveTrafficProtocols(tunnelDto.getOutNodeId());
+                        for (String trafficProtocol : trafficProtocols) {
+                            GostDto gostDto = GostUtil.AddChains(chainTunnel.getNodeId(), tunnelDto.getOutNodeId(), nodes, trafficProtocol);
+                            if (Objects.equals(gostDto.getMsg(), "OK")){
+                                JSONObject data = new JSONObject();
+                                data.put("node_id", chainTunnel.getNodeId());
+                                data.put("name", GostUtil.buildChainName(tunnel.getId(), tunnelDto.getOutNodeId().getFirst().getProtocol(), trafficProtocol));
+                                chain_success.add(data);
+                            }else {
+                                this.removeById(tunnel.getId());
+                                chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()));
+                                for (JSONObject chainSuccess : chain_success) {
+                                    GostDto deleteChains = GostUtil.DeleteChains(chainSuccess.getLong("node_id"), chainSuccess.getString("name"));
+                                    System.out.println(deleteChains);
+                                }
+                                return R.err(gostDto.getMsg());
                             }
-                            return R.err(gostDto.getMsg());
                         }
                     } else {
-                        GostDto gostDto = GostUtil.AddChains(chainTunnel.getNodeId(), tunnelDto.getChainNodes().get(inx), nodes);
+                        List<ChainTunnel> nextHop = tunnelDto.getChainNodes().get(inx);
+                        List<String> trafficProtocols = resolveTrafficProtocols(nextHop);
+                        for (String trafficProtocol : trafficProtocols) {
+                            GostDto gostDto = GostUtil.AddChains(chainTunnel.getNodeId(), nextHop, nodes, trafficProtocol);
+                            if (Objects.equals(gostDto.getMsg(), "OK")){
+                                JSONObject data = new JSONObject();
+                                data.put("node_id", chainTunnel.getNodeId());
+                                data.put("name", GostUtil.buildChainName(tunnel.getId(), nextHop.getFirst().getProtocol(), trafficProtocol));
+                                chain_success.add(data);
+                            }else {
+                                this.removeById(tunnel.getId());
+                                chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()));
+                                for (JSONObject chainSuccess : chain_success) {
+                                    GostDto deleteChains = GostUtil.DeleteChains(chainSuccess.getLong("node_id"), chainSuccess.getString("name"));
+                                    System.out.println(deleteChains);
+                                }
+                                return R.err(gostDto.getMsg());
+                            }
+                        }
+                    }
+
+                    List<String> serviceTrafficProtocols = resolveTrafficProtocols(List.of(chainTunnel));
+                    for (String trafficProtocol : serviceTrafficProtocols) {
+                        GostDto gostDto = GostUtil.AddChainService(chainTunnel.getNodeId(), chainTunnel, nodes, trafficProtocol);
                         if (Objects.equals(gostDto.getMsg(), "OK")){
                             JSONObject data = new JSONObject();
                             data.put("node_id", chainTunnel.getNodeId());
-                            data.put("name", "chains_" + tunnel.getId());
-                            chain_success.add(data);
+                            data.put("name", GostUtil.buildChainServiceName(tunnel.getId(), chainTunnel.getProtocol(), trafficProtocol));
+                            service_success.add(data);
                         }else {
                             this.removeById(tunnel.getId());
                             chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()));
-                            for (JSONObject chainSuccess : chain_success) {
-                                GostDto deleteChains = GostUtil.DeleteChains(chainSuccess.getLong("node_id"), chainSuccess.getString("name"));
-                                System.out.println(deleteChains);
+                            for (JSONObject serviceSuccess : service_success) {
+                                JSONArray jsonArray = new JSONArray();
+                                jsonArray.add(serviceSuccess.getString("name"));
+                                GostDto deleteService = GostUtil.DeleteService(serviceSuccess.getLong("node_id"), jsonArray);
+                                System.out.println(deleteService);
                             }
                             return R.err(gostDto.getMsg());
                         }
                     }
+                }
 
-                    GostDto gostDto = GostUtil.AddChainService(chainTunnel.getNodeId(), chainTunnel, nodes);
+            }
+
+
+            for (ChainTunnel out_node : tunnelDto.getOutNodeId()) {
+                List<String> trafficProtocols = resolveTrafficProtocols(List.of(out_node));
+                for (String trafficProtocol : trafficProtocols) {
+                    GostDto gostDto = GostUtil.AddChainService(out_node.getNodeId(), out_node, nodes, trafficProtocol);
                     if (Objects.equals(gostDto.getMsg(), "OK")){
                         JSONObject data = new JSONObject();
-                        data.put("node_id", chainTunnel.getNodeId());
-                        data.put("name", GostUtil.buildChainServiceName(tunnel.getId(), chainTunnel.getProtocol()));
+                        data.put("node_id", out_node.getNodeId());
+                        data.put("name", GostUtil.buildChainServiceName(tunnel.getId(), out_node.getProtocol(), trafficProtocol));
                         service_success.add(data);
                     }else {
                         this.removeById(tunnel.getId());
@@ -240,28 +295,6 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                         }
                         return R.err(gostDto.getMsg());
                     }
-                }
-
-            }
-
-
-            for (ChainTunnel out_node : tunnelDto.getOutNodeId()) {
-                GostDto gostDto = GostUtil.AddChainService(out_node.getNodeId(), out_node, nodes);
-                if (Objects.equals(gostDto.getMsg(), "OK")){
-                    JSONObject data = new JSONObject();
-                    data.put("node_id", out_node.getNodeId());
-                    data.put("name", GostUtil.buildChainServiceName(tunnel.getId(), out_node.getProtocol()));
-                    service_success.add(data);
-                }else {
-                    this.removeById(tunnel.getId());
-                    chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()));
-                    for (JSONObject serviceSuccess : service_success) {
-                        JSONArray jsonArray = new JSONArray();
-                        jsonArray.add(serviceSuccess.getString("name"));
-                        GostDto deleteService = GostUtil.DeleteService(serviceSuccess.getLong("node_id"), jsonArray);
-                        System.out.println(deleteService);
-                    }
-                    return R.err(gostDto.getMsg());
                 }
             }
 
@@ -386,21 +419,40 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         for (ChainTunnel chainTunnel : chainTunnels) {
             if (chainTunnel.getChainType() == 1){ // 入口
                 GostUtil.DeleteChains(chainTunnel.getNodeId(), "chains_" + chainTunnel.getTunnelId());
+                GostUtil.DeleteChains(chainTunnel.getNodeId(), "chains_" + chainTunnel.getTunnelId() + "_tcp");
+                GostUtil.DeleteChains(chainTunnel.getNodeId(), "chains_" + chainTunnel.getTunnelId() + "_udp");
             }
             else if (chainTunnel.getChainType() == 2){ // 链
                 GostUtil.DeleteChains(chainTunnel.getNodeId(), "chains_" + chainTunnel.getTunnelId());
+                GostUtil.DeleteChains(chainTunnel.getNodeId(), "chains_" + chainTunnel.getTunnelId() + "_tcp");
+                GostUtil.DeleteChains(chainTunnel.getNodeId(), "chains_" + chainTunnel.getTunnelId() + "_udp");
                 JSONArray services = new JSONArray();
-                services.add(GostUtil.buildChainServiceName(chainTunnel.getTunnelId(), chainTunnel.getProtocol()));
+                for (String trafficProtocol : resolveTrafficProtocols(List.of(chainTunnel))) {
+                    services.add(GostUtil.buildChainServiceName(chainTunnel.getTunnelId(), chainTunnel.getProtocol(), trafficProtocol));
+                }
                 GostUtil.DeleteService(chainTunnel.getNodeId(), services);
             }
             else { // 出口
                 JSONArray services = new JSONArray();
-                services.add(GostUtil.buildChainServiceName(chainTunnel.getTunnelId(), chainTunnel.getProtocol()));
+                for (String trafficProtocol : resolveTrafficProtocols(List.of(chainTunnel))) {
+                    services.add(GostUtil.buildChainServiceName(chainTunnel.getTunnelId(), chainTunnel.getProtocol(), trafficProtocol));
+                }
                 GostUtil.DeleteService(chainTunnel.getNodeId(), services);
             }
         }
         chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", id));
         return R.ok();
+    }
+
+    private List<String> resolveTrafficProtocols(List<ChainTunnel> nextHops) {
+        if (nextHops == null || nextHops.isEmpty()) {
+            return List.of(GostUtil.PROTOCOL_TCP);
+        }
+        String protocol = nextHops.getFirst().getProtocol();
+        if (GostUtil.isHybridUdpProtocol(protocol)) {
+            return List.of(GostUtil.PROTOCOL_TCP, GostUtil.PROTOCOL_UDP);
+        }
+        return List.of(GostUtil.PROTOCOL_TCP);
     }
 
     private String normalizeAndValidateChainProtocol(ChainTunnel chainTunnel) {

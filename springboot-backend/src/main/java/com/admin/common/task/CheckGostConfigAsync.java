@@ -97,8 +97,8 @@ public class CheckGostConfigAsync {
         if (configItems == null) return;
         for (ConfigItem chain : configItems) {
             safeExecute(() -> {
-                List<String>  serviceIds = parseServiceName(chain.getName());
-                Tunnel tunnel = tunnelService.getById(serviceIds.getLast());
+                Long tunnelId = GostUtil.parseTunnelIdFromChainName(chain.getName());
+                Tunnel tunnel = tunnelId == null ? null : tunnelService.getById(tunnelId);
                 if (tunnel == null) {
                     GostUtil.DeleteChains(node.getId(), chain.getName());
                     log.info("删除孤立的链: {} (节点: {})", chain.getName(), node.getId());

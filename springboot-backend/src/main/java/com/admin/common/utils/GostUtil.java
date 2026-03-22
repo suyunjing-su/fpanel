@@ -48,9 +48,13 @@ public class GostUtil {
     }
 
     public static GostDto AddChains(Long node_id, List<ChainTunnel> chainTunnels, Map<Long, Node> node_s) {
+        return AddChains(node_id, chainTunnels, node_s, PROTOCOL_TCP);
+    }
+
+    public static GostDto AddChains(Long node_id, List<ChainTunnel> chainTunnels, Map<Long, Node> node_s, String trafficProtocol) {
         JSONArray nodes = new JSONArray();
         for (ChainTunnel chainTunnel : chainTunnels) {
-            JSONObject dialer = createChainDialer(chainTunnel.getProtocol());
+            JSONObject dialer = createChainDialer(chainTunnel.getProtocol(), trafficProtocol);
 
             JSONObject connector = new JSONObject();
             connector.put("type", "relay");
@@ -58,7 +62,8 @@ public class GostUtil {
             Node node_info = node_s.get(chainTunnel.getNodeId());
             JSONObject node = new JSONObject();
             node.put("name", "node_" + chainTunnel.getInx());
-            node.put("addr", processServerAddress(node_info.getServerIp() + ":" + chainTunnel.getPort()));
+            Integer listenPort = resolveChainListenPort(chainTunnel.getPort(), chainTunnel.getProtocol(), trafficProtocol);
+            node.put("addr", processServerAddress(node_info.getServerIp() + ":" + listenPort));
             node.put("connector", connector);
             node.put("dialer", dialer);
 
@@ -88,7 +93,7 @@ public class GostUtil {
         hops.add(hop);
 
         JSONObject data = new JSONObject();
-        data.put("name", "chains_" + chainTunnels.getFirst().getTunnelId());
+        data.put("name", buildChainName(chainTunnels.getFirst().getTunnelId(), chainTunnels.getFirst().getProtocol(), trafficProtocol));
         data.put("hops", hops);
 
         GostDto gostDto = WebSocketServer.send_msg(node_id, data, "AddChains");
@@ -109,15 +114,20 @@ public class GostUtil {
     }
 
     public static GostDto AddChainService(Long node_id, ChainTunnel chainTunnel, Map<Long, Node> node_s) {
+        return AddChainService(node_id, chainTunnel, node_s, PROTOCOL_TCP);
+    }
+
+    public static GostDto AddChainService(Long node_id, ChainTunnel chainTunnel, Map<Long, Node> node_s, String trafficProtocol) {
         JSONArray services = new JSONArray();
         Node node_info = node_s.get(chainTunnel.getNodeId());
         String normalizedProtocol = normalizeChainProtocol(chainTunnel.getProtocol());
-        String transportType = resolveChainTransportType(normalizedProtocol);
+        String transportType = resolveChainTransportType(normalizedProtocol, trafficProtocol);
 
         JSONObject service_item = new JSONObject();
-        service_item.put("name", buildChainServiceName(chainTunnel.getTunnelId(), normalizedProtocol));
+        service_item.put("name", buildChainServiceName(chainTunnel.getTunnelId(), normalizedProtocol, trafficProtocol));
         String listenAddr = isUdpTransport(transportType) ? node_info.getUdpListenAddr() : node_info.getTcpListenAddr();
-        service_item.put("addr", listenAddr + ":" + chainTunnel.getPort());
+        Integer listenPort = resolveChainListenPort(chainTunnel.getPort(), normalizedProtocol, trafficProtocol);
+        service_item.put("addr", listenAddr + ":" + listenPort);
         
         // 只为出口节点(chainType=3)设置 interface
         if (chainTunnel.getChainType() == 3 && StringUtils.isNotBlank(node_s.get(node_id).getInterfaceName())) {
@@ -129,11 +139,11 @@ public class GostUtil {
         JSONObject handler = new JSONObject();
         handler.put("type", "relay");
         if (chainTunnel.getChainType() == 2){
-            handler.put("chain","chains_" + chainTunnel.getTunnelId());
+            handler.put("chain", buildChainName(chainTunnel.getTunnelId(), normalizedProtocol, trafficProtocol));
         }
         service_item.put("handler", handler);
 
-        JSONObject listener = createChainListener(chainTunnel.getProtocol());
+        JSONObject listener = createChainListener(chainTunnel.getProtocol(), trafficProtocol);
         service_item.put("listener", listener);
 
         services.add(service_item);
@@ -146,6 +156,10 @@ public class GostUtil {
     }
 
     public static GostDto AddAndUpdateService(String name, Integer limiter, Node node, Forward forward, ForwardPort forwardPort, Tunnel tunnel, String meth) {
+        return AddAndUpdateService(name, limiter, node, forward, forwardPort, tunnel, meth, null, null);
+    }
+
+    public static GostDto AddAndUpdateService(String name, Integer limiter, Node node, Forward forward, ForwardPort forwardPort, Tunnel tunnel, String meth, String tcpChainName, String udpChainName) {
         JSONArray services = new JSONArray();
         String[] protocols = {"tcp", "udp"};
         for (String protocol : protocols) {
@@ -173,7 +187,11 @@ public class GostUtil {
             JSONObject handler = new JSONObject();
             handler.put("type", protocol);
             if (tunnel.getType() == 2){
-                handler.put("chain", "chains_" + forward.getTunnelId());
+                String chainName = Objects.equals(protocol, PROTOCOL_UDP) ? udpChainName : tcpChainName;
+                if (StrUtil.isBlank(chainName)) {
+                    chainName = "chains_" + forward.getTunnelId();
+                }
+                handler.put("chain", chainName);
             }
             service.put("handler", handler);
 
@@ -253,18 +271,64 @@ public class GostUtil {
     }
 
     public static String resolveChainTransportType(String protocol) {
+        return resolveChainTransportType(protocol, PROTOCOL_TCP);
+    }
+
+    public static String resolveChainTransportType(String protocol, String trafficProtocol) {
         String normalized = normalizeChainProtocol(protocol);
+        String traffic = StrUtil.blankToDefault(trafficProtocol, PROTOCOL_TCP).trim().toLowerCase();
+
+        if (isHybridUdpProtocol(normalized)) {
+            if (Objects.equals(traffic, PROTOCOL_UDP)) {
+                return PROTOCOL_UDP;
+            }
+            if (Objects.equals(normalized, PROTOCOL_UDP_QUIC)) {
+                return "quic";
+            }
+            return "kcp";
+        }
+
         return switch (normalized) {
-            case PROTOCOL_UDP_QUIC -> "quic";
-            case PROTOCOL_UDP_KCP -> "kcp";
             case PROTOCOL_MPTCP -> "mtcp";
             default -> normalized;
         };
     }
 
     public static String buildChainServiceName(Long tunnelId, String protocol) {
+        return buildChainServiceName(tunnelId, protocol, PROTOCOL_TCP);
+    }
+
+    public static String buildChainServiceName(Long tunnelId, String protocol, String trafficProtocol) {
         String normalized = normalizeChainProtocol(protocol).replace('+', '_');
+        if (isHybridUdpProtocol(protocol)) {
+            String traffic = Objects.equals(PROTOCOL_UDP, StrUtil.blankToDefault(trafficProtocol, PROTOCOL_TCP).trim().toLowerCase()) ? PROTOCOL_UDP : PROTOCOL_TCP;
+            return tunnelId + "_relay_" + normalized + "_" + traffic;
+        }
         return tunnelId + "_relay_" + normalized;
+    }
+
+    public static String buildChainName(Long tunnelId, String protocol, String trafficProtocol) {
+        if (isHybridUdpProtocol(protocol)) {
+            String traffic = Objects.equals(PROTOCOL_UDP, StrUtil.blankToDefault(trafficProtocol, PROTOCOL_TCP).trim().toLowerCase()) ? PROTOCOL_UDP : PROTOCOL_TCP;
+            return "chains_" + tunnelId + "_" + traffic;
+        }
+        return "chains_" + tunnelId;
+    }
+
+    public static Long parseTunnelIdFromChainName(String chainName) {
+        if (StrUtil.isBlank(chainName) || !chainName.startsWith("chains_")) {
+            return null;
+        }
+        String body = chainName.substring("chains_".length());
+        if (body.isEmpty()) {
+            return null;
+        }
+        String[] parts = body.split("_");
+        try {
+            return Long.parseLong(parts[0]);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     public static Long parseTunnelIdFromChainServiceName(String serviceName) {
@@ -283,8 +347,12 @@ public class GostUtil {
     }
 
     public static JSONObject createChainDialer(String protocol) {
+        return createChainDialer(protocol, PROTOCOL_TCP);
+    }
+
+    public static JSONObject createChainDialer(String protocol, String trafficProtocol) {
         String normalized = normalizeChainProtocol(protocol);
-        String transportType = resolveChainTransportType(normalized);
+        String transportType = resolveChainTransportType(normalized, trafficProtocol);
         JSONObject dialer = new JSONObject();
         dialer.put("type", transportType);
 
@@ -297,8 +365,12 @@ public class GostUtil {
     }
 
     public static JSONObject createChainListener(String protocol) {
+        return createChainListener(protocol, PROTOCOL_TCP);
+    }
+
+    public static JSONObject createChainListener(String protocol, String trafficProtocol) {
         String normalized = normalizeChainProtocol(protocol);
-        String transportType = resolveChainTransportType(normalized);
+        String transportType = resolveChainTransportType(normalized, trafficProtocol);
         JSONObject listener = new JSONObject();
         listener.put("type", transportType);
 
@@ -315,6 +387,34 @@ public class GostUtil {
             listener.put("metadata", metadata);
         }
         return listener;
+    }
+
+    public static Integer resolveChainListenPort(Integer basePort, String protocol, String trafficProtocol) {
+        if (basePort == null) {
+            return null;
+        }
+        if (!isHybridUdpProtocol(protocol)) {
+            return basePort;
+        }
+        String traffic = StrUtil.blankToDefault(trafficProtocol, PROTOCOL_TCP).trim().toLowerCase();
+        if (Objects.equals(traffic, PROTOCOL_UDP)) {
+            return deriveHybridUdpPort(basePort);
+        }
+        return basePort;
+    }
+
+    public static Integer deriveHybridUdpPort(Integer basePort) {
+        if (basePort == null) {
+            return null;
+        }
+        int candidate = basePort + 10000;
+        while (candidate > 65535) {
+            candidate -= 10000;
+        }
+        if (candidate == basePort) {
+            candidate = basePort > 2000 ? basePort - 1000 : basePort + 2000;
+        }
+        return candidate;
     }
 
     public static boolean isUdpTransport(String transportType) {
