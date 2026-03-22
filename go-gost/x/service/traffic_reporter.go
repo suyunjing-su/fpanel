@@ -40,14 +40,18 @@ func buildSecureHTTPBaseURL(addr string) (string, error) {
 		case "wss":
 			u.Scheme = "https"
 			return strings.TrimRight(u.String(), "/"), nil
-		case "http", "ws":
-			return "", fmt.Errorf("禁止不安全协议: %s，请使用 https 或 wss", u.Scheme)
+		case "http":
+			u.Scheme = "http"
+			return strings.TrimRight(u.String(), "/"), nil
+		case "ws":
+			u.Scheme = "http"
+			return strings.TrimRight(u.String(), "/"), nil
 		default:
 			return "", fmt.Errorf("不支持的协议: %s", u.Scheme)
 		}
 	}
 
-	return "https://" + strings.TrimRight(trimmed, "/"), nil
+	return "", fmt.Errorf("服务器地址必须包含协议(http://、https://、ws://或wss://)")
 }
 
 // TrafficReportItem 流量报告项（压缩格式）

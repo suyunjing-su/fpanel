@@ -30,14 +30,18 @@ func buildSecureControlBaseURL(addr string) (string, error) {
 		case "wss":
 			u.Scheme = "https"
 			return strings.TrimRight(u.String(), "/"), nil
-		case "http", "ws":
-			return "", fmt.Errorf("insecure scheme is not allowed: %s", u.Scheme)
+		case "http":
+			u.Scheme = "http"
+			return strings.TrimRight(u.String(), "/"), nil
+		case "ws":
+			u.Scheme = "http"
+			return strings.TrimRight(u.String(), "/"), nil
 		default:
 			return "", fmt.Errorf("unsupported scheme: %s", u.Scheme)
 		}
 	}
 
-	return "https://" + strings.TrimRight(trimmed, "/"), nil
+	return "", fmt.Errorf("server address must include scheme: http://, https://, ws:// or wss://")
 }
 
 func syncFullConfigFromDashboard(addr string, secret string) error {
