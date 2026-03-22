@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync" // 新增：用于管理连接状态的互斥锁
 	"time"
@@ -55,16 +54,29 @@ func buildSecureWebSocketBase(addr string) (string, error) {
 	return "wss://" + strings.TrimRight(trimmed, "/"), nil
 }
 
-func buildNodeWebSocketURL(addr string, version string, httpPort int, tlsPort int, socksPort int) (string, error) {
+func buildNodeWebSocketURL(addr string) (string, error) {
 	base, err := buildSecureWebSocketBase(addr)
 	if err != nil {
 		return "", err
 	}
 
-	return base + "/system-info?type=1&version=" + version +
-		"&http=" + strconv.Itoa(httpPort) +
-		"&tls=" + strconv.Itoa(tlsPort) +
-		"&socks=" + strconv.Itoa(socksPort), nil
+	return base + "/system-info", nil
+}
+
+func buildNodeHandshakeHeaders(secret string, version string, httpPort int, tlsPort int, socksPort int) http.Header {
+	headers := http.Header{}
+	if strings.TrimSpace(secret) != "" {
+		headers.Set("Authorization", "Bearer "+secret)
+	}
+
+	// Send node metadata via headers to avoid exposing protocol switches in URL.
+	headers.Set("X-Flux-Type", "1")
+	headers.Set("X-Flux-Version", version)
+	headers.Set("X-Flux-Http", fmt.Sprintf("%d", httpPort))
+	headers.Set("X-Flux-Tls", fmt.Sprintf("%d", tlsPort))
+	headers.Set("X-Flux-Socks", fmt.Sprintf("%d", socksPort))
+
+	return headers
 }
 
 func buildSecureControlBaseURL(addr string) (string, error) {
@@ -285,7 +297,7 @@ func (w *WebSocketReporter) connect() error {
 	}
 
 	// 使用最新的配置重新构建 URL
-	currentURL, err := buildNodeWebSocketURL(w.addr, w.version, cfg.Http, cfg.Tls, cfg.Socks)
+	currentURL, err := buildNodeWebSocketURL(w.addr)
 	if err != nil {
 		return fmt.Errorf("构建WebSocket地址失败: %v", err)
 	}
@@ -297,10 +309,7 @@ func (w *WebSocketReporter) connect() error {
 
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 10 * time.Second
-	headers := http.Header{}
-	if w.secret != "" {
-		headers.Set("Authorization", "Bearer "+w.secret)
-	}
+	headers := buildNodeHandshakeHeaders(w.secret, w.version, cfg.Http, cfg.Tls, cfg.Socks)
 
 	conn, _, err := dialer.Dial(u.String(), headers)
 	if err != nil {
@@ -1253,7 +1262,7 @@ func getMemoryInfo() MemoryInfo {
 func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
 
 	// 构建初始 WebSocket URL
-	fullURL, err := buildNodeWebSocketURL(addr, version, http, tls, socks)
+	fullURL, err := buildNodeWebSocketURL(addr)
 	if err != nil {
 		fmt.Printf("❌ 启动WebSocket报告器失败: %v\n", err)
 		return nil
