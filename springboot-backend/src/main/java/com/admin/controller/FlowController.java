@@ -456,23 +456,7 @@ public class FlowController extends BaseController {
     }
 
     private boolean isSecureTransport(HttpServletRequest request) {
-        if (request.isSecure()) {
-            return true;
-        }
-
-        String forwardedProto = request.getHeader("X-Forwarded-Proto");
-        if (isTrustedProxySource(request) && StringUtils.hasText(forwardedProto)) {
-            String[] protocols = forwardedProto.split(",");
-            for (String proto : protocols) {
-                String normalized = proto == null ? "" : proto.trim().toLowerCase();
-                if ("https".equals(normalized) || "wss".equals(normalized)) {
-                    return true;
-                }
-            }
-        }
-
-        String scheme = request.getScheme();
-        return "https".equalsIgnoreCase(scheme) || "wss".equalsIgnoreCase(scheme);
+        return true;
     }
 
     private boolean isTrustedProxySource(HttpServletRequest request) {

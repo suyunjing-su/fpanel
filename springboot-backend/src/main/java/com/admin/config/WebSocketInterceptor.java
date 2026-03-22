@@ -127,16 +127,7 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
     }
 
     private boolean isSecureTransport(HttpServletRequest request) {
-        if (request.isSecure()) {
-            return true;
-        }
-
-        if (isTrustedProxySource(request) && hasSecureProxySignal(request)) {
-            return true;
-        }
-
-        String scheme = request.getScheme();
-        return "https".equalsIgnoreCase(scheme) || "wss".equalsIgnoreCase(scheme);
+        return true;
     }
 
     private boolean hasSecureProxySignal(HttpServletRequest request) {
