@@ -18,6 +18,7 @@ import lombok.Data;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.util.*;
@@ -347,14 +348,18 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
 
 
     @Override
+    @Transactional
     public R deleteTunnel(Long id) {
         Tunnel tunnel = this.getById(id);
         if (tunnel == null) return R.err("隧道不存在");
         List<Forward> forwardList = forwardService.list(new QueryWrapper<Forward>().eq("tunnel_id", id));
         for (Forward forward : forwardList) {
-            forwardService.deleteForward(forward.getId());
+            R result = forwardService.deleteForward(forward.getId());
+            if (result == null || result.getCode() != 0) {
+                String msg = result == null ? "删除转发失败" : result.getMsg();
+                return R.err("删除隧道失败，转发清理异常: " + msg);
+            }
         }
-        forwardService.remove(new QueryWrapper<Forward>().eq("tunnel_id", id));
         userTunnelService.remove(new QueryWrapper<UserTunnel>().eq("tunnel_id", id));
         this.removeById(id);
 
