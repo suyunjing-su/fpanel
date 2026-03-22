@@ -49,7 +49,7 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
         }
 
         if (Objects.equals(type, "1")) {
-            String secret = extractBearerToken(servletRequest.getHeader("Authorization"));
+            String secret = resolveWebSocketToken(servletRequest);
             if (!StringUtils.hasText(secret)) {
                 log.info("节点验证失败：缺少Authorization令牌，IP: {}", getClientIp(request));
                 return false;
@@ -69,13 +69,45 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
             log.info("节点 {} 通过验证，版本: {}", node.getId(), version);
             // 不在这里更新状态，等到连接建立后再统一更新
         }else {
-            String secret = serverHttpRequest.getServletRequest().getParameter("secret");
+            String secret = resolveWebSocketToken(servletRequest);
             boolean b = JwtUtil.validateToken(secret);
             if (!b) return false;
             attributes.put("id", JwtUtil.getUserIdFromToken(secret));
         }
         attributes.put("type", type);
         return true;
+    }
+
+    private String resolveWebSocketToken(HttpServletRequest request) {
+        String token = extractBearerToken(request.getHeader("Authorization"));
+        if (StringUtils.hasText(token)) {
+            return token;
+        }
+
+        return extractTokenFromWebSocketProtocol(request.getHeader("Sec-WebSocket-Protocol"));
+    }
+
+    private String extractTokenFromWebSocketProtocol(String protocolHeader) {
+        if (!StringUtils.hasText(protocolHeader)) {
+            return null;
+        }
+
+        String[] protocols = protocolHeader.split(",");
+        if (protocols.length == 0) {
+            return null;
+        }
+
+        String first = protocols[0] == null ? "" : protocols[0].trim();
+        if (!"auth-token".equalsIgnoreCase(first) && !"bearer".equalsIgnoreCase(first)) {
+            return null;
+        }
+
+        if (protocols.length < 2) {
+            return null;
+        }
+
+        String token = protocols[1] == null ? "" : protocols[1].trim();
+        return StringUtils.hasText(token) ? token : null;
     }
 
     private String extractBearerToken(String authorization) {
