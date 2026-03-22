@@ -22,11 +22,29 @@ import {
 
 interface ChainTunnel {
   nodeId: number;
-  protocol?: string; // 'tls' | 'wss' | 'tcp' | 'mtls' | 'mwss' | 'mtcp' - 转发链协议
+  protocol?: string; // 'tcp' | 'udp' | 'udp+quic' | 'udp+kcp' | 'mptcp' - 转发链协议
   strategy?: string; // 'fifo' | 'round' | 'rand' - 仅转发链需要
   chainType?: number; // 1: 入口, 2: 转发链, 3: 出口
   inx?: number; // 转发链序号
 }
+
+const DEFAULT_CHAIN_PROTOCOL = 'tcp';
+const CHAIN_PROTOCOL_OPTIONS = [
+  { key: 'tcp', label: 'TCP' },
+  { key: 'udp', label: 'UDP' },
+  { key: 'udp+quic', label: 'UDP+QUIC' },
+  { key: 'udp+kcp', label: 'UDP+KCP' },
+  { key: 'mptcp', label: 'MPTCP' }
+] as const;
+
+const normalizeProtocol = (protocol?: string): string => {
+  if (!protocol) return DEFAULT_CHAIN_PROTOCOL;
+  const value = protocol.toLowerCase();
+  if (value === 'mtcp') return 'mptcp';
+  if (value === 'tls' || value === 'wss' || value === 'mtls' || value === 'mwss') return 'tcp';
+  if (CHAIN_PROTOCOL_OPTIONS.some(item => item.key === value)) return value;
+  return DEFAULT_CHAIN_PROTOCOL;
+};
 
 interface Tunnel {
   id: number;
@@ -225,6 +243,14 @@ export default function TunnelPage() {
   // 编辑隧道 - 只能修改部分字段
   const handleEdit = (tunnel: Tunnel) => {
     setIsEdit(true);
+
+    const normalizeChainGroup = (groups: ChainTunnel[][] = []): ChainTunnel[][] => {
+      return groups.map(group => group.map(item => ({ ...item, protocol: normalizeProtocol(item.protocol) })));
+    };
+
+    const normalizeChainList = (items: ChainTunnel[] = []): ChainTunnel[] => {
+      return items.map(item => ({ ...item, protocol: normalizeProtocol(item.protocol) }));
+    };
     
     // 直接使用列表数据，getAllTunnels 已经包含完整的节点信息
     setForm({
@@ -232,8 +258,8 @@ export default function TunnelPage() {
       name: tunnel.name,
       type: tunnel.type,
       inNodeId: tunnel.inNodeId || [],
-      outNodeId: tunnel.outNodeId || [],
-      chainNodes: tunnel.chainNodes || [],
+      outNodeId: normalizeChainList(tunnel.outNodeId || []),
+      chainNodes: normalizeChainGroup(tunnel.chainNodes || []),
       flow: tunnel.flow,
       trafficRatio: tunnel.trafficRatio,
       inIp: tunnel.inIp ? tunnel.inIp.split(',').map(ip => ip.trim()).join('\n') : '',
@@ -297,7 +323,7 @@ export default function TunnelPage() {
       
       // 获取当前组的策略和协议
       const strategy = group.length > 0 ? group[0].strategy : 'round';
-      const protocol = group.length > 0 ? group[0].protocol : 'tls';
+      const protocol = group.length > 0 ? normalizeProtocol(group[0].protocol) : DEFAULT_CHAIN_PROTOCOL;
       
       // 添加节点到该组
       chainNodes[groupIndex] = [
@@ -856,7 +882,7 @@ export default function TunnelPage() {
                                 ...prev,
                                 chainNodes: [
                                   ...(prev.chainNodes || []),
-                                  [{ nodeId: -1, chainType: 2, protocol: 'tls', strategy: 'round' }]
+                                  [{ nodeId: -1, chainType: 2, protocol: DEFAULT_CHAIN_PROTOCOL, strategy: 'round' }]
                                 ]
                               }));
                             }}
@@ -876,7 +902,7 @@ export default function TunnelPage() {
                         {getChainGroups().length > 0 && (
                           <div className="space-y-3">
                             {getChainGroups().map((groupNodes, groupIndex) => {
-                              const protocol = groupNodes.length > 0 ? groupNodes[0].protocol || 'tls' : 'tls';
+                              const protocol = groupNodes.length > 0 ? normalizeProtocol(groupNodes[0].protocol) : DEFAULT_CHAIN_PROTOCOL;
                               const strategy = groupNodes.length > 0 ? groupNodes[0].strategy || 'round' : 'round';
                               
                               return (
@@ -997,12 +1023,9 @@ export default function TunnelPage() {
                                         value: "text-sm"
                                       }}
                                     >
-                                      <SelectItem key="tls">TLS</SelectItem>
-                                      <SelectItem key="wss">WSS</SelectItem>
-                                      <SelectItem key="tcp">TCP</SelectItem>
-                                      <SelectItem key="mtls">MTLS</SelectItem>
-                                      <SelectItem key="mwss">MWSS</SelectItem>
-                                      <SelectItem key="mtcp">MTCP</SelectItem>
+                                      {CHAIN_PROTOCOL_OPTIONS.map((option) => (
+                                        <SelectItem key={option.key}>{option.label}</SelectItem>
+                                      ))}
                                     </Select>
 
                                     {/* 负载策略 - 25% */}
@@ -1066,10 +1089,10 @@ export default function TunnelPage() {
                                 const selectedIds = Array.from(keys).map(key => parseInt(key as string));
                                 const currentOutNodes = form.outNodeId || [];
                                 
-                                let protocol = 'tls';
+                                let protocol = DEFAULT_CHAIN_PROTOCOL;
                                 let strategy = 'round';
                                 if (currentOutNodes.length > 0) {
-                                  protocol = currentOutNodes[0].protocol || 'tls';
+                                  protocol = normalizeProtocol(currentOutNodes[0].protocol);
                                   strategy = currentOutNodes[0].strategy || 'round';
                                 }
                                 
@@ -1126,8 +1149,8 @@ export default function TunnelPage() {
                             label="协议"
                             placeholder="选择协议"
                             selectedKeys={[(() => {
-                              if (!form.outNodeId || form.outNodeId.length === 0) return 'tls';
-                              return form.outNodeId[0].protocol || 'tls';
+                              if (!form.outNodeId || form.outNodeId.length === 0) return DEFAULT_CHAIN_PROTOCOL;
+                              return normalizeProtocol(form.outNodeId[0].protocol);
                             })()]}
                             onSelectionChange={(keys) => {
                               const selectedKey = Array.from(keys)[0] as string;
@@ -1135,18 +1158,19 @@ export default function TunnelPage() {
                                 setForm(prev => {
                                   const currentOutNodes = prev.outNodeId || [];
                                   const currentStrategy = currentOutNodes.length > 0 ? currentOutNodes[0].strategy || 'round' : 'round';
+                                  const normalizedProtocol = normalizeProtocol(selectedKey);
                                   
                                   if (currentOutNodes.length === 0) {
                                     // 如果还没有出口节点，创建一个占位节点保存设置
                                     return {
                                       ...prev,
-                                      outNodeId: [{ nodeId: -1, chainType: 3, protocol: selectedKey, strategy: currentStrategy }]
+                                      outNodeId: [{ nodeId: -1, chainType: 3, protocol: normalizedProtocol, strategy: currentStrategy }]
                                     };
                                   }
                                   // 更新所有出口节点的协议
                                   return {
                                     ...prev,
-                                    outNodeId: currentOutNodes.map(ct => ({ ...ct, protocol: selectedKey }))
+                                    outNodeId: currentOutNodes.map(ct => ({ ...ct, protocol: normalizedProtocol }))
                                   };
                                 });
                               }
@@ -1160,12 +1184,9 @@ export default function TunnelPage() {
                               value: "text-sm"
                             }}
                           >
-                            <SelectItem key="tls">TLS</SelectItem>
-                            <SelectItem key="wss">WSS</SelectItem>
-                            <SelectItem key="tcp">TCP</SelectItem>
-                            <SelectItem key="mtls">MTLS</SelectItem>
-                            <SelectItem key="mwss">MWSS</SelectItem>
-                            <SelectItem key="mtcp">MTCP</SelectItem>
+                            {CHAIN_PROTOCOL_OPTIONS.map((option) => (
+                              <SelectItem key={option.key}>{option.label}</SelectItem>
+                            ))}
                           </Select>
 
                           {/* 负载策略 - 25% */}
@@ -1181,7 +1202,7 @@ export default function TunnelPage() {
                               if (selectedKey) {
                                 setForm(prev => {
                                   const currentOutNodes = prev.outNodeId || [];
-                                  const currentProtocol = currentOutNodes.length > 0 ? currentOutNodes[0].protocol || 'tls' : 'tls';
+                                  const currentProtocol = currentOutNodes.length > 0 ? normalizeProtocol(currentOutNodes[0].protocol) : DEFAULT_CHAIN_PROTOCOL;
                                   
                                   if (currentOutNodes.length === 0) {
                                     return {
