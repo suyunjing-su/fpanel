@@ -21,6 +21,7 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.util.List;
@@ -62,13 +63,18 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
     }
 
     @Override
+    @Transactional
     public R removeUserTunnel(Integer id) {
         UserTunnel userTunnel = this.getById(id);
         if (userTunnel == null) return R.err("未找到对应的用户隧道权限记录");
 
         List<Forward> forwardList = forwardService.list(new QueryWrapper<Forward>().eq("user_id", userTunnel.getUserId()).eq("tunnel_id", userTunnel.getTunnelId()));
         for (Forward forward : forwardList) {
-            forwardService.deleteForward(forward.getId());
+            R result = forwardService.deleteForward(forward.getId());
+            if (result == null || result.getCode() != 0) {
+                String msg = result == null ? "删除转发失败" : result.getMsg();
+                return R.err("移除用户隧道权限失败，转发清理异常: " + msg);
+            }
         }
         this.removeById(id);
         return R.ok();
@@ -98,7 +104,7 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
                 forwardService.updateForward(forwardUpdateDto);
             }
         }
-        return R.err("用户隧道权限更新失败");
+        return R.ok();
     }
 
     private <T> void updateOptionalProperty(java.util.function.Consumer<T> setter, T value) {
