@@ -206,7 +206,7 @@ public class FlowController extends BaseController {
 
     }
 
-    @GetMapping({"/config/all", "/conffig/all"})
+    @GetMapping("/config/all")
     @LogAnnotation
     public String getAllConfig(HttpServletRequest request) {
         if (!isSecureTransport(request)) {
