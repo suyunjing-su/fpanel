@@ -46,7 +46,7 @@ func syncFullConfigFromDashboard(addr string, secret string) error {
 		return err
 	}
 
-	endpoint := baseURL + "/flow/conffig/all"
+	endpoint := baseURL + "/flow/config/all"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("create request failed: %v", err)

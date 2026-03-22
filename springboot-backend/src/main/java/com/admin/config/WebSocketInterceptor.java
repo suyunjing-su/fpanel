@@ -16,6 +16,7 @@ import org.springframework.web.socket.server.support.HttpSessionHandshakeInterce
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.Objects;
@@ -127,7 +128,7 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
         }
 
         String forwardedProto = request.getHeader("X-Forwarded-Proto");
-        if (StringUtils.hasText(forwardedProto)) {
+        if (isTrustedProxySource(request) && StringUtils.hasText(forwardedProto)) {
             String[] protocols = forwardedProto.split(",");
             for (String proto : protocols) {
                 String normalized = proto == null ? "" : proto.trim().toLowerCase();
@@ -139,6 +140,19 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
 
         String scheme = request.getScheme();
         return "https".equalsIgnoreCase(scheme) || "wss".equalsIgnoreCase(scheme);
+    }
+
+    private boolean isTrustedProxySource(HttpServletRequest request) {
+        String remoteAddr = request.getRemoteAddr();
+        if (!StringUtils.hasText(remoteAddr)) {
+            return false;
+        }
+        try {
+            InetAddress ip = InetAddress.getByName(remoteAddr);
+            return ip.isLoopbackAddress() || ip.isSiteLocalAddress();
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     public String getClientIp(ServerHttpRequest request) {

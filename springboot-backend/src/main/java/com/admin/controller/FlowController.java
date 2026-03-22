@@ -23,6 +23,7 @@ import lombok.extern.slf4j.Slf4j;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.math.BigDecimal;
+import java.net.InetAddress;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -205,7 +206,7 @@ public class FlowController extends BaseController {
 
     }
 
-    @GetMapping("/conffig/all")
+    @GetMapping({"/config/all", "/conffig/all"})
     @LogAnnotation
     public String getAllConfig(HttpServletRequest request) {
         if (!isSecureTransport(request)) {
@@ -460,7 +461,7 @@ public class FlowController extends BaseController {
         }
 
         String forwardedProto = request.getHeader("X-Forwarded-Proto");
-        if (StringUtils.hasText(forwardedProto)) {
+        if (isTrustedProxySource(request) && StringUtils.hasText(forwardedProto)) {
             String[] protocols = forwardedProto.split(",");
             for (String proto : protocols) {
                 String normalized = proto == null ? "" : proto.trim().toLowerCase();
@@ -472,6 +473,19 @@ public class FlowController extends BaseController {
 
         String scheme = request.getScheme();
         return "https".equalsIgnoreCase(scheme) || "wss".equalsIgnoreCase(scheme);
+    }
+
+    private boolean isTrustedProxySource(HttpServletRequest request) {
+        String remoteAddr = request.getRemoteAddr();
+        if (!StringUtils.hasText(remoteAddr)) {
+            return false;
+        }
+        try {
+            InetAddress ip = InetAddress.getByName(remoteAddr);
+            return ip.isLoopbackAddress() || ip.isSiteLocalAddress();
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     // Build full node config from dashboard DB state to avoid stale local gost.json on agent restart.

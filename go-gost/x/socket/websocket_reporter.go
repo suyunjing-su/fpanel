@@ -733,7 +733,7 @@ func (w *WebSocketReporter) fetchAndOverwriteFullConfig() error {
 		return err
 	}
 
-	endpoint := baseURL + "/flow/conffig/all"
+	endpoint := baseURL + "/flow/config/all"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("创建全量配置请求失败: %v", err)
