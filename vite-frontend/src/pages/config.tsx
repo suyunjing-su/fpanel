@@ -47,8 +47,19 @@ const CONFIG_ITEMS: ConfigItem[] = [
   {
     key: 'ip',
     label: '面板后端地址',
-    placeholder: '请输入面板后端IP:PORT',
+    description: '格式“ip/domain:port”,用于对接节点时使用',
+    placeholder: '请输入后端IP/域名:PORT',
     type: 'input'
+  },
+  {
+    key: 'protocol_type',
+    label: '连接协议',
+    description: '连接后端使用的协议',
+    type: 'select',
+    options: [
+      { label: 'HTTP', value: 'http' },
+      { label: 'HTTPS', value: 'https' }
+    ]
   },
   {
     key: 'app_name',
@@ -104,7 +115,7 @@ const CONFIG_ITEMS: ConfigItem[] = [
 const getInitialConfigs = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   
-  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip'];
+  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip', 'protocol_type'];
   const initialConfigs: Record<string, string> = {};
   
   try {
@@ -115,6 +126,10 @@ const getInitialConfigs = (): Record<string, string> => {
       }
     });
   } catch (error) {
+  }
+
+  if (!initialConfigs.protocol_type) {
+    initialConfigs.protocol_type = 'http';
   }
   
   return initialConfigs;
@@ -150,6 +165,9 @@ export default function ConfigPage() {
     
     try {
       const configData = await getCachedConfigs();
+      if (!configData.protocol_type) {
+        configData.protocol_type = 'http';
+      }
       
       // 只有在数据有变化时才更新
       const hasDataChanged = JSON.stringify(configData) !== JSON.stringify(configsToCompare);

@@ -125,14 +125,28 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         if (node == null) {
             return R.err("节点不存在");
         }
-        ViteConfig viteConfig = viteConfigService.getOne(new QueryWrapper<ViteConfig>().eq("name", "ip"));
-        if (viteConfig == null) return R.err("请先前往网站配置中设置ip");
+        ViteConfig ipConfig = viteConfigService.getOne(new QueryWrapper<ViteConfig>().eq("name", "ip"));
+        if (ipConfig == null || StrUtil.isBlank(ipConfig.getValue())) return R.err("请先前往网站配置中设置ip");
+        ViteConfig protocolConfig = viteConfigService.getOne(new QueryWrapper<ViteConfig>().eq("name", "protocol_type"));
+
+        String protocol = "http";
+        if (protocolConfig != null && StrUtil.isNotBlank(protocolConfig.getValue())) {
+            String configured = protocolConfig.getValue().trim().toLowerCase();
+            if (Objects.equals(configured, "https") || Objects.equals(configured, "http")) {
+                protocol = configured;
+            }
+        }
+
+        String rawIpValue = ipConfig.getValue().trim();
+        String hostPort = rawIpValue.replaceFirst("^(?i)https?://", "");
+        String composedAddr = protocol + "://" + hostPort;
+
         StringBuilder command = new StringBuilder();
         command.append("curl -L https://github.com/suyunjing-su/fpanel/releases/download/")
             .append(RELEASE_VERSION)
             .append("/install.sh")
                 .append(" -o ./install.sh && chmod +x ./install.sh && ");
-        String processedServerAddr = GostUtil.processServerAddress(viteConfig.getValue());
+        String processedServerAddr = GostUtil.processServerAddress(composedAddr);
         command.append("./install.sh")
                 .append(" -a ").append(processedServerAddr)  // 服务器地址
                 .append(" -s ").append(node.getSecret());    // 节点密钥
