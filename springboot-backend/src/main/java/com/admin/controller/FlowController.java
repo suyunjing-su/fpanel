@@ -8,6 +8,8 @@ import com.admin.common.utils.AESCrypto;
 import com.admin.common.utils.GostUtil;
 import com.admin.entity.*;
 import com.admin.service.ChainTunnelService;
+import com.admin.service.ForwardPortService;
+import com.admin.service.SpeedLimitService;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
@@ -22,8 +24,13 @@ import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.math.BigDecimal;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -73,6 +80,12 @@ public class FlowController extends BaseController {
     @Lazy
     ChainTunnelService chainTunnelService;
 
+    @Resource
+    ForwardPortService forwardPortService;
+
+    @Resource
+    SpeedLimitService speedLimitService;
+
     /**
      * 加密消息包装器
      */
@@ -110,14 +123,13 @@ public class FlowController extends BaseController {
     @PostMapping("/config")
     @LogAnnotation
     public String config(@RequestBody String rawData,
-                         @RequestParam(value = "secret", required = false) String querySecret,
                          HttpServletRequest request) {
         if (!isSecureTransport(request)) {
             log.warn("拒绝非安全配置上报请求，IP: {}", request.getRemoteAddr());
             return FORBIDDEN_RESPONSE;
         }
 
-        String secret = resolveNodeSecret(request, querySecret);
+        String secret = resolveNodeSecret(request);
         if (!StringUtils.hasText(secret)) {
             log.warn("拒绝无鉴权配置上报请求，IP: {}", request.getRemoteAddr());
             return FORBIDDEN_RESPONSE;
@@ -159,14 +171,13 @@ public class FlowController extends BaseController {
     @RequestMapping("/upload")
     @LogAnnotation
     public String uploadFlowData(@RequestBody String rawData,
-                                 @RequestParam(value = "secret", required = false) String querySecret,
                                  HttpServletRequest request) {
         if (!isSecureTransport(request)) {
             log.warn("拒绝非安全流量上报请求，IP: {}", request.getRemoteAddr());
             return FORBIDDEN_RESPONSE;
         }
 
-        String secret = resolveNodeSecret(request, querySecret);
+        String secret = resolveNodeSecret(request);
         if (!StringUtils.hasText(secret)) {
             log.warn("拒绝无鉴权流量上报请求，IP: {}", request.getRemoteAddr());
             return FORBIDDEN_RESPONSE;
@@ -192,6 +203,30 @@ public class FlowController extends BaseController {
         }
         return SUCCESS_RESPONSE;
 
+    }
+
+    @GetMapping("/conffig/all")
+    @LogAnnotation
+    public String getAllConfig(HttpServletRequest request) {
+        if (!isSecureTransport(request)) {
+            log.warn("拒绝非安全全量配置请求，IP: {}", request.getRemoteAddr());
+            return FORBIDDEN_RESPONSE;
+        }
+
+        String secret = resolveNodeSecret(request);
+        if (!StringUtils.hasText(secret)) {
+            log.warn("拒绝无鉴权全量配置请求，IP: {}", request.getRemoteAddr());
+            return FORBIDDEN_RESPONSE;
+        }
+
+        Node node = nodeService.getOne(new QueryWrapper<Node>().eq("secret", secret));
+        if (node == null) {
+            log.warn("全量配置请求鉴权失败，IP: {}", request.getRemoteAddr());
+            return FORBIDDEN_RESPONSE;
+        }
+
+        JSONObject fullConfig = buildNodeFullConfig(node);
+        return fullConfig.toJSONString();
     }
 
     /**
@@ -403,18 +438,9 @@ public class FlowController extends BaseController {
         return FORWARD_LOCKS.computeIfAbsent(forwardId, k -> new Object());
     }
 
-    private String resolveNodeSecret(HttpServletRequest request, String querySecret) {
+    private String resolveNodeSecret(HttpServletRequest request) {
         String fromHeader = extractBearerToken(request.getHeader("Authorization"));
-        if (StringUtils.hasText(fromHeader)) {
-            return fromHeader;
-        }
-
-        if (StringUtils.hasText(querySecret)) {
-            log.warn("检测到已弃用的query secret传递方式，建议切换Authorization头，IP: {}", request.getRemoteAddr());
-            return querySecret;
-        }
-
-        return null;
+        return StringUtils.hasText(fromHeader) ? fromHeader : null;
     }
 
     private String extractBearerToken(String authorization) {
@@ -446,6 +472,314 @@ public class FlowController extends BaseController {
 
         String scheme = request.getScheme();
         return "https".equalsIgnoreCase(scheme) || "wss".equalsIgnoreCase(scheme);
+    }
+
+    // Build full node config from dashboard DB state to avoid stale local gost.json on agent restart.
+    private JSONObject buildNodeFullConfig(Node node) {
+        JSONObject config = new JSONObject();
+        JSONArray services = new JSONArray();
+        JSONArray chains = new JSONArray();
+        JSONArray limiters = new JSONArray();
+
+        List<ChainTunnel> nodeChainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("node_id", node.getId()));
+        Set<Long> tunnelIds = new HashSet<>();
+        for (ChainTunnel chainTunnel : nodeChainTunnels) {
+            if (chainTunnel.getTunnelId() != null) {
+                tunnelIds.add(chainTunnel.getTunnelId());
+            }
+        }
+
+        List<ForwardPort> forwardPorts = forwardPortService.list(new QueryWrapper<ForwardPort>().eq("node_id", node.getId()));
+        for (ForwardPort forwardPort : forwardPorts) {
+            Forward forward = forwardService.getById(forwardPort.getForwardId());
+            if (forward != null && forward.getTunnelId() != null) {
+                tunnelIds.add(forward.getTunnelId().longValue());
+            }
+        }
+
+        Map<Long, Tunnel> tunnelMap = new HashMap<>();
+        if (!tunnelIds.isEmpty()) {
+            List<Tunnel> tunnelList = tunnelService.list(new QueryWrapper<Tunnel>().in("id", tunnelIds));
+            for (Tunnel tunnel : tunnelList) {
+                tunnelMap.put(tunnel.getId(), tunnel);
+            }
+        }
+
+        Set<Long> relatedNodeIds = new HashSet<>();
+        if (!tunnelIds.isEmpty()) {
+            List<ChainTunnel> relatedChainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().in("tunnel_id", tunnelIds));
+            for (ChainTunnel chainTunnel : relatedChainTunnels) {
+                if (chainTunnel.getNodeId() != null) {
+                    relatedNodeIds.add(chainTunnel.getNodeId());
+                }
+            }
+        }
+        relatedNodeIds.add(node.getId());
+
+        Map<Long, Node> nodeMap = new HashMap<>();
+        if (!relatedNodeIds.isEmpty()) {
+            List<Node> relatedNodes = nodeService.list(new QueryWrapper<Node>().in("id", relatedNodeIds));
+            for (Node relatedNode : relatedNodes) {
+                nodeMap.put(relatedNode.getId(), relatedNode);
+            }
+        }
+
+        Set<String> chainNames = new HashSet<>();
+        for (ChainTunnel chainTunnel : nodeChainTunnels) {
+            if (chainTunnel.getTunnelId() == null) {
+                continue;
+            }
+            Tunnel tunnel = tunnelMap.get(chainTunnel.getTunnelId());
+            if (tunnel == null || tunnel.getType() != 2) {
+                continue;
+            }
+            if (!(Objects.equals(chainTunnel.getChainType(), 1) || Objects.equals(chainTunnel.getChainType(), 2))) {
+                continue;
+            }
+
+            String chainName = "chains_" + chainTunnel.getTunnelId();
+            if (chainNames.contains(chainName)) {
+                continue;
+            }
+
+            List<ChainTunnel> nextHops = getNextHops(chainTunnel, chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", chainTunnel.getTunnelId())));
+            if (nextHops.isEmpty()) {
+                continue;
+            }
+
+            JSONObject chain = new JSONObject();
+            chain.put("name", chainName);
+
+            JSONObject hop = new JSONObject();
+            hop.put("name", "hop_" + chainTunnel.getTunnelId());
+            if (StringUtils.hasText(node.getInterfaceName())) {
+                hop.put("interface", node.getInterfaceName());
+            }
+
+            JSONObject selector = new JSONObject();
+            selector.put("strategy", nextHops.getFirst().getStrategy());
+            selector.put("maxFails", 1);
+            selector.put("failTimeout", 600000000000L);
+            hop.put("selector", selector);
+
+            JSONArray nodes = new JSONArray();
+            for (ChainTunnel nextHop : nextHops) {
+                Node nextNode = nodeMap.get(nextHop.getNodeId());
+                if (nextNode == null || nextHop.getPort() == null) {
+                    continue;
+                }
+                JSONObject nodeItem = new JSONObject();
+                nodeItem.put("name", "node_" + (nextHop.getInx() == null ? 0 : nextHop.getInx()));
+                nodeItem.put("addr", GostUtil.processServerAddress(nextNode.getServerIp() + ":" + nextHop.getPort()));
+
+                JSONObject connector = new JSONObject();
+                connector.put("type", "relay");
+                nodeItem.put("connector", connector);
+
+                JSONObject dialer = new JSONObject();
+                dialer.put("type", nextHop.getProtocol());
+                nodeItem.put("dialer", dialer);
+                nodes.add(nodeItem);
+            }
+
+            if (nodes.isEmpty()) {
+                continue;
+            }
+            hop.put("nodes", nodes);
+            JSONArray hops = new JSONArray();
+            hops.add(hop);
+            chain.put("hops", hops);
+            chains.add(chain);
+            chainNames.add(chainName);
+        }
+
+        Set<String> serviceNames = new HashSet<>();
+        for (ChainTunnel chainTunnel : nodeChainTunnels) {
+            if (chainTunnel.getTunnelId() == null || chainTunnel.getPort() == null) {
+                continue;
+            }
+            Tunnel tunnel = tunnelMap.get(chainTunnel.getTunnelId());
+            if (tunnel == null || tunnel.getType() != 2) {
+                continue;
+            }
+            if (!(Objects.equals(chainTunnel.getChainType(), 2) || Objects.equals(chainTunnel.getChainType(), 3))) {
+                continue;
+            }
+
+            String serviceName = chainTunnel.getTunnelId() + "_tls";
+            if (serviceNames.contains(serviceName)) {
+                continue;
+            }
+
+            JSONObject service = new JSONObject();
+            service.put("name", serviceName);
+            service.put("addr", node.getTcpListenAddr() + ":" + chainTunnel.getPort());
+
+            if (Objects.equals(chainTunnel.getChainType(), 3) && StringUtils.hasText(node.getInterfaceName())) {
+                JSONObject metadata = new JSONObject();
+                metadata.put("interface", node.getInterfaceName());
+                service.put("metadata", metadata);
+            }
+
+            JSONObject handler = new JSONObject();
+            handler.put("type", "relay");
+            if (Objects.equals(chainTunnel.getChainType(), 2)) {
+                handler.put("chain", "chains_" + chainTunnel.getTunnelId());
+            }
+            service.put("handler", handler);
+
+            JSONObject listener = new JSONObject();
+            listener.put("type", chainTunnel.getProtocol());
+            service.put("listener", listener);
+            services.add(service);
+            serviceNames.add(serviceName);
+        }
+
+        Set<Long> limiterIds = new LinkedHashSet<>();
+        for (ForwardPort forwardPort : forwardPorts) {
+            Forward forward = forwardService.getById(forwardPort.getForwardId());
+            if (forward == null) {
+                continue;
+            }
+            Tunnel tunnel = tunnelMap.get(forward.getTunnelId().longValue());
+            if (tunnel == null) {
+                continue;
+            }
+
+            UserTunnel userTunnel = userTunnelService.getOne(new QueryWrapper<UserTunnel>()
+                    .eq("user_id", forward.getUserId())
+                    .eq("tunnel_id", forward.getTunnelId()));
+
+            int userTunnelId = userTunnel == null ? 0 : userTunnel.getId();
+            String baseServiceName = forward.getId() + "_" + forward.getUserId() + "_" + userTunnelId;
+            if (userTunnel != null && userTunnel.getSpeedId() != null) {
+                limiterIds.add(userTunnel.getSpeedId().longValue());
+            }
+
+            services.add(buildForwardService(baseServiceName, "tcp", node, forward, forwardPort, tunnel, userTunnel));
+            services.add(buildForwardService(baseServiceName, "udp", node, forward, forwardPort, tunnel, userTunnel));
+        }
+
+        if (!limiterIds.isEmpty()) {
+            List<SpeedLimit> speedLimits = speedLimitService.list(new QueryWrapper<SpeedLimit>().in("id", limiterIds));
+            for (SpeedLimit speedLimit : speedLimits) {
+                JSONObject limiter = new JSONObject();
+                limiter.put("name", speedLimit.getId().toString());
+                JSONArray limits = new JSONArray();
+                String speed = convertBitsToMBps(speedLimit.getSpeed());
+                limits.add("$ " + speed + "MB " + speed + "MB");
+                limiter.put("limits", limits);
+                limiters.add(limiter);
+            }
+        }
+
+        config.put("services", services);
+        config.put("chains", chains);
+        config.put("limiters", limiters);
+        return config;
+    }
+
+    private List<ChainTunnel> getNextHops(ChainTunnel current, List<ChainTunnel> all) {
+        if (Objects.equals(current.getChainType(), 1)) {
+            int nextInx = 1;
+            List<ChainTunnel> firstHop = all.stream()
+                    .filter(item -> Objects.equals(item.getChainType(), 2) && Objects.equals(item.getInx(), nextInx))
+                    .toList();
+            if (!firstHop.isEmpty()) {
+                return firstHop;
+            }
+            return all.stream().filter(item -> Objects.equals(item.getChainType(), 3)).toList();
+        }
+
+        if (Objects.equals(current.getChainType(), 2)) {
+            int nextInx = (current.getInx() == null ? 0 : current.getInx()) + 1;
+            List<ChainTunnel> nextHop = all.stream()
+                    .filter(item -> Objects.equals(item.getChainType(), 2) && Objects.equals(item.getInx(), nextInx))
+                    .toList();
+            if (!nextHop.isEmpty()) {
+                return nextHop;
+            }
+            return all.stream().filter(item -> Objects.equals(item.getChainType(), 3)).toList();
+        }
+
+        return List.of();
+    }
+
+    private JSONObject buildForwardService(String baseServiceName,
+                                           String protocol,
+                                           Node node,
+                                           Forward forward,
+                                           ForwardPort forwardPort,
+                                           Tunnel tunnel,
+                                           UserTunnel userTunnel) {
+        JSONObject service = new JSONObject();
+        service.put("name", baseServiceName + "_" + protocol);
+
+        if (Objects.equals(protocol, "tcp")) {
+            service.put("addr", node.getTcpListenAddr() + ":" + forwardPort.getPort());
+        } else {
+            service.put("addr", node.getUdpListenAddr() + ":" + forwardPort.getPort());
+        }
+
+        if (tunnel.getType() == 1 && StringUtils.hasText(node.getInterfaceName())) {
+            JSONObject metadata = new JSONObject();
+            metadata.put("interface", node.getInterfaceName());
+            service.put("metadata", metadata);
+        }
+
+        if (userTunnel != null && userTunnel.getSpeedId() != null) {
+            service.put("limiter", userTunnel.getSpeedId().toString());
+        }
+
+        JSONObject handler = new JSONObject();
+        handler.put("type", protocol);
+        if (tunnel.getType() == 2) {
+            handler.put("chain", "chains_" + forward.getTunnelId());
+        }
+        service.put("handler", handler);
+
+        JSONObject listener = new JSONObject();
+        listener.put("type", protocol);
+        if (Objects.equals(protocol, "udp")) {
+            JSONObject metadata = new JSONObject();
+            metadata.put("keepAlive", true);
+            listener.put("metadata", metadata);
+        }
+        service.put("listener", listener);
+
+        JSONObject forwarder = new JSONObject();
+        JSONArray nodes = new JSONArray();
+        String[] split = forward.getRemoteAddr().split(",");
+        int num = 1;
+        for (String addr : split) {
+            String remote = addr == null ? "" : addr.trim();
+            if (!StringUtils.hasText(remote)) {
+                continue;
+            }
+            JSONObject nodeItem = new JSONObject();
+            nodeItem.put("name", "node_" + num);
+            nodeItem.put("addr", remote);
+            nodes.add(nodeItem);
+            num++;
+        }
+        forwarder.put("nodes", nodes);
+
+        JSONObject selector = new JSONObject();
+        selector.put("strategy", StringUtils.hasText(forward.getStrategy()) ? forward.getStrategy() : "fifo");
+        selector.put("maxFails", 1);
+        selector.put("failTimeout", "600s");
+        forwarder.put("selector", selector);
+        service.put("forwarder", forwarder);
+
+        return service;
+    }
+
+    private String convertBitsToMBps(Integer speedInBits) {
+        if (speedInBits == null) {
+            return "0.0";
+        }
+        double mbs = speedInBits / 8.0;
+        return String.format("%.1f", mbs);
     }
 
     private boolean isValidNode(String secret) {
