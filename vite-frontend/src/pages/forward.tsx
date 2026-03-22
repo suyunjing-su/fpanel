@@ -1782,7 +1782,7 @@ export default function ForwardPage() {
           placement="center"
         >
           <ModalContent>
-            {(onClose) => (
+            {() => (
               <>
                 <ModalHeader className="flex flex-col gap-1">
                   <h2 className="text-lg font-bold text-danger">确认批量删除</h2>

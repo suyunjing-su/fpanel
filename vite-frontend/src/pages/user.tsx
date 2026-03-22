@@ -1321,7 +1321,7 @@ export default function UserPage() {
         placement="center"
       >
         <ModalContent>
-          {(onClose) => (
+          {() => (
             <>
               <ModalHeader className="flex flex-col gap-1">
                 确认批量删除用户
