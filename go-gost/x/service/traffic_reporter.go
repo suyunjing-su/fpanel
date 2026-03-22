@@ -76,7 +76,6 @@ func SetHTTPReportURL(addr string, secret string) {
 	}
 
 	// 创建 AES 加密器
-	var err error
 	httpAESCrypto, err = crypto.NewAESCrypto(secret)
 	if err != nil {
 		fmt.Printf("❌ 创建 HTTP AES 加密器失败: %v\n", err)
