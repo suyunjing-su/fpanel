@@ -38,14 +38,20 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
     public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response, WebSocketHandler wsHandler, Map<String, Object> attributes) throws Exception {
         ServletServerHttpRequest serverHttpRequest = (ServletServerHttpRequest) request;
         HttpServletRequest servletRequest = serverHttpRequest.getServletRequest();
-        String type = readHandshakeValue(servletRequest, "type", "X-Flux-Type");
-        String version = readHandshakeValue(servletRequest, "version", "X-Flux-Version");
-        String http = readHandshakeValue(servletRequest, "http", "X-Flux-Http");
-        String tls = readHandshakeValue(servletRequest, "tls", "X-Flux-Tls");
-        String socks = readHandshakeValue(servletRequest, "socks", "X-Flux-Socks");
+        String protocolHeader = servletRequest.getHeader("Sec-WebSocket-Protocol");
+        String type = resolveHandshakeType(servletRequest, protocolHeader);
+        String version = readHeaderValue(servletRequest, "X-Flux-Version");
+        String http = readHeaderValue(servletRequest, "X-Flux-Http");
+        String tls = readHeaderValue(servletRequest, "X-Flux-Tls");
+        String socks = readHeaderValue(servletRequest, "X-Flux-Socks");
 
         if (!isSecureTransport(servletRequest)) {
             log.warn("拒绝非安全WebSocket握手，IP: {}", getClientIp(request));
+            return false;
+        }
+
+        if (!StringUtils.hasText(type)) {
+            log.info("WebSocket握手缺少类型标识，IP: {}", getClientIp(request));
             return false;
         }
 
@@ -98,17 +104,20 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
             return null;
         }
 
-        String first = protocols[0] == null ? "" : protocols[0].trim();
-        if (!"auth-token".equalsIgnoreCase(first) && !"bearer".equalsIgnoreCase(first)) {
-            return null;
+        for (int i = 0; i < protocols.length; i++) {
+            String current = protocols[i] == null ? "" : protocols[i].trim();
+            if (!"auth-token".equalsIgnoreCase(current) && !"bearer".equalsIgnoreCase(current)) {
+                continue;
+            }
+            if (i + 1 >= protocols.length) {
+                return null;
+            }
+
+            String token = protocols[i + 1] == null ? "" : protocols[i + 1].trim();
+            return StringUtils.hasText(token) ? token : null;
         }
 
-        if (protocols.length < 2) {
-            return null;
-        }
-
-        String token = protocols[1] == null ? "" : protocols[1].trim();
-        return StringUtils.hasText(token) ? token : null;
+        return null;
     }
 
     private String extractBearerToken(String authorization) {
@@ -163,14 +172,34 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
         return null;
     }
 
-    private String readHandshakeValue(HttpServletRequest request, String queryKey, String headerKey) {
+    private String readHeaderValue(HttpServletRequest request, String headerKey) {
         String headerValue = request.getHeader(headerKey);
         if (StringUtils.hasText(headerValue)) {
             return headerValue.trim();
         }
 
-        String queryValue = request.getParameter(queryKey);
-        return StringUtils.hasText(queryValue) ? queryValue.trim() : null;
+        return null;
+    }
+
+    private String resolveHandshakeType(HttpServletRequest request, String protocolHeader) {
+        String type = readHeaderValue(request, "X-Flux-Type");
+        if (StringUtils.hasText(type)) {
+            return type;
+        }
+
+        if (!StringUtils.hasText(protocolHeader)) {
+            return null;
+        }
+
+        String[] protocols = protocolHeader.split(",");
+        for (String protocol : protocols) {
+            String normalized = protocol == null ? "" : protocol.trim().toLowerCase();
+            if (normalized.startsWith("flux-type-")) {
+                return normalized.substring("flux-type-".length());
+            }
+        }
+
+        return null;
     }
 
 
