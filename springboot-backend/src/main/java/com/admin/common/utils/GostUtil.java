@@ -13,6 +13,12 @@ import java.util.Objects;
 
 public class GostUtil {
 
+    public static final String PROTOCOL_TCP = "tcp";
+    public static final String PROTOCOL_UDP = "udp";
+    public static final String PROTOCOL_UDP_QUIC = "udp+quic";
+    public static final String PROTOCOL_UDP_KCP = "udp+kcp";
+    public static final String PROTOCOL_MPTCP = "mptcp";
+
 
     public static GostDto AddLimiters(Long node_id, Long name, String speed) {
         JSONObject data = createLimiterData(name, speed);
@@ -44,8 +50,7 @@ public class GostUtil {
     public static GostDto AddChains(Long node_id, List<ChainTunnel> chainTunnels, Map<Long, Node> node_s) {
         JSONArray nodes = new JSONArray();
         for (ChainTunnel chainTunnel : chainTunnels) {
-            JSONObject dialer = new JSONObject();
-            dialer.put("type", chainTunnel.getProtocol());
+            JSONObject dialer = createChainDialer(chainTunnel.getProtocol());
 
             JSONObject connector = new JSONObject();
             connector.put("type", "relay");
@@ -106,9 +111,13 @@ public class GostUtil {
     public static GostDto AddChainService(Long node_id, ChainTunnel chainTunnel, Map<Long, Node> node_s) {
         JSONArray services = new JSONArray();
         Node node_info = node_s.get(chainTunnel.getNodeId());
+        String normalizedProtocol = normalizeChainProtocol(chainTunnel.getProtocol());
+        String transportType = resolveChainTransportType(normalizedProtocol);
+
         JSONObject service_item = new JSONObject();
-        service_item.put("name", chainTunnel.getTunnelId() + "_tls");
-        service_item.put("addr", node_info.getTcpListenAddr() + ":" + chainTunnel.getPort());
+        service_item.put("name", buildChainServiceName(chainTunnel.getTunnelId(), normalizedProtocol));
+        String listenAddr = isUdpTransport(transportType) ? node_info.getUdpListenAddr() : node_info.getTcpListenAddr();
+        service_item.put("addr", listenAddr + ":" + chainTunnel.getPort());
         
         // 只为出口节点(chainType=3)设置 interface
         if (chainTunnel.getChainType() == 3 && StringUtils.isNotBlank(node_s.get(node_id).getInterfaceName())) {
@@ -124,8 +133,7 @@ public class GostUtil {
         }
         service_item.put("handler", handler);
 
-        JSONObject listener = new JSONObject();
-        listener.put("type", chainTunnel.getProtocol());
+        JSONObject listener = createChainListener(chainTunnel.getProtocol());
         service_item.put("listener", listener);
 
         services.add(service_item);
@@ -223,6 +231,96 @@ public class GostUtil {
             listener.put("metadata", metadata);
         }
         return listener;
+    }
+
+    public static String normalizeChainProtocol(String protocol) {
+        if (StrUtil.isBlank(protocol)) {
+            return PROTOCOL_TCP;
+        }
+
+        String normalized = protocol.trim().toLowerCase();
+        return switch (normalized) {
+            case PROTOCOL_TCP, PROTOCOL_UDP, PROTOCOL_UDP_QUIC, PROTOCOL_UDP_KCP, PROTOCOL_MPTCP -> normalized;
+            case "mtcp" -> PROTOCOL_MPTCP;
+            case "tls", "wss", "mtls", "mwss" -> PROTOCOL_TCP;
+            default -> PROTOCOL_TCP;
+        };
+    }
+
+    public static boolean isHybridUdpProtocol(String protocol) {
+        String normalized = normalizeChainProtocol(protocol);
+        return Objects.equals(normalized, PROTOCOL_UDP_QUIC) || Objects.equals(normalized, PROTOCOL_UDP_KCP);
+    }
+
+    public static String resolveChainTransportType(String protocol) {
+        String normalized = normalizeChainProtocol(protocol);
+        return switch (normalized) {
+            case PROTOCOL_UDP_QUIC -> "quic";
+            case PROTOCOL_UDP_KCP -> "kcp";
+            case PROTOCOL_MPTCP -> "mtcp";
+            default -> normalized;
+        };
+    }
+
+    public static String buildChainServiceName(Long tunnelId, String protocol) {
+        String normalized = normalizeChainProtocol(protocol).replace('+', '_');
+        return tunnelId + "_relay_" + normalized;
+    }
+
+    public static Long parseTunnelIdFromChainServiceName(String serviceName) {
+        if (StrUtil.isBlank(serviceName) || !serviceName.contains("_relay_")) {
+            return null;
+        }
+        String[] split = serviceName.split("_", 2);
+        if (split.length < 2) {
+            return null;
+        }
+        try {
+            return Long.parseLong(split[0]);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    public static JSONObject createChainDialer(String protocol) {
+        String normalized = normalizeChainProtocol(protocol);
+        String transportType = resolveChainTransportType(normalized);
+        JSONObject dialer = new JSONObject();
+        dialer.put("type", transportType);
+
+        if (Objects.equals(normalized, PROTOCOL_MPTCP)) {
+            JSONObject metadata = new JSONObject();
+            metadata.put("mptcp", true);
+            dialer.put("metadata", metadata);
+        }
+        return dialer;
+    }
+
+    public static JSONObject createChainListener(String protocol) {
+        String normalized = normalizeChainProtocol(protocol);
+        String transportType = resolveChainTransportType(normalized);
+        JSONObject listener = new JSONObject();
+        listener.put("type", transportType);
+
+        if (Objects.equals(normalized, PROTOCOL_MPTCP)) {
+            JSONObject metadata = new JSONObject();
+            metadata.put("mptcp", true);
+            listener.put("metadata", metadata);
+            return listener;
+        }
+
+        if (Objects.equals(transportType, PROTOCOL_UDP)) {
+            JSONObject metadata = new JSONObject();
+            metadata.put("keepAlive", true);
+            listener.put("metadata", metadata);
+        }
+        return listener;
+    }
+
+    public static boolean isUdpTransport(String transportType) {
+        return Objects.equals(PROTOCOL_UDP, transportType)
+                || Objects.equals("quic", transportType)
+                || Objects.equals("kcp", transportType);
     }
 
     private static JSONObject createForwarder(String remoteAddr, String strategy) {

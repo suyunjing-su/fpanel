@@ -32,6 +32,19 @@ import java.util.stream.Collectors;
 @Service
 public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> implements TunnelService {
 
+    private static final Set<String> SUPPORTED_CHAIN_PROTOCOLS = Set.of(
+            GostUtil.PROTOCOL_TCP,
+            GostUtil.PROTOCOL_UDP,
+            GostUtil.PROTOCOL_UDP_QUIC,
+            GostUtil.PROTOCOL_UDP_KCP,
+            GostUtil.PROTOCOL_MPTCP,
+            "tls",
+            "wss",
+            "mtls",
+            "mwss",
+            "mtcp"
+    );
+
 
     @Resource
     UserTunnelMapper userTunnelMapper;
@@ -78,6 +91,8 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
             int inx = 1;
             for (List<ChainTunnel> chainNode : tunnelDto.getChainNodes()) {
                 for (ChainTunnel chain_node : chainNode) {
+                    String protocol = normalizeAndValidateChainProtocol(chain_node);
+                    if (protocol == null) return R.err("隧道协议不支持: " + chain_node.getProtocol());
                     node_ids.add(chain_node.getNodeId());
                     Node node = nodeService.getById(chain_node.getNodeId());
                     if (node == null) return R.err("节点不存在");
@@ -85,17 +100,21 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                     Integer nodePort = getNodePort(chain_node.getNodeId());
                     chain_node.setPort(nodePort);
                     chain_node.setInx(inx); // 设置转发链序号
+                    chain_node.setProtocol(protocol);
                     chainTunnels.add(chain_node);
                 }
                 inx++; // 每一跳递增
             }
             for (ChainTunnel out_node : tunnelDto.getOutNodeId()) {
+                String protocol = normalizeAndValidateChainProtocol(out_node);
+                if (protocol == null) return R.err("隧道协议不支持: " + out_node.getProtocol());
                 node_ids.add(out_node.getNodeId());
                 Node node = nodeService.getById(out_node.getNodeId());
                 if (node == null) return R.err("节点不存在");
                 nodes.put(node.getId(), node);
                 Integer nodePort = getNodePort(out_node.getNodeId());
                 out_node.setPort(nodePort);
+                out_node.setProtocol(protocol);
                 chainTunnels.add(out_node);
             }
 
@@ -208,7 +227,7 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                     if (Objects.equals(gostDto.getMsg(), "OK")){
                         JSONObject data = new JSONObject();
                         data.put("node_id", chainTunnel.getNodeId());
-                        data.put("name", tunnel.getId() + "_tls");
+                        data.put("name", GostUtil.buildChainServiceName(tunnel.getId(), chainTunnel.getProtocol()));
                         service_success.add(data);
                     }else {
                         this.removeById(tunnel.getId());
@@ -231,7 +250,7 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 if (Objects.equals(gostDto.getMsg(), "OK")){
                     JSONObject data = new JSONObject();
                     data.put("node_id", out_node.getNodeId());
-                    data.put("name", tunnel.getId() + "_tls");
+                    data.put("name", GostUtil.buildChainServiceName(tunnel.getId(), out_node.getProtocol()));
                     service_success.add(data);
                 }else {
                     this.removeById(tunnel.getId());
@@ -371,17 +390,28 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
             else if (chainTunnel.getChainType() == 2){ // 链
                 GostUtil.DeleteChains(chainTunnel.getNodeId(), "chains_" + chainTunnel.getTunnelId());
                 JSONArray services = new JSONArray();
-                services.add(chainTunnel.getTunnelId() + "_tls");
+                services.add(GostUtil.buildChainServiceName(chainTunnel.getTunnelId(), chainTunnel.getProtocol()));
                 GostUtil.DeleteService(chainTunnel.getNodeId(), services);
             }
             else { // 出口
                 JSONArray services = new JSONArray();
-                services.add(chainTunnel.getTunnelId() + "_tls");
+                services.add(GostUtil.buildChainServiceName(chainTunnel.getTunnelId(), chainTunnel.getProtocol()));
                 GostUtil.DeleteService(chainTunnel.getNodeId(), services);
             }
         }
         chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", id));
         return R.ok();
+    }
+
+    private String normalizeAndValidateChainProtocol(ChainTunnel chainTunnel) {
+        String source = chainTunnel.getProtocol();
+        if (StringUtils.isNotBlank(source)) {
+            String lower = source.trim().toLowerCase();
+            if (!SUPPORTED_CHAIN_PROTOCOLS.contains(lower)) {
+                return null;
+            }
+        }
+        return GostUtil.normalizeChainProtocol(source);
     }
 
 

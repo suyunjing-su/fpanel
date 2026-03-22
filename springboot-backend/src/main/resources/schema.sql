@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS tunnel (
   name VARCHAR(100) NOT NULL,
   traffic_ratio REAL NOT NULL DEFAULT 1.0,
   type INTEGER NOT NULL,
-  protocol VARCHAR(10) NOT NULL DEFAULT 'tls',
+  protocol VARCHAR(10) NOT NULL DEFAULT 'tcp',
   flow INTEGER NOT NULL,
   created_time INTEGER NOT NULL,
   updated_time INTEGER NOT NULL,

@@ -574,8 +574,7 @@ public class FlowController extends BaseController {
                 connector.put("type", "relay");
                 nodeItem.put("connector", connector);
 
-                JSONObject dialer = new JSONObject();
-                dialer.put("type", nextHop.getProtocol());
+                JSONObject dialer = GostUtil.createChainDialer(nextHop.getProtocol());
                 nodeItem.put("dialer", dialer);
                 nodes.add(nodeItem);
             }
@@ -604,14 +603,20 @@ public class FlowController extends BaseController {
                 continue;
             }
 
-            String serviceName = chainTunnel.getTunnelId() + "_tls";
+            String serviceName = GostUtil.buildChainServiceName(
+                    chainTunnel.getTunnelId(),
+                    chainTunnel.getProtocol()
+            );
             if (serviceNames.contains(serviceName)) {
                 continue;
             }
 
             JSONObject service = new JSONObject();
             service.put("name", serviceName);
-            service.put("addr", node.getTcpListenAddr() + ":" + chainTunnel.getPort());
+            String normalizedProtocol = GostUtil.normalizeChainProtocol(chainTunnel.getProtocol());
+            String transportType = GostUtil.resolveChainTransportType(normalizedProtocol);
+            String listenAddr = GostUtil.isUdpTransport(transportType) ? node.getUdpListenAddr() : node.getTcpListenAddr();
+            service.put("addr", listenAddr + ":" + chainTunnel.getPort());
 
             if (Objects.equals(chainTunnel.getChainType(), 3) && StringUtils.hasText(node.getInterfaceName())) {
                 JSONObject metadata = new JSONObject();
@@ -626,8 +631,7 @@ public class FlowController extends BaseController {
             }
             service.put("handler", handler);
 
-            JSONObject listener = new JSONObject();
-            listener.put("type", chainTunnel.getProtocol());
+            JSONObject listener = GostUtil.createChainListener(chainTunnel.getProtocol());
             service.put("listener", listener);
             services.add(service);
             serviceNames.add(serviceName);

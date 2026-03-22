@@ -62,16 +62,14 @@ public class CheckGostConfigAsync {
                     List<String> serviceIds = parseServiceName(service.getName());
 
                     JSONArray services = new JSONArray();
-                    if (Objects.equals(serviceIds.getLast(), "tls")){
-                        String forward_id = serviceIds.getFirst();
-                        services.add(forward_id + "_tls");
-
-                        Tunnel tunnel = tunnelService.getById(forward_id);
+                    Long tunnelId = GostUtil.parseTunnelIdFromChainServiceName(service.getName());
+                    if (tunnelId != null){
+                        services.add(service.getName());
+                        Tunnel tunnel = tunnelService.getById(tunnelId);
                         if (tunnel == null) {
                             GostUtil.DeleteService(node.getId(), services);
                             log.info("删除孤立的服务: {} (节点: {})", service.getName(), node.getId());
                         }
-
                     }
 
                     if (Objects.equals(serviceIds.getLast(), "tcp")){
