@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -23,6 +24,47 @@ import (
 	psnet "github.com/shirou/gopsutil/v3/net"
 	"os"
 )
+
+func buildSecureWebSocketBase(addr string) (string, error) {
+	trimmed := strings.TrimSpace(addr)
+	if trimmed == "" {
+		return "", fmt.Errorf("服务器地址为空")
+	}
+
+	if strings.Contains(trimmed, "://") {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("解析服务器地址失败: %v", err)
+		}
+
+		switch strings.ToLower(u.Scheme) {
+		case "wss":
+			u.Scheme = "wss"
+			return strings.TrimRight(u.String(), "/"), nil
+		case "https":
+			u.Scheme = "wss"
+			return strings.TrimRight(u.String(), "/"), nil
+		case "ws", "http":
+			return "", fmt.Errorf("禁止不安全协议: %s，请使用 wss 或 https", u.Scheme)
+		default:
+			return "", fmt.Errorf("不支持的协议: %s", u.Scheme)
+		}
+	}
+
+	return "wss://" + strings.TrimRight(trimmed, "/"), nil
+}
+
+func buildNodeWebSocketURL(addr string, version string, httpPort int, tlsPort int, socksPort int) (string, error) {
+	base, err := buildSecureWebSocketBase(addr)
+	if err != nil {
+		return "", err
+	}
+
+	return base + "/system-info?type=1&version=" + version +
+		"&http=" + strconv.Itoa(httpPort) +
+		"&tls=" + strconv.Itoa(tlsPort) +
+		"&socks=" + strconv.Itoa(socksPort), nil
+}
 
 // SystemInfo 系统信息结构体
 type SystemInfo struct {
@@ -213,8 +255,10 @@ func (w *WebSocketReporter) connect() error {
 	}
 
 	// 使用最新的配置重新构建 URL
-	currentURL := "ws://" + w.addr + "/system-info?type=1&secret=" + w.secret + "&version=" + w.version +
-		"&http=" + strconv.Itoa(cfg.Http) + "&tls=" + strconv.Itoa(cfg.Tls) + "&socks=" + strconv.Itoa(cfg.Socks)
+	currentURL, err := buildNodeWebSocketURL(w.addr, w.version, cfg.Http, cfg.Tls, cfg.Socks)
+	if err != nil {
+		return fmt.Errorf("构建WebSocket地址失败: %v", err)
+	}
 
 	u, err := url.Parse(currentURL)
 	if err != nil {
@@ -223,8 +267,12 @@ func (w *WebSocketReporter) connect() error {
 
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 10 * time.Second
+	headers := http.Header{}
+	if w.secret != "" {
+		headers.Set("Authorization", "Bearer "+w.secret)
+	}
 
-	conn, _, err := dialer.Dial(u.String(), nil)
+	conn, _, err := dialer.Dial(u.String(), headers)
 	if err != nil {
 		return fmt.Errorf("连接WebSocket失败: %v", err)
 	}
@@ -1043,7 +1091,11 @@ func getMemoryInfo() MemoryInfo {
 func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
 
 	// 构建初始 WebSocket URL
-	fullURL := "ws://" + addr + "/system-info?type=1&secret=" + secret + "&version=" + version + "&http=" + strconv.Itoa(http) + "&tls=" + strconv.Itoa(tls) + "&socks=" + strconv.Itoa(socks)
+	fullURL, err := buildNodeWebSocketURL(addr, version, http, tls, socks)
+	if err != nil {
+		fmt.Printf("❌ 启动WebSocket报告器失败: %v\n", err)
+		return nil
+	}
 
 	fmt.Printf("🔗 WebSocket连接URL: %s\n", fullURL)
 

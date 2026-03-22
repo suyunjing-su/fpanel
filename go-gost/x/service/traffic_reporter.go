@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -18,6 +19,36 @@ import (
 var httpReportURL string
 var configReportURL string
 var httpAESCrypto *crypto.AESCrypto // 新增：HTTP上报加密器
+var httpAuthHeaderValue string
+
+func buildSecureHTTPBaseURL(addr string) (string, error) {
+	trimmed := strings.TrimSpace(addr)
+	if trimmed == "" {
+		return "", fmt.Errorf("服务器地址为空")
+	}
+
+	if strings.Contains(trimmed, "://") {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("解析服务器地址失败: %v", err)
+		}
+
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			u.Scheme = "https"
+			return strings.TrimRight(u.String(), "/"), nil
+		case "wss":
+			u.Scheme = "https"
+			return strings.TrimRight(u.String(), "/"), nil
+		case "http", "ws":
+			return "", fmt.Errorf("禁止不安全协议: %s，请使用 https 或 wss", u.Scheme)
+		default:
+			return "", fmt.Errorf("不支持的协议: %s", u.Scheme)
+		}
+	}
+
+	return "https://" + strings.TrimRight(trimmed, "/"), nil
+}
 
 // TrafficReportItem 流量报告项（压缩格式）
 type TrafficReportItem struct {
@@ -27,8 +58,22 @@ type TrafficReportItem struct {
 }
 
 func SetHTTPReportURL(addr string, secret string) {
-	httpReportURL = "http://" + addr + "/flow/upload?secret=" + secret
-	configReportURL = "http://" + addr + "/flow/config?secret=" + secret
+	baseURL, err := buildSecureHTTPBaseURL(addr)
+	if err != nil {
+		fmt.Printf("❌ 构建HTTP上报地址失败: %v\n", err)
+		httpReportURL = ""
+		configReportURL = ""
+		httpAuthHeaderValue = ""
+		return
+	}
+
+	httpReportURL = baseURL + "/flow/upload"
+	configReportURL = baseURL + "/flow/config"
+	if strings.TrimSpace(secret) != "" {
+		httpAuthHeaderValue = "Bearer " + secret
+	} else {
+		httpAuthHeaderValue = ""
+	}
 
 	// 创建 AES 加密器
 	var err error
@@ -80,6 +125,9 @@ func sendBatchTrafficReport(ctx context.Context, reportItems []TrafficReportItem
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "GOST-Traffic-Reporter/1.0")
+	if httpAuthHeaderValue != "" {
+		req.Header.Set("Authorization", httpAuthHeaderValue)
+	}
 
 	client := &http.Client{
 		Timeout: 5 * time.Second,
@@ -157,6 +205,9 @@ func sendConfigReport(ctx context.Context) (bool, error) {
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Config-Reporter/1.0")
+	if httpAuthHeaderValue != "" {
+		req.Header.Set("Authorization", httpAuthHeaderValue)
+	}
 
 	client := &http.Client{
 		Timeout: 10 * time.Second, // 配置上报可以稍长一些

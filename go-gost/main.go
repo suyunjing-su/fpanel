@@ -120,6 +120,10 @@ func main() {
 	logger.SetDefault(log)
 
 	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, "2.0.2")
+	if wsReporter == nil {
+		fmt.Println("❌ WebSocket报告器启动失败，请检查配置地址是否为 https/wss")
+		os.Exit(1)
+	}
 	defer wsReporter.Stop()
 	service.SetHTTPReportURL(config.Addr, config.Secret)
 

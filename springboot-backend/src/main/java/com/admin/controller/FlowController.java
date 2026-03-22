@@ -14,10 +14,12 @@ import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 import lombok.extern.slf4j.Slf4j;
 
 import javax.annotation.Resource;
+import javax.servlet.http.HttpServletRequest;
 import java.math.BigDecimal;
 import java.util.Date;
 import java.util.List;
@@ -52,6 +54,7 @@ public class FlowController extends BaseController {
 
     // 常量定义
     private static final String SUCCESS_RESPONSE = "ok";
+    private static final String FORBIDDEN_RESPONSE = "forbidden";
     private static final String DEFAULT_USER_TUNNEL_ID = "0";
     private static final long BYTES_TO_GB = 1024L * 1024L * 1024L;
 
@@ -106,7 +109,20 @@ public class FlowController extends BaseController {
 
     @PostMapping("/config")
     @LogAnnotation
-    public String config(@RequestBody String rawData, String secret) {
+    public String config(@RequestBody String rawData,
+                         @RequestParam(value = "secret", required = false) String querySecret,
+                         HttpServletRequest request) {
+        if (!isSecureTransport(request)) {
+            log.warn("拒绝非安全配置上报请求，IP: {}", request.getRemoteAddr());
+            return FORBIDDEN_RESPONSE;
+        }
+
+        String secret = resolveNodeSecret(request, querySecret);
+        if (!StringUtils.hasText(secret)) {
+            log.warn("拒绝无鉴权配置上报请求，IP: {}", request.getRemoteAddr());
+            return FORBIDDEN_RESPONSE;
+        }
+
         Node node = nodeService.getOne(new QueryWrapper<Node>().eq("secret", secret));
         if (node == null) return SUCCESS_RESPONSE;
 
@@ -142,7 +158,20 @@ public class FlowController extends BaseController {
      */
     @RequestMapping("/upload")
     @LogAnnotation
-    public String uploadFlowData(@RequestBody String rawData, String secret) {
+    public String uploadFlowData(@RequestBody String rawData,
+                                 @RequestParam(value = "secret", required = false) String querySecret,
+                                 HttpServletRequest request) {
+        if (!isSecureTransport(request)) {
+            log.warn("拒绝非安全流量上报请求，IP: {}", request.getRemoteAddr());
+            return FORBIDDEN_RESPONSE;
+        }
+
+        String secret = resolveNodeSecret(request, querySecret);
+        if (!StringUtils.hasText(secret)) {
+            log.warn("拒绝无鉴权流量上报请求，IP: {}", request.getRemoteAddr());
+            return FORBIDDEN_RESPONSE;
+        }
+
         // 1. 验证节点权限
         if (!isValidNode(secret)) {
             return SUCCESS_RESPONSE;
@@ -372,6 +401,51 @@ public class FlowController extends BaseController {
 
     private Object getForwardLock(String forwardId) {
         return FORWARD_LOCKS.computeIfAbsent(forwardId, k -> new Object());
+    }
+
+    private String resolveNodeSecret(HttpServletRequest request, String querySecret) {
+        String fromHeader = extractBearerToken(request.getHeader("Authorization"));
+        if (StringUtils.hasText(fromHeader)) {
+            return fromHeader;
+        }
+
+        if (StringUtils.hasText(querySecret)) {
+            log.warn("检测到已弃用的query secret传递方式，建议切换Authorization头，IP: {}", request.getRemoteAddr());
+            return querySecret;
+        }
+
+        return null;
+    }
+
+    private String extractBearerToken(String authorization) {
+        if (!StringUtils.hasText(authorization)) {
+            return null;
+        }
+        String value = authorization.trim();
+        if (value.regionMatches(true, 0, "Bearer ", 0, 7)) {
+            value = value.substring(7).trim();
+        }
+        return StringUtils.hasText(value) ? value : null;
+    }
+
+    private boolean isSecureTransport(HttpServletRequest request) {
+        if (request.isSecure()) {
+            return true;
+        }
+
+        String forwardedProto = request.getHeader("X-Forwarded-Proto");
+        if (StringUtils.hasText(forwardedProto)) {
+            String[] protocols = forwardedProto.split(",");
+            for (String proto : protocols) {
+                String normalized = proto == null ? "" : proto.trim().toLowerCase();
+                if ("https".equals(normalized) || "wss".equals(normalized)) {
+                    return true;
+                }
+            }
+        }
+
+        String scheme = request.getScheme();
+        return "https".equalsIgnoreCase(scheme) || "wss".equalsIgnoreCase(scheme);
     }
 
     private boolean isValidNode(String secret) {
