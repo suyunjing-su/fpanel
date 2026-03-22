@@ -407,12 +407,19 @@ public class GostUtil {
         if (basePort == null) {
             return null;
         }
-        int candidate = basePort + 10000;
+        int adjacent = basePort + 1;
+        if (adjacent <= 65535) {
+            return adjacent;
+        }
+
+        int candidate = basePort - 1;
+        if (candidate > 0) {
+            return candidate;
+        }
+
+        candidate = basePort + 10000;
         while (candidate > 65535) {
             candidate -= 10000;
-        }
-        if (candidate == basePort) {
-            candidate = basePort > 2000 ? basePort - 1000 : basePort + 2000;
         }
         return candidate;
     }

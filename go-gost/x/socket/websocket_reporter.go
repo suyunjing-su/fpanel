@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,10 +19,12 @@ import (
 	"github.com/go-gost/x/internal/util/crypto"
 	"github.com/go-gost/x/service"
 	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	psnet "github.com/shirou/gopsutil/v3/net"
+	"github.com/xtaci/kcp-go/v5"
 	"os"
 )
 
@@ -642,6 +645,23 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		tcpPingResult, err = w.handleTcpPing(cmd.Data)
 		response.Type = "TcpPingResponse"
 		response.Data = tcpPingResult
+
+	// UDP/QUIC/KCP Ping 诊断命令
+	case "UdpPing":
+		var udpPingResult TcpPingResponse
+		udpPingResult, err = w.handleUdpPing(cmd.Data)
+		response.Type = "UdpPingResponse"
+		response.Data = udpPingResult
+	case "QuicPing":
+		var quicPingResult TcpPingResponse
+		quicPingResult, err = w.handleQuicPing(cmd.Data)
+		response.Type = "QuicPingResponse"
+		response.Data = quicPingResult
+	case "KcpPing":
+		var kcpPingResult TcpPingResponse
+		kcpPingResult, err = w.handleKcpPing(cmd.Data)
+		response.Type = "KcpPingResponse"
+		response.Data = kcpPingResult
 
 	// Protocol blocking switches
 	case "SetProtocol":
@@ -1348,6 +1368,154 @@ func (w *WebSocketReporter) handleTcpPing(data interface{}) (TcpPingResponse, er
 	}
 
 	return response, nil
+}
+
+func (w *WebSocketReporter) handleUdpPing(data interface{}) (TcpPingResponse, error) {
+	return w.handleTransportPing(data, "udp")
+}
+
+func (w *WebSocketReporter) handleQuicPing(data interface{}) (TcpPingResponse, error) {
+	return w.handleTransportPing(data, "quic")
+}
+
+func (w *WebSocketReporter) handleKcpPing(data interface{}) (TcpPingResponse, error) {
+	return w.handleTransportPing(data, "kcp")
+}
+
+func (w *WebSocketReporter) handleTransportPing(data interface{}, transport string) (TcpPingResponse, error) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return TcpPingResponse{}, fmt.Errorf("序列化%s ping数据失败: %v", strings.ToUpper(transport), err)
+	}
+
+	var req TcpPingRequest
+	if err := json.Unmarshal(jsonData, &req); err != nil {
+		return TcpPingResponse{}, fmt.Errorf("解析%s ping请求失败: %v", strings.ToUpper(transport), err)
+	}
+
+	if net.ParseIP(req.IP) == nil && !isValidHostname(req.IP) {
+		return TcpPingResponse{
+			IP:           req.IP,
+			Port:         req.Port,
+			Success:      false,
+			ErrorMessage: "无效的IP地址或主机名",
+			RequestId:    req.RequestId,
+		}, nil
+	}
+
+	if req.Port <= 0 || req.Port > 65535 {
+		return TcpPingResponse{
+			IP:           req.IP,
+			Port:         req.Port,
+			Success:      false,
+			ErrorMessage: "无效的端口号，范围应为1-65535",
+			RequestId:    req.RequestId,
+		}, nil
+	}
+
+	if req.Count <= 0 {
+		req.Count = 4
+	}
+	if req.Timeout <= 0 {
+		req.Timeout = 5000
+	}
+
+	avgTime, packetLoss, err := transportPingHost(transport, req.IP, req.Port, req.Count, req.Timeout)
+
+	response := TcpPingResponse{
+		IP:        req.IP,
+		Port:      req.Port,
+		RequestId: req.RequestId,
+	}
+
+	if err != nil {
+		response.Success = false
+		response.ErrorMessage = err.Error()
+	} else {
+		response.Success = true
+		response.AverageTime = avgTime
+		response.PacketLoss = packetLoss
+	}
+
+	return response, nil
+}
+
+func transportPingHost(transport, ip string, port int, count int, timeoutMs int) (float64, float64, error) {
+	var totalTime float64
+	var successCount int
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	target := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
+
+	if net.ParseIP(ip) == nil {
+		addrs, err := net.LookupHost(ip)
+		if err != nil {
+			return 0, 100.0, fmt.Errorf("DNS解析失败: %v", err)
+		}
+		if len(addrs) == 0 {
+			return 0, 100.0, fmt.Errorf("DNS解析未返回任何IP地址")
+		}
+		target = net.JoinHostPort(addrs[0], fmt.Sprintf("%d", port))
+	}
+
+	for i := 0; i < count; i++ {
+		start := time.Now()
+		err := probeTransport(transport, target, timeout)
+		elapsed := time.Since(start)
+		if err == nil {
+			totalTime += elapsed.Seconds() * 1000
+			successCount++
+		}
+		if i < count-1 {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	if successCount == 0 {
+		return 0, 100.0, fmt.Errorf("所有%s连接尝试都失败", strings.ToUpper(transport))
+	}
+
+	avgTime := totalTime / float64(successCount)
+	packetLoss := float64(count-successCount) / float64(count) * 100
+	return avgTime, packetLoss, nil
+}
+
+func probeTransport(transport, target string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	switch transport {
+	case "udp":
+		conn, err := net.DialTimeout("udp", target, timeout)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+		if _, err = conn.Write([]byte("flux-udp-ping")); err != nil {
+			return err
+		}
+		return nil
+	case "quic":
+		tlsCfg := &tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"h3", "quic/v1"},
+		}
+		conn, err := quic.DialAddr(ctx, target, tlsCfg, &quic.Config{})
+		if err != nil {
+			return err
+		}
+		return conn.CloseWithError(0, "ping")
+	case "kcp":
+		conn, err := kcp.DialWithOptions(target, nil, 10, 3)
+		if err != nil {
+			return err
+		}
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+		_ = conn.Close()
+		return nil
+	default:
+		return fmt.Errorf("未知传输协议: %s", transport)
+	}
 }
 
 // tcpPingHost 执行TCP连接测试，返回平均连接时间和失败率

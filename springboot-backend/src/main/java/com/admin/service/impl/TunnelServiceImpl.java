@@ -97,7 +97,7 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                     Node node = nodeService.getById(chain_node.getNodeId());
                     if (node == null) return R.err("节点不存在");
                     nodes.put(node.getId(), node);
-                    Integer nodePort = getNodePort(chain_node.getNodeId());
+                    Integer nodePort = getNodePort(chain_node.getNodeId(), protocol);
                     chain_node.setPort(nodePort);
                     chain_node.setInx(inx); // 设置转发链序号
                     chain_node.setProtocol(protocol);
@@ -112,7 +112,7 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 Node node = nodeService.getById(out_node.getNodeId());
                 if (node == null) return R.err("节点不存在");
                 nodes.put(node.getId(), node);
-                Integer nodePort = getNodePort(out_node.getNodeId());
+                Integer nodePort = getNodePort(out_node.getNodeId(), protocol);
                 out_node.setPort(nodePort);
                 out_node.setProtocol(protocol);
                 chainTunnels.add(out_node);
@@ -550,27 +550,14 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                         for (ChainTunnel firstChainNode : chainNodesList.getFirst()) {
                             Node toNode = nodeService.getById(firstChainNode.getNodeId());
                             if (toNode != null) {
-                                DiagnosisResult result = performTcpPingDiagnosisWithConnectionCheck(
-                                        fromNode, toNode.getServerIp(), firstChainNode.getPort(),
-                                        "入口(" + fromNode.getName() + ")->第1跳(" + toNode.getName() + ")"
-                                );
-                                result.setFromChainType(1); // 入口
-                                result.setToChainType(2); // 链
-                                result.setToInx(firstChainNode.getInx());
-                                results.add(result);
+                                addEntryDiagnosisResults(results, fromNode, toNode, firstChainNode, 2, firstChainNode.getInx());
                             }
                         }
                     } else if (!outNodes.isEmpty()) {
                         for (ChainTunnel outNode : outNodes) {
                             Node toNode = nodeService.getById(outNode.getNodeId());
                             if (toNode != null) {
-                                DiagnosisResult result = performTcpPingDiagnosisWithConnectionCheck(
-                                        fromNode, toNode.getServerIp(), outNode.getPort(),
-                                        "入口(" + fromNode.getName() + ")->出口(" + toNode.getName() + ")"
-                                );
-                                result.setFromChainType(1);
-                                result.setToChainType(3);
-                                results.add(result);
+                                addEntryDiagnosisResults(results, fromNode, toNode, outNode, 3, null);
                             }
                         }
                     }
@@ -640,6 +627,10 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
     }
 
     public Integer getNodePort(Long nodeId) {
+        return getNodePort(nodeId, GostUtil.PROTOCOL_TCP);
+    }
+
+    public Integer getNodePort(Long nodeId, String protocol) {
 
         Node node = nodeService.getById(nodeId);
         if (node == null){
@@ -654,6 +645,17 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 .map(ChainTunnel::getPort)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
+        for (ChainTunnel chainTunnel : chainTunnels) {
+            if (chainTunnel.getPort() == null) {
+                continue;
+            }
+            if (GostUtil.isHybridUdpProtocol(chainTunnel.getProtocol())) {
+                Integer udpPort = GostUtil.resolveChainListenPort(chainTunnel.getPort(), chainTunnel.getProtocol(), GostUtil.PROTOCOL_UDP);
+                if (udpPort != null) {
+                    usedPorts.add(udpPort);
+                }
+            }
+        }
 
 
         List<ForwardPort> list = forwardPortService.list(new QueryWrapper<ForwardPort>().eq("node_id", nodeId));
@@ -672,7 +674,134 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         if (availablePorts.isEmpty()) {
             throw new RuntimeException("节点端口已满，无可用端口");
         }
+
+        String normalizedProtocol = GostUtil.normalizeChainProtocol(protocol);
+        if (GostUtil.isHybridUdpProtocol(normalizedProtocol)) {
+            for (Integer candidate : availablePorts) {
+                Integer udpPort = GostUtil.resolveChainListenPort(candidate, normalizedProtocol, GostUtil.PROTOCOL_UDP);
+                if (udpPort == null || Objects.equals(udpPort, candidate)) {
+                    continue;
+                }
+                if (parsedPorts.contains(udpPort) && !usedPorts.contains(udpPort)) {
+                    return candidate;
+                }
+            }
+        }
         return availablePorts.getFirst();
+    }
+
+    private void addEntryDiagnosisResults(List<DiagnosisResult> results,
+                                          Node fromNode,
+                                          Node toNode,
+                                          ChainTunnel targetTunnel,
+                                          int toChainType,
+                                          Integer toInx) {
+        if (targetTunnel.getPort() == null) {
+            return;
+        }
+
+        String baseDesc = "入口(" + fromNode.getName() + ")->" +
+                (toChainType == 3 ? "出口(" + toNode.getName() + ")" : "第1跳(" + toNode.getName() + ")");
+
+        String protocol = GostUtil.normalizeChainProtocol(targetTunnel.getProtocol());
+        if (GostUtil.isHybridUdpProtocol(protocol)) {
+            Integer udpPort = GostUtil.resolveChainListenPort(targetTunnel.getPort(), protocol, GostUtil.PROTOCOL_UDP);
+            DiagnosisResult udpResult = performTransportPingDiagnosisWithConnectionCheck(
+                    fromNode,
+                    toNode.getServerIp(),
+                    udpPort,
+                    baseDesc + " [UDPPing]",
+                    "UdpPing",
+                    "UDP连接成功"
+            );
+            udpResult.setFromChainType(1);
+            udpResult.setToChainType(toChainType);
+            udpResult.setToInx(toInx);
+            results.add(udpResult);
+
+            String commandType = Objects.equals(protocol, GostUtil.PROTOCOL_UDP_QUIC) ? "QuicPing" : "KcpPing";
+            String successMsg = Objects.equals(protocol, GostUtil.PROTOCOL_UDP_QUIC) ? "QUIC连接成功" : "KCP连接成功";
+            DiagnosisResult mixedResult = performTransportPingDiagnosisWithConnectionCheck(
+                    fromNode,
+                    toNode.getServerIp(),
+                    targetTunnel.getPort(),
+                    baseDesc + (Objects.equals(protocol, GostUtil.PROTOCOL_UDP_QUIC) ? " [QUICPing]" : " [KCPPing]"),
+                    commandType,
+                    successMsg
+            );
+            mixedResult.setFromChainType(1);
+            mixedResult.setToChainType(toChainType);
+            mixedResult.setToInx(toInx);
+            results.add(mixedResult);
+            return;
+        }
+
+        DiagnosisResult result = performTcpPingDiagnosisWithConnectionCheck(
+                fromNode, toNode.getServerIp(), targetTunnel.getPort(), baseDesc
+        );
+        result.setFromChainType(1);
+        result.setToChainType(toChainType);
+        result.setToInx(toInx);
+        results.add(result);
+    }
+
+    private DiagnosisResult performTransportPingDiagnosisWithConnectionCheck(Node node,
+                                                                             String targetIp,
+                                                                             int port,
+                                                                             String description,
+                                                                             String commandType,
+                                                                             String successMessage) {
+        DiagnosisResult result = new DiagnosisResult();
+        result.setNodeId(node.getId());
+        result.setNodeName(node.getName());
+        result.setTargetIp(targetIp);
+        result.setTargetPort(port);
+        result.setDescription(description);
+        result.setTimestamp(System.currentTimeMillis());
+
+        try {
+            JSONObject pingData = new JSONObject();
+            pingData.put("ip", targetIp);
+            pingData.put("port", port);
+            pingData.put("count", 4);
+            pingData.put("timeout", 5000);
+
+            GostDto gostResult = WebSocketServer.send_msg(node.getId(), pingData, commandType);
+            if (gostResult != null && "OK".equals(gostResult.getMsg())) {
+                if (gostResult.getData() != null) {
+                    JSONObject pingResponse = (JSONObject) gostResult.getData();
+                    boolean success = pingResponse.getBooleanValue("success");
+                    result.setSuccess(success);
+                    if (success) {
+                        result.setMessage(successMessage);
+                        result.setAverageTime(pingResponse.getDoubleValue("averageTime"));
+                        result.setPacketLoss(pingResponse.getDoubleValue("packetLoss"));
+                    } else {
+                        result.setMessage(pingResponse.getString("errorMessage"));
+                        result.setAverageTime(-1.0);
+                        result.setPacketLoss(100.0);
+                    }
+                } else {
+                    result.setSuccess(true);
+                    result.setMessage(successMessage);
+                    result.setAverageTime(0.0);
+                    result.setPacketLoss(0.0);
+                }
+                return result;
+            }
+
+            result.setSuccess(false);
+            result.setMessage(gostResult != null ? gostResult.getMsg() : "节点无响应");
+            result.setAverageTime(-1.0);
+            result.setPacketLoss(100.0);
+            return result;
+        } catch (Exception e) {
+            result.setSuccess(false);
+            result.setMessage("连接检查异常: " + e.getMessage());
+            result.setAverageTime(-1.0);
+            result.setPacketLoss(100.0);
+            return result;
+        }
     }
 
     public static List<Integer> parsePorts(String input) {
