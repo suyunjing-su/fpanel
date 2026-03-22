@@ -30,7 +30,7 @@ import org.springframework.beans.factory.annotation.Value;
 @Service
 public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements NodeService {
 
-    private static final String RELEASE_VERSION = "3.0.6-beta";
+    private static final String RELEASE_VERSION = "3.0.7-beta";
 
 
     @Resource
