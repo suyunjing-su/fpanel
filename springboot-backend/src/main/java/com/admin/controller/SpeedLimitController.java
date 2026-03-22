@@ -2,6 +2,7 @@ package com.admin.controller;
 
 import com.admin.common.aop.LogAnnotation;
 import com.admin.common.annotation.RequireRole;
+import com.admin.common.dto.BatchDeleteDto;
 import com.admin.common.dto.SpeedLimitDto;
 import com.admin.common.dto.SpeedLimitUpdateDto;
 import com.admin.common.lang.R;
@@ -59,6 +60,20 @@ public class SpeedLimitController extends BaseController {
     public R delete(@RequestBody Map<String, Object> params) {
         Long id = Long.valueOf(params.get("id").toString());
         return speedLimitService.deleteSpeedLimit(id);
+    }
+
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/batch-delete")
+    public R batchDelete(@Validated @RequestBody BatchDeleteDto batchDeleteDto) {
+        return executeBatchDelete(
+                batchDeleteDto.getIds(),
+                speedLimitService::deleteSpeedLimit,
+                id -> {
+                    com.admin.entity.SpeedLimit speedLimit = speedLimitService.getById(id);
+                    return speedLimit != null ? speedLimit.getName() : String.valueOf(id);
+                }
+        );
     }
 
     @LogAnnotation

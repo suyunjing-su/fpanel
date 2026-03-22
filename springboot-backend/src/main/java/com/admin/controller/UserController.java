@@ -3,6 +3,7 @@ package com.admin.controller;
 
 import com.admin.common.aop.LogAnnotation;
 import com.admin.common.annotation.RequireRole;
+import com.admin.common.dto.BatchDeleteDto;
 import com.admin.common.dto.*;
 import com.admin.common.lang.R;
 import org.springframework.validation.annotation.Validated;
@@ -57,6 +58,26 @@ public class UserController extends BaseController {
     public R delete(@RequestBody Map<String, Object> params) {
         Long id = Long.valueOf(params.get("id").toString());
         return userService.deleteUser(id);
+    }
+
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/batch-delete")
+    public R batchDelete(@Validated @RequestBody BatchDeleteDto batchDeleteDto) {
+        return executeBatchDelete(
+                batchDeleteDto.getIds(),
+                userService::deleteUser,
+                id -> {
+                    com.admin.entity.User user = userService.getById(id);
+                    if (user == null) {
+                        return String.valueOf(id);
+                    }
+                    if (user.getUser() != null && !user.getUser().trim().isEmpty()) {
+                        return user.getUser();
+                    }
+                    return String.valueOf(id);
+                }
+        );
     }
 
     @LogAnnotation

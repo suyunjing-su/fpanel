@@ -2,6 +2,7 @@ package com.admin.controller;
 
 import com.admin.common.aop.LogAnnotation;
 import com.admin.common.annotation.RequireRole;
+import com.admin.common.dto.BatchDeleteDto;
 import com.admin.common.dto.TunnelDto;
 import com.admin.common.dto.TunnelUpdateDto;
 
@@ -63,6 +64,20 @@ public class TunnelController extends BaseController {
     public R delete(@RequestBody Map<String, Object> params) {
         Long id = Long.valueOf(params.get("id").toString());
         return tunnelService.deleteTunnel(id);
+    }
+
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/batch-delete")
+    public R batchDelete(@Validated @RequestBody BatchDeleteDto batchDeleteDto) {
+        return executeBatchDelete(
+                batchDeleteDto.getIds(),
+                tunnelService::deleteTunnel,
+                id -> {
+                    com.admin.entity.Tunnel tunnel = tunnelService.getById(id);
+                    return tunnel != null ? tunnel.getName() : String.valueOf(id);
+                }
+        );
     }
 
     // ============ 用户隧道权限管理相关方法 ============

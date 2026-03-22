@@ -2,6 +2,7 @@ package com.admin.controller;
 
 import com.admin.common.aop.LogAnnotation;
 import com.admin.common.annotation.RequireRole;
+import com.admin.common.dto.BatchDeleteDto;
 import com.admin.common.dto.ForwardDto;
 import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.lang.R;
@@ -51,6 +52,19 @@ public class ForwardController extends BaseController {
     public R delete(@RequestBody Map<String, Object> params) {
         Long id = Long.valueOf(params.get("id").toString());
         return forwardService.deleteForward(id);
+    }
+
+    @LogAnnotation
+    @PostMapping("/batch-delete")
+    public R batchDelete(@Validated @RequestBody BatchDeleteDto batchDeleteDto) {
+        return executeBatchDelete(
+                batchDeleteDto.getIds(),
+                forwardService::deleteForward,
+                id -> {
+                    com.admin.entity.Forward forward = forwardService.getById(id);
+                    return forward != null ? forward.getName() : String.valueOf(id);
+                }
+        );
     }
 
     @LogAnnotation
