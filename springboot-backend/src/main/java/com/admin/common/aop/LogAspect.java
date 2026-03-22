@@ -18,6 +18,7 @@ import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import org.springframework.util.StringUtils;
 
 @Component
 @Aspect
@@ -53,8 +54,12 @@ public class LogAspect {
         // 获取用户ID
         String authorization = request.getHeader("Authorization") + "";
         Object user_id = "未登录"; // 请求用户的id
-        if (!authorization.equals("null")) {
-            user_id = JwtUtil.getUserIdFromToken(authorization);
+        if (isLikelyJwtToken(authorization)) {
+            try {
+                user_id = JwtUtil.getUserIdFromToken(authorization);
+            } catch (Exception ignored) {
+                user_id = "未登录";
+            }
         }
         
         // 获取请求IP
@@ -107,8 +112,12 @@ public class LogAspect {
             // 获取用户ID
             String authorization = request.getHeader("Authorization") + "";
             Object user_id = "未登录"; // 请求用户的id
-            if (!authorization.equals("null")) {
-                user_id = JwtUtil.getUserIdFromToken(authorization);
+            if (isLikelyJwtToken(authorization)) {
+                try {
+                    user_id = JwtUtil.getUserIdFromToken(authorization);
+                } catch (Exception ignored) {
+                    user_id = "未登录";
+                }
             }
             
             // 获取请求IP
@@ -189,5 +198,23 @@ public class LogAspect {
         } catch (Exception e) {
             return "获取参数失败: " + e.getMessage();
         }
+    }
+
+    private boolean isLikelyJwtToken(String authorization) {
+        if (!StringUtils.hasText(authorization) || "null".equals(authorization)) {
+            return false;
+        }
+
+        String value = authorization.trim();
+        if (value.regionMatches(true, 0, "Bearer ", 0, 7)) {
+            value = value.substring(7).trim();
+        }
+
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+
+        String[] parts = value.split("\\.");
+        return parts.length == 3;
     }
 }
