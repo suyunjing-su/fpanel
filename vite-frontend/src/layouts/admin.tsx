@@ -257,7 +257,7 @@ export default function AdminLayout({
       <aside className={`
         ${isMobile ? 'fixed' : 'relative'} 
         ${isMobile && !mobileMenuVisible ? '-translate-x-full' : 'translate-x-0'}
-        ${isMobile ? 'w-[82vw] max-w-[320px] rounded-none' : 'w-72 rounded-2xl panel-shell'}
+        ${isMobile ? 'w-[82vw] max-w-[320px] rounded-none' : 'w-64 rounded-2xl panel-shell'}
         ${isMobile ? 'bg-white/95 dark:bg-slate-950/95 border-r border-slate-200 dark:border-slate-700' : ''}
         ${isMobile ? 'shadow-2xl' : ''}
         z-50 
