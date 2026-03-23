@@ -46,6 +46,21 @@ const isCaptchaEnabled = (configs: Record<string, string>) => configs.captcha_en
 const isNativeCaptchaProvider = (configs: Record<string, string>) =>
   isCaptchaEnabled(configs) && (configs.captcha_provider || 'native') === 'native';
 
+const CAPTCHA_PROVIDER_REQUIRED_FIELDS: Record<string, { key: string; label: string }[]> = {
+  geetest: [
+    { key: 'captcha_geetest_id', label: 'GeeTest CAPTCHA ID' },
+    { key: 'captcha_geetest_key', label: 'GeeTest CAPTCHA KEY' }
+  ],
+  recaptcha: [
+    { key: 'captcha_recaptcha_site_key', label: 'reCAPTCHA Site Key' },
+    { key: 'captcha_recaptcha_secret_key', label: 'reCAPTCHA Secret Key' }
+  ],
+  hcaptcha: [
+    { key: 'captcha_hcaptcha_site_key', label: 'hCaptcha Site Key' },
+    { key: 'captcha_hcaptcha_secret_key', label: 'hCaptcha Secret Key' }
+  ]
+};
+
 // 网站配置项定义
 const CONFIG_ITEMS: ConfigItem[] = [
   {
@@ -374,6 +389,22 @@ export default function ConfigPage() {
     return Array.from(new Set([...changedFromCurrent, ...changedFromOriginal]));
   };
 
+  const getCaptchaProviderMissingLabels = () => {
+    if (configs.captcha_enabled !== 'true') {
+      return [] as string[];
+    }
+
+    const provider = (configs.captcha_provider || 'native').trim();
+    if (provider === 'native') {
+      return [] as string[];
+    }
+
+    const fields = CAPTCHA_PROVIDER_REQUIRED_FIELDS[provider] || [];
+    return fields
+      .filter((field) => !(configs[field.key] || '').trim())
+      .map((field) => field.label);
+  };
+
   const validateCaptchaProviderConfig = (changedKeys: string[]) => {
     const captchaRelatedChanged = changedKeys.some(
       (key) => key === 'captcha_enabled' || key === 'captcha_provider' || key.startsWith('captcha_')
@@ -391,26 +422,7 @@ export default function ConfigPage() {
     if (provider === 'native') {
       return true;
     }
-
-    const requiredFields: Record<string, { key: string; label: string }[]> = {
-      geetest: [
-        { key: 'captcha_geetest_id', label: 'GeeTest CAPTCHA ID' },
-        { key: 'captcha_geetest_key', label: 'GeeTest CAPTCHA KEY' }
-      ],
-      recaptcha: [
-        { key: 'captcha_recaptcha_site_key', label: 'reCAPTCHA Site Key' },
-        { key: 'captcha_recaptcha_secret_key', label: 'reCAPTCHA Secret Key' }
-      ],
-      hcaptcha: [
-        { key: 'captcha_hcaptcha_site_key', label: 'hCaptcha Site Key' },
-        { key: 'captcha_hcaptcha_secret_key', label: 'hCaptcha Secret Key' }
-      ]
-    };
-
-    const fields = requiredFields[provider] || [];
-    const missingLabels = fields
-      .filter((field) => !(configs[field.key] || '').trim())
-      .map((field) => field.label);
+    const missingLabels = getCaptchaProviderMissingLabels();
 
     if (missingLabels.length > 0) {
       toast.error(`请先填写完整验证码配置：${missingLabels.join('、')}`);
@@ -419,6 +431,9 @@ export default function ConfigPage() {
 
     return true;
   };
+
+  const missingCaptchaLabels = getCaptchaProviderMissingLabels();
+  const hasCaptchaConfigError = missingCaptchaLabels.length > 0;
 
   // 保存配置
   const handleSave = async () => {
@@ -602,10 +617,15 @@ export default function ConfigPage() {
                   startContent={<SaveIcon className="w-4 h-4" />}
                   onClick={handleSave}
                   isLoading={saving}
-                  disabled={!hasChanges}
+                  disabled={!hasChanges || hasCaptchaConfigError}
                 >
                   {saving ? '保存中...' : '保存配置'}
                 </Button>
+                {hasCaptchaConfigError && (
+                  <p className="text-xs text-danger-500 max-w-xs text-right">
+                    第三方验证码配置不完整：{missingCaptchaLabels.join('、')}
+                  </p>
+                )}
               </div>
             </div>
           </CardHeader>
