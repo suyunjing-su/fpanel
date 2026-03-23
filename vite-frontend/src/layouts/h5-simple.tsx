@@ -29,9 +29,9 @@ export default function H5SimpleLayout({
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-gray-100 dark:bg-black">
+    <div className="flex flex-col min-h-screen bg-transparent">
       {/* 顶部导航栏 */}
-      <header className="bg-white dark:bg-black shadow-sm border-b border-gray-200 dark:border-gray-600 h-14 safe-top flex-shrink-0 flex items-center justify-between px-4 relative z-10">
+      <header className="h-14 safe-top flex-shrink-0 flex items-center justify-between px-4 relative z-10 bg-white/95 dark:bg-slate-950/95 border-b border-slate-200 dark:border-slate-700 backdrop-blur-lg">
         <div className="flex items-center gap-2">
           <Button
             isIconOnly
@@ -44,7 +44,7 @@ export default function H5SimpleLayout({
             </svg>
           </Button>
           <Logo size={20} />
-          <h1 className="text-sm font-bold text-foreground">{siteConfig.name}</h1>
+          <h1 className="text-sm font-bold text-foreground tracking-wide">{siteConfig.name}</h1>
         </div>
 
         <div className="flex items-center gap-2">
@@ -52,7 +52,7 @@ export default function H5SimpleLayout({
       </header>
 
       {/* 主内容区域 */}
-      <main className="flex-1 bg-gray-100 dark:bg-black pb-0">
+      <main className="flex-1 bg-transparent pb-0">
         {children}
       </main>
     </div>
