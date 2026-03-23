@@ -160,14 +160,36 @@ export default function ProfilePage() {
   };
 
   return (
-    <div className="px-3 lg:px-6 py-8 flex flex-col h-full">
+    <div className="px-3 lg:px-6 py-4 lg:py-6 flex flex-col h-full space-y-4">
+
+      <Card className="panel-shell overflow-hidden">
+        <CardBody className="p-4 lg:p-5">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.14em] panel-muted">Profile Center</p>
+              <h1 className="text-xl lg:text-2xl font-semibold mt-1">账户与系统入口</h1>
+              <p className="text-sm panel-muted mt-1">集中处理账号安全与后台管理功能</p>
+            </div>
+            <div className="hidden sm:grid grid-cols-2 gap-2 min-w-[220px]">
+              <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 bg-white/70 dark:bg-slate-900/60 px-3 py-2">
+                <p className="text-xs panel-muted">当前角色</p>
+                <p className="text-sm font-semibold mt-1">{isAdmin ? '管理员' : '普通用户'}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 bg-white/70 dark:bg-slate-900/60 px-3 py-2">
+                <p className="text-xs panel-muted">客户端版本</p>
+                <p className="text-sm font-semibold mt-1">v{ isWebViewFunc() ? siteConfig.app_version : siteConfig.version}</p>
+              </div>
+            </div>
+          </div>
+        </CardBody>
+      </Card>
 
       <div className="space-y-6 flex-1">
         {/* 用户信息卡片 */}
-        <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
+        <Card className="panel-shell panel-card-hover">
           <CardBody className="p-4">
             <div className="flex items-center space-x-4">
-              <div className="w-12 h-12 bg-primary-100 dark:bg-primary-900/30 rounded-full flex items-center justify-center">
+              <div className="w-12 h-12 bg-sky-100 dark:bg-sky-900/30 rounded-full flex items-center justify-center">
                 <svg className="w-6 h-6 text-primary" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" />
                 </svg>
@@ -192,27 +214,28 @@ export default function ProfilePage() {
         </Card>
 
         {/* 功能网格 */}
-        <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
+        <Card className="panel-shell panel-card-hover">
           <CardBody className="p-4">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               {/* 管理员功能 */}
               {isAdmin && adminMenuItems.map((item) => (
                 <button
                   key={item.path}
                   onClick={() => navigate(item.path)}
-                  className="flex flex-col items-center p-3 rounded-2xl bg-gray-50 dark:bg-default-100 hover:bg-gray-100 dark:hover:bg-default-200 transition-colors duration-200"
+                  className="flex flex-col items-center p-3 rounded-2xl bg-slate-50/85 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-700/70 hover:bg-slate-100/90 dark:hover:bg-slate-800/80 transition-colors duration-200"
                 >
                   <div className={`w-10 h-10 ${item.color} rounded-full flex items-center justify-center mb-2`}>
                     {item.icon}
                   </div>
                   <span className="text-xs text-foreground text-center">{item.label}</span>
+                  <span className="text-[11px] panel-muted text-center mt-1 line-clamp-2">{item.description}</span>
                 </button>
               ))}
               
               {/* 修改密码 */}
               <button
                 onClick={onOpen}
-                className="flex flex-col items-center p-3 rounded-2xl bg-gray-50 dark:bg-default-100 hover:bg-gray-100 dark:hover:bg-default-200 transition-colors duration-200"
+                className="flex flex-col items-center p-3 rounded-2xl bg-slate-50/85 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-700/70 hover:bg-slate-100/90 dark:hover:bg-slate-800/80 transition-colors duration-200"
               >
                 <div className="w-10 h-10 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center mb-2">
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
@@ -220,12 +243,13 @@ export default function ProfilePage() {
                   </svg>
                 </div>
                 <span className="text-xs text-foreground text-center">修改密码</span>
+                <span className="text-[11px] panel-muted text-center mt-1">更新账号与凭证</span>
               </button>
               
               {/* 退出登录 */}
               <button
                 onClick={handleLogout}
-                className="flex flex-col items-center p-3 rounded-2xl bg-gray-50 dark:bg-default-100 hover:bg-gray-100 dark:hover:bg-default-200 transition-colors duration-200"
+                className="flex flex-col items-center p-3 rounded-2xl bg-slate-50/85 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-700/70 hover:bg-slate-100/90 dark:hover:bg-slate-800/80 transition-colors duration-200"
               >
                 <div className="w-10 h-10 bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400 rounded-full flex items-center justify-center mb-2">
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
@@ -233,24 +257,25 @@ export default function ProfilePage() {
                   </svg>
                 </div>
                 <span className="text-xs text-foreground text-center">退出登录</span>
+                <span className="text-[11px] panel-muted text-center mt-1">清理会话并返回登录</span>
               </button>
             </div>
           </CardBody>
         </Card>
 
         <div className="fixed inset-x-0 bottom-20 text-center py-4">
-               <p className="text-xs text-gray-400 dark:text-gray-500">
+               <p className="text-xs panel-muted">
                  Powered by{' '}
                  <a 
                    href="https://github.com/suyunjing-su/fpanel" 
                    target="_blank" 
                    rel="noopener noreferrer"
-                   className="text-gray-500 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                   className="text-slate-500 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-300 transition-colors"
                  >
                    flux-panel
                  </a>
                </p>
-               <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+               <p className="text-xs panel-muted mt-1">
                  v{ isWebViewFunc() ? siteConfig.app_version : siteConfig.version}
                </p>
              </div>
