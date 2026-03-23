@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
@@ -203,6 +203,10 @@ export default function ForwardPage() {
   // 表单验证错误
   const [errors, setErrors] = useState<{[key: string]: string}>({});
 
+  const [keyword, setKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'stopped' | 'abnormal'>('all');
+  const [tunnelFilter, setTunnelFilter] = useState<number | 'all'>('all');
+
   useEffect(() => {
     loadData();
   }, []);
@@ -359,12 +363,50 @@ export default function ForwardPage() {
     }
   });
 
+  const filteredForwards = useMemo(() => {
+    const lowerKeyword = keyword.trim().toLowerCase();
+    return forwards.filter((forward) => {
+      if (viewMode === 'direct') {
+        const currentUserId = JwtUtil.getUserIdFromToken();
+        if (currentUserId !== null && forward.userId !== currentUserId) {
+          return false;
+        }
+      }
+
+      if (tunnelFilter !== 'all' && forward.tunnelId !== tunnelFilter) {
+        return false;
+      }
+
+      if (statusFilter === 'running' && !forward.serviceRunning) {
+        return false;
+      }
+      if (statusFilter === 'stopped' && forward.serviceRunning) {
+        return false;
+      }
+      if (statusFilter === 'abnormal' && forward.status !== 2) {
+        return false;
+      }
+
+      if (!lowerKeyword) {
+        return true;
+      }
+
+      return [
+        forward.name,
+        forward.tunnelName,
+        forward.remoteAddr,
+        forward.inIp,
+        forward.inPort?.toString() || ''
+      ].some((field) => field?.toLowerCase().includes(lowerKeyword));
+    });
+  }, [forwards, keyword, statusFilter, tunnelFilter, viewMode]);
+
   // 按用户和隧道分组转发数据
-  const groupForwardsByUserAndTunnel = (): UserGroup[] => {
+  const groupForwardsByUserAndTunnel = (sourceForwards: Forward[]): UserGroup[] => {
     const userMap = new Map<string, UserGroup>();
     
     // 获取排序后的转发列表
-    const sortedForwards = getSortedForwards();
+    const sortedForwards = getSortedForwards(sourceForwards);
     
     sortedForwards.forEach(forward => {
       const userKey = forward.userId ? forward.userId.toString() : 'unknown';
@@ -887,7 +929,7 @@ export default function ForwardPage() {
       
       if (viewMode === 'grouped') {
         // 分组模式下，获取指定隧道的转发
-        const userGroups = groupForwardsByUserAndTunnel();
+        const userGroups = groupForwardsByUserAndTunnel(forwards);
         forwardsToExport = userGroups.flatMap(userGroup => 
           userGroup.tunnelGroups
             .filter(tunnelGroup => tunnelGroup.tunnelId === selectedTunnelForExport)
@@ -1148,28 +1190,19 @@ export default function ForwardPage() {
   );
 
   // 根据排序顺序获取转发列表
-  const getSortedForwards = (): Forward[] => {
+  const getSortedForwards = (sourceForwards: Forward[] = filteredForwards): Forward[] => {
     // 确保 forwards 数组存在且有效
-    if (!forwards || forwards.length === 0) {
+    if (!sourceForwards || sourceForwards.length === 0) {
       return [];
     }
-    
-    // 在平铺模式下，只显示当前用户的转发
-    let filteredForwards = forwards;
-    if (viewMode === 'direct') {
-      const currentUserId = JwtUtil.getUserIdFromToken();
-      if (currentUserId !== null) {
-        filteredForwards = forwards.filter(forward => forward.userId === currentUserId);
-      }
-    }
-    
+
     // 确保过滤后的转发列表有效
-    if (!filteredForwards || filteredForwards.length === 0) {
+    if (!sourceForwards || sourceForwards.length === 0) {
       return [];
     }
     
     // 优先使用数据库中的 inx 字段进行排序
-    const sortedForwards = [...filteredForwards].sort((a, b) => {
+    const sortedForwards = [...sourceForwards].sort((a, b) => {
       const aInx = a.inx ?? 0;
       const bInx = b.inx ?? 0;
       return aInx - bInx;
@@ -1177,7 +1210,7 @@ export default function ForwardPage() {
     
     // 如果数据库中没有排序信息，则使用本地存储的顺序
     if (forwardOrder && forwardOrder.length > 0 && sortedForwards.every(f => f.inx === undefined || f.inx === 0)) {
-      const forwardMap = new Map(filteredForwards.map(f => [f.id, f]));
+      const forwardMap = new Map(sourceForwards.map(f => [f.id, f]));
       const localSortedForwards: Forward[] = [];
       
       forwardOrder.forEach(id => {
@@ -1188,7 +1221,7 @@ export default function ForwardPage() {
       });
       
       // 添加不在排序列表中的转发（新添加的）
-      filteredForwards.forEach(forward => {
+      sourceForwards.forEach(forward => {
         if (!forwardOrder.includes(forward.id)) {
           localSortedForwards.push(forward);
         }
@@ -1235,7 +1268,7 @@ export default function ForwardPage() {
     const strategyDisplay = getStrategyDisplay(forward.strategy);
     
     return (
-      <Card key={forward.id} className="group shadow-sm border border-divider hover:shadow-md transition-shadow duration-200">
+      <Card key={forward.id} className="group panel-shell panel-card-hover">
         <CardHeader className="pb-2">
           <div className="flex justify-between items-start w-full">
             <div className="flex items-start gap-2 flex-1 min-w-0">
@@ -1415,14 +1448,102 @@ export default function ForwardPage() {
     );
   }
 
-  const userGroups = groupForwardsByUserAndTunnel();
+  const sortedForwards = getSortedForwards();
+  const userGroups = groupForwardsByUserAndTunnel(filteredForwards);
+  const runningCount = filteredForwards.filter((item) => item.serviceRunning).length;
+  const abnormalCount = filteredForwards.filter((item) => item.status === 2).length;
+  const hasActiveFilter = keyword.trim().length > 0 || statusFilter !== 'all' || tunnelFilter !== 'all';
 
   return (
     
-      <div className="px-3 lg:px-6 py-8">
+      <div className="px-3 lg:px-6 py-4 lg:py-6 space-y-4">
+        <Card className="panel-shell">
+          <CardBody className="p-4 lg:p-5">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.14em] panel-muted">Forward Manager</p>
+                <h1 className="text-xl lg:text-2xl font-semibold mt-1">转发配置与状态管理</h1>
+              </div>
+              <div className="grid grid-cols-3 gap-2 w-full lg:w-auto lg:min-w-[360px]">
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">总数</p>
+                  <p className="text-sm font-semibold mt-1">{filteredForwards.length}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">运行中</p>
+                  <p className="text-sm font-semibold mt-1 text-emerald-600 dark:text-emerald-300">{runningCount}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">异常</p>
+                  <p className="text-sm font-semibold mt-1 text-rose-600 dark:text-rose-300">{abnormalCount}</p>
+                </div>
+              </div>
+            </div>
+          </CardBody>
+        </Card>
+
         {/* 页面头部 */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex-1">
+        <div className="panel-shell p-3 lg:p-4 flex flex-col gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+            <Input
+              size="sm"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="搜索名称、隧道、地址或端口"
+              className="w-full lg:max-w-sm"
+            />
+            <Select
+              selectedKeys={new Set([String(statusFilter)])}
+              onSelectionChange={(keys) => {
+                const value = Array.from(keys)[0] as 'all' | 'running' | 'stopped' | 'abnormal' | undefined;
+                setStatusFilter(value || 'all');
+              }}
+              size="sm"
+              className="w-full lg:w-[180px]"
+              aria-label="状态过滤"
+            >
+              <SelectItem key="all">全部状态</SelectItem>
+              <SelectItem key="running">运行中</SelectItem>
+              <SelectItem key="stopped">已停止</SelectItem>
+              <SelectItem key="abnormal">异常</SelectItem>
+            </Select>
+            <Select
+              selectedKeys={new Set([String(tunnelFilter)])}
+              onSelectionChange={(keys) => {
+                const value = Array.from(keys)[0] as string | undefined;
+                setTunnelFilter(value && value !== 'all' ? Number(value) : 'all');
+              }}
+              size="sm"
+              className="w-full lg:w-[220px]"
+              aria-label="隧道过滤"
+            >
+              <SelectItem key="all">全部隧道</SelectItem>
+              {tunnels.map((tunnel) => (
+                <SelectItem key={String(tunnel.id)}>{tunnel.name}</SelectItem>
+              ))}
+            </Select>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm panel-muted">
+              当前显示 {filteredForwards.length} 条转发记录{viewMode === 'direct' && hasActiveFilter ? '（筛选状态下禁用拖拽排序）' : ''}
+            </div>
+            <div className="flex items-center gap-2">
+              {(keyword || statusFilter !== 'all' || tunnelFilter !== 'all') && (
+                <Button
+                  size="sm"
+                  variant="flat"
+                  color="default"
+                  onPress={() => {
+                    setKeyword('');
+                    setStatusFilter('all');
+                    setTunnelFilter('all');
+                  }}
+                >
+                  清除筛选
+                </Button>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-3">
             {batchSelection.selectedCount > 0 && (
@@ -1518,7 +1639,7 @@ export default function ForwardPage() {
           userGroups.length > 0 ? (
             <div className="space-y-6">
               {userGroups.map((userGroup) => (
-                <Card key={userGroup.userId || 'unknown'} className="shadow-sm border border-divider w-full overflow-hidden">
+                <Card key={userGroup.userId || 'unknown'} className="panel-shell w-full overflow-hidden">
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between w-full min-w-0">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -1580,7 +1701,7 @@ export default function ForwardPage() {
             </div>
           ) : (
             /* 空状态 */
-            <Card className="shadow-sm border border-gray-200 dark:border-gray-700">
+            <Card className="panel-shell">
               <CardBody className="text-center py-16">
                 <div className="flex flex-col items-center gap-4">
                   <div className="w-16 h-16 bg-default-100 rounded-full flex items-center justify-center">
@@ -1598,29 +1719,37 @@ export default function ForwardPage() {
           )
         ) : (
           /* 直接显示模式 */
-          forwards.length > 0 ? (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleDragEnd}
-              onDragStart={() => {}} // 添加空的 onDragStart 处理器
-            >
-              <SortableContext
-                items={getSortedForwards().map(f => f.id || 0).filter(id => id > 0)}
-                strategy={rectSortingStrategy}
+          sortedForwards.length > 0 ? (
+            hasActiveFilter ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                {sortedForwards.map((forward) => (
+                  forward && forward.id ? renderForwardCard(forward, undefined) : null
+                ))}
+              </div>
+            ) : (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+                onDragStart={() => {}} // 添加空的 onDragStart 处理器
               >
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-                  {getSortedForwards().map((forward) => (
-                    forward && forward.id ? (
-                      <SortableForwardCard key={forward.id} forward={forward} />
-                    ) : null
-                  ))}
-                </div>
-              </SortableContext>
-            </DndContext>
+                <SortableContext
+                  items={sortedForwards.map(f => f.id || 0).filter(id => id > 0)}
+                  strategy={rectSortingStrategy}
+                >
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                    {sortedForwards.map((forward) => (
+                      forward && forward.id ? (
+                        <SortableForwardCard key={forward.id} forward={forward} />
+                      ) : null
+                    ))}
+                  </div>
+                </SortableContext>
+              </DndContext>
+            )
           ) : (
             /* 空状态 */
-            <Card className="shadow-sm border border-gray-200 dark:border-gray-700">
+            <Card className="panel-shell">
               <CardBody className="text-center py-16">
                 <div className="flex flex-col items-center gap-4">
                   <div className="w-16 h-16 bg-default-100 rounded-full flex items-center justify-center">
