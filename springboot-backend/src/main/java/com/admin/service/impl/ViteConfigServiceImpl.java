@@ -12,6 +12,7 @@ import org.springframework.util.StringUtils;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * <p>
@@ -24,6 +25,12 @@ import java.util.Map;
 @Service
 public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteConfig> implements ViteConfigService {
 
+    private static final Set<String> PRIVATE_CONFIG_KEYS = Set.of(
+            "captcha_geetest_key",
+            "captcha_recaptcha_secret_key",
+            "captcha_hcaptcha_secret_key"
+    );
+
 
     @Override
     public R getConfigs() {
@@ -31,6 +38,9 @@ public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteCon
         Map<String, String> configMap = new HashMap<>();
         
         for (ViteConfig config : configList) {
+            if (PRIVATE_CONFIG_KEYS.contains(config.getName())) {
+                continue;
+            }
             configMap.put(config.getName(), config.getValue());
         }
         
@@ -41,6 +51,7 @@ public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteCon
     @Override
     public R getConfigByName(String name) {
         if (!StringUtils.hasText(name)) return R.err("配置名称不能为空");
+        if (PRIVATE_CONFIG_KEYS.contains(name)) return R.err("敏感配置不允许公开读取");
 
         QueryWrapper<ViteConfig> queryWrapper = new QueryWrapper<>();
         queryWrapper.eq("name", name);
