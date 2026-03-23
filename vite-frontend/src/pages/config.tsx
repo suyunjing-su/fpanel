@@ -251,8 +251,8 @@ export default function ConfigPage() {
         setOriginalConfigs({ ...configs });
         setHasChanges(false);
         
-        // 如果应用名称发生变化，立即更新网站配置
-        if (changedKeys.includes('app_name')) {
+        // 品牌配置发生变化时，立即更新网站配置（标题、favicon、登录品牌）
+        if (changedKeys.some((key) => ['app_name', 'app_logo', 'login_page_description'].includes(key))) {
           await updateSiteConfig();
         }
         

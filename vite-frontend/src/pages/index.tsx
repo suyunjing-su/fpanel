@@ -6,12 +6,11 @@ import { useNavigate } from "react-router-dom";
 import toast from 'react-hot-toast';
 import axios from 'axios';
 import { isWebViewFunc } from '@/utils/panel';
-import { getCachedConfig, siteConfig } from '@/config/site';
+import { getCachedConfig, getPanelBrandLogo, siteConfig } from '@/config/site';
 import { login, LoginData, checkCaptcha } from "@/api";
 import "@/utils/tac.css";
 import "@/utils/tac.min.js";
 import bgImage from "@/images/bg.jpg";
-import defaultLogo from "@/images/icon.png";
 
 
 interface LoginForm {
@@ -292,11 +291,11 @@ export default function IndexPage() {
           <div className="mb-8 text-center">
             <div className="mb-4 inline-flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl shadow-lg shadow-sky-500/30 bg-white/80 dark:bg-slate-900/70 border border-slate-200/70 dark:border-slate-700/70">
               <img
-                src={loginLogo || defaultLogo}
+                src={getPanelBrandLogo(loginLogo)}
                 alt="Logo"
                 className="h-full w-full object-contain"
                 onError={(event) => {
-                  event.currentTarget.src = defaultLogo;
+                  event.currentTarget.src = getPanelBrandLogo('');
                 }}
               />
             </div>
