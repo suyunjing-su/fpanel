@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Textarea } from "@heroui/input";
+import { Select, SelectItem } from "@heroui/select";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
 import { Chip } from "@heroui/chip";
 import { Switch } from "@heroui/switch";
@@ -88,6 +89,8 @@ export default function NodePage() {
     socks: 0
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [keyword, setKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline'>('all');
   
   // 安装命令相关状态
   const [installCommandModal, setInstallCommandModal] = useState(false);
@@ -137,6 +140,24 @@ export default function NodePage() {
     batchDeleteApi: batchDeleteNodes,
     reloadData: loadNodes
   });
+
+  const filteredNodes = useMemo(() => {
+    const lowerKeyword = keyword.trim().toLowerCase();
+    return nodeList.filter((node) => {
+      if (statusFilter === 'online' && node.connectionStatus !== 'online') {
+        return false;
+      }
+      if (statusFilter === 'offline' && node.connectionStatus !== 'offline') {
+        return false;
+      }
+      if (!lowerKeyword) {
+        return true;
+      }
+      return [node.name, node.serverIp, node.version || '', String(node.id)].some((field) =>
+        field?.toLowerCase().includes(lowerKeyword)
+      );
+    });
+  }, [nodeList, keyword, statusFilter]);
 
   // 初始化WebSocket连接
   const initWebSocket = () => {
@@ -621,13 +642,74 @@ export default function NodePage() {
 
   return (
     
-      <div className="px-3 lg:px-6 py-8">
+      <div className="px-3 lg:px-6 py-4 lg:py-6 space-y-4">
+        <Card className="panel-shell">
+          <CardBody className="p-4 lg:p-5">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.14em] panel-muted">Node Monitor</p>
+                <h1 className="text-xl lg:text-2xl font-semibold mt-1">节点状态与资源监控</h1>
+              </div>
+              <div className="grid grid-cols-3 gap-2 w-full lg:w-auto lg:min-w-[360px]">
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">节点总数</p>
+                  <p className="text-sm font-semibold mt-1">{filteredNodes.length}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">在线</p>
+                  <p className="text-sm font-semibold mt-1 text-emerald-600 dark:text-emerald-300">{filteredNodes.filter((item) => item.connectionStatus === 'online').length}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">离线</p>
+                  <p className="text-sm font-semibold mt-1 text-rose-600 dark:text-rose-300">{filteredNodes.filter((item) => item.connectionStatus === 'offline').length}</p>
+                </div>
+              </div>
+            </div>
+          </CardBody>
+        </Card>
+
         {/* 页面头部 */}
-        <div className="flex items-center justify-between mb-6">
-        <div className="flex-1">
+        <div className="panel-shell p-3 lg:p-4 flex flex-col gap-3">
+        <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+          <Input
+            size="sm"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="搜索节点名称、IP、版本或 ID"
+            className="w-full lg:max-w-sm"
+          />
+          <Select
+            selectedKeys={new Set([statusFilter])}
+            onSelectionChange={(keys) => {
+              const value = Array.from(keys)[0] as 'all' | 'online' | 'offline' | undefined;
+              setStatusFilter(value || 'all');
+            }}
+            size="sm"
+            className="w-full lg:w-[180px]"
+            aria-label="节点状态"
+          >
+            <SelectItem key="all">全部状态</SelectItem>
+            <SelectItem key="online">在线</SelectItem>
+            <SelectItem key="offline">离线</SelectItem>
+          </Select>
         </div>
 
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-sm panel-muted">当前显示 {filteredNodes.length} 个节点</div>
         <div className="flex items-center gap-3">
+        {(keyword || statusFilter !== 'all') && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="default"
+            onPress={() => {
+              setKeyword('');
+              setStatusFilter('all');
+            }}
+          >
+            清除筛选
+          </Button>
+        )}
         {batchSelection.selectedCount > 0 && (
           <Button
             size="sm"
@@ -668,6 +750,7 @@ export default function NodePage() {
               新增
             </Button>
         </div>
+        </div>
      
         </div>
 
@@ -679,8 +762,8 @@ export default function NodePage() {
               <span className="text-default-600">正在加载...</span>
             </div>
           </div>
-        ) : nodeList.length === 0 ? (
-          <Card className="shadow-sm border border-gray-200 dark:border-gray-700">
+        ) : filteredNodes.length === 0 ? (
+          <Card className="panel-shell">
             <CardBody className="text-center py-16">
               <div className="flex flex-col items-center gap-4">
                 <div className="w-16 h-16 bg-default-100 rounded-full flex items-center justify-center">
@@ -697,10 +780,10 @@ export default function NodePage() {
           </Card>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-            {nodeList.map((node) => (
+            {filteredNodes.map((node) => (
               <Card 
                 key={node.id} 
-                className="shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
+                className="panel-shell panel-card-hover"
               >
                 <CardHeader className="pb-2">
                   <div className="flex justify-between items-start w-full">
