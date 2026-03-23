@@ -253,12 +253,18 @@ export default function IndexPage() {
 
   return (
     <DefaultLayout>
-      <section className="flex flex-col items-center justify-center gap-4 py-4 sm:py-8 md:py-10 pb-20 min-h-[calc(100dvh-120px)] sm:min-h-[calc(100dvh-200px)]">
-        <div className="w-full max-w-md px-4 sm:px-0">
-          <Card className="w-full">
-            <CardHeader className="pb-0 pt-6 px-6 flex-col items-center">
-              <h1 className={title({ size: "sm" })}>登陆</h1>
-              <p className="text-small text-default-500 mt-2">请输入您的账号信息</p>
+      <section className="relative min-h-[calc(100dvh-170px)] flex items-center justify-center py-3 sm:py-6">
+        <div className="absolute inset-0 pointer-events-none">
+          <div className="h-48 w-48 rounded-full bg-sky-300/25 blur-3xl absolute -top-8 -left-8" />
+          <div className="h-56 w-56 rounded-full bg-blue-300/20 blur-3xl absolute -bottom-10 -right-10" />
+        </div>
+
+        <div className="w-full max-w-md px-1 sm:px-0 relative z-10">
+          <Card className="w-full border border-slate-200/70 dark:border-slate-700/70 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md shadow-xl">
+            <CardHeader className="pb-2 pt-6 px-6 flex-col items-start">
+              <span className="inline-flex items-center rounded-full bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-300 text-xs px-2.5 py-1 font-medium">Secure Access</span>
+              <h1 className={`${title({ size: "sm" })} mt-3`}>欢迎登录</h1>
+              <p className="text-small text-default-500 mt-2">请输入账号信息进入控制台</p>
             </CardHeader>
             <CardBody className="px-6 py-6">
               <div className="flex flex-col gap-4">
@@ -293,10 +299,21 @@ export default function IndexPage() {
                   onClick={handleLogin}
                   isLoading={loading}
                   disabled={loading}
-                  className="mt-2"
+                  className="mt-2 font-semibold"
                 >
                   {loading ? (showCaptcha ? "验证中..." : "登录中...") : "登录"}
                 </Button>
+
+                <div className="grid grid-cols-2 gap-2 pt-2">
+                  <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-[0.14em] panel-muted">Auth</p>
+                    <p className="text-xs font-medium text-foreground mt-1">账号密码验证</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-[0.14em] panel-muted">Risk</p>
+                    <p className="text-xs font-medium text-foreground mt-1">按策略触发验证码</p>
+                  </div>
+                </div>
               </div>
             </CardBody>
           </Card>
@@ -305,19 +322,19 @@ export default function IndexPage() {
 
       {/* 版权信息 - 固定在底部，不占据布局空间 */}
       
-               <div className="fixed inset-x-0 bottom-4 text-center py-4">
-               <p className="text-xs text-gray-400 dark:text-gray-500">
+               <div className="fixed inset-x-0 bottom-4 text-center py-2">
+               <p className="text-xs panel-muted">
                  Powered by{' '}
                  <a 
                    href="https://github.com/suyunjing-su/fpanel" 
                    target="_blank" 
                    rel="noopener noreferrer"
-                   className="text-gray-500 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                   className="text-slate-500 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-300 transition-colors"
                  >
                    flux-panel
                  </a>
                </p>
-               <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+               <p className="text-xs panel-muted mt-1">
                  v{ isWebView ? siteConfig.app_version : siteConfig.version}
                </p>
              </div>
