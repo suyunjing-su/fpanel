@@ -1516,11 +1516,12 @@ export default function ForwardPage() {
               size="sm"
               className="w-full lg:w-[220px]"
               aria-label="隧道过滤"
+              items={[
+                { key: 'all', label: '全部隧道' },
+                ...tunnels.map((tunnel) => ({ key: String(tunnel.id), label: tunnel.name }))
+              ]}
             >
-              <SelectItem key="all">全部隧道</SelectItem>
-              {tunnels.map((tunnel) => (
-                <SelectItem key={String(tunnel.id)}>{tunnel.name}</SelectItem>
-              ))}
+              {(item) => <SelectItem key={item.key}>{item.label}</SelectItem>}
             </Select>
           </div>
 
