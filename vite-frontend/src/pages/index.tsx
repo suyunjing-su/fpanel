@@ -6,11 +6,12 @@ import { useNavigate } from "react-router-dom";
 import toast from 'react-hot-toast';
 import axios from 'axios';
 import { isWebViewFunc } from '@/utils/panel';
-import { siteConfig } from '@/config/site';
+import { getCachedConfig, siteConfig } from '@/config/site';
 import { login, LoginData, checkCaptcha } from "@/api";
 import "@/utils/tac.css";
 import "@/utils/tac.min.js";
 import bgImage from "@/images/bg.jpg";
+import defaultLogo from "@/images/icon.png";
 
 
 interface LoginForm {
@@ -52,6 +53,9 @@ export default function IndexPage() {
   const tacInstanceRef = useRef<any>(null);
   const captchaContainerRef = useRef<HTMLDivElement>(null);
   const [isWebView, setIsWebView] = useState(false);
+  const [appName, setAppName] = useState(siteConfig.name || 'flux');
+  const [loginLogo, setLoginLogo] = useState(siteConfig.app_logo || '');
+  const [loginDescription, setLoginDescription] = useState(siteConfig.login_page_description || '');
   const isDarkMode = document.documentElement.classList.contains('dark') ||
     document.documentElement.getAttribute('data-theme') === 'dark' ||
     window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -67,6 +71,30 @@ export default function IndexPage() {
   // 检测是否在WebView中运行
   useEffect(() => {
     setIsWebView(isWebViewFunc());
+  }, []);
+
+  useEffect(() => {
+    const syncLoginBranding = async () => {
+      try {
+        const [cachedAppName, cachedLogo, cachedDescription] = await Promise.all([
+          getCachedConfig('app_name'),
+          getCachedConfig('app_logo'),
+          getCachedConfig('login_page_description')
+        ]);
+
+        if (cachedAppName) {
+          setAppName(cachedAppName);
+        }
+        setLoginLogo(cachedLogo || '');
+        setLoginDescription(cachedDescription || '');
+      } catch (error) {
+        console.warn('同步登录品牌配置失败:', error);
+      }
+    };
+
+    syncLoginBranding();
+    window.addEventListener('configUpdated', syncLoginBranding);
+    return () => window.removeEventListener('configUpdated', syncLoginBranding);
   }, []);
   // 验证表单
   const validateForm = (): boolean => {
@@ -260,51 +288,72 @@ export default function IndexPage() {
       </div>
 
       <main className="relative z-10 min-h-screen flex items-center justify-center px-4 py-10 sm:px-6">
-        <Card className="w-full max-w-md border border-slate-200/80 dark:border-slate-700/70 bg-white/94 dark:bg-slate-900/90 backdrop-blur-xl shadow-2xl">
-          <CardHeader className="px-7 pt-8 pb-2 flex-col items-center text-center">
-            <h2 className="text-2xl font-bold text-slate-900 dark:text-white">欢迎回来</h2>
-            <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">登录到您的账户</p>
-          </CardHeader>
-
-          <CardBody className="px-7 pb-8 pt-5">
-            <div className="space-y-5">
-              <Input
-                label="用户名"
-                placeholder="请输入用户名"
-                value={form.username}
-                onChange={(e) => handleInputChange('username', e.target.value)}
-                onKeyDown={handleKeyPress}
-                variant="bordered"
-                isDisabled={loading}
-                isInvalid={!!errors.username}
-                errorMessage={errors.username}
+        <div className="w-full max-w-md">
+          <div className="mb-8 text-center">
+            <div className="mb-4 inline-flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl shadow-lg shadow-sky-500/30 bg-white/80 dark:bg-slate-900/70 border border-slate-200/70 dark:border-slate-700/70">
+              <img
+                src={loginLogo || defaultLogo}
+                alt="Logo"
+                className="h-full w-full object-contain"
+                onError={(event) => {
+                  event.currentTarget.src = defaultLogo;
+                }}
               />
-
-              <Input
-                label="密码"
-                placeholder="请输入密码"
-                type="password"
-                value={form.password}
-                onChange={(e) => handleInputChange('password', e.target.value)}
-                onKeyDown={handleKeyPress}
-                variant="bordered"
-                isDisabled={loading}
-                isInvalid={!!errors.password}
-              />
-
-              <Button
-                color="primary"
-                size="lg"
-                onClick={handleLogin}
-                isLoading={loading}
-                disabled={loading}
-                className="w-full font-semibold"
-              >
-                {loading ? (showCaptcha ? "验证中..." : "登录中...") : "登录"}
-              </Button>
             </div>
-          </CardBody>
-        </Card>
+            <h1 className="mb-2 text-3xl font-bold bg-gradient-to-r from-sky-600 to-blue-500 bg-clip-text text-transparent">
+              {appName}
+            </h1>
+            {loginDescription.trim() && (
+              <p className="text-sm text-slate-500 dark:text-slate-400">{loginDescription}</p>
+            )}
+          </div>
+
+          <Card className="w-full max-w-md border border-slate-200/80 dark:border-slate-700/70 bg-white/94 dark:bg-slate-900/90 backdrop-blur-xl shadow-2xl">
+            <CardHeader className="px-7 pt-8 pb-2 flex-col items-center text-center">
+              <h2 className="text-2xl font-bold text-slate-900 dark:text-white">欢迎回来</h2>
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">登录到您的账户</p>
+            </CardHeader>
+
+            <CardBody className="px-7 pb-8 pt-5">
+              <div className="space-y-5">
+                <Input
+                  label="用户名"
+                  placeholder="请输入用户名"
+                  value={form.username}
+                  onChange={(e) => handleInputChange('username', e.target.value)}
+                  onKeyDown={handleKeyPress}
+                  variant="bordered"
+                  isDisabled={loading}
+                  isInvalid={!!errors.username}
+                  errorMessage={errors.username}
+                />
+
+                <Input
+                  label="密码"
+                  placeholder="请输入密码"
+                  type="password"
+                  value={form.password}
+                  onChange={(e) => handleInputChange('password', e.target.value)}
+                  onKeyDown={handleKeyPress}
+                  variant="bordered"
+                  isDisabled={loading}
+                  isInvalid={!!errors.password}
+                />
+
+                <Button
+                  color="primary"
+                  size="lg"
+                  onClick={handleLogin}
+                  isLoading={loading}
+                  disabled={loading}
+                  className="w-full font-semibold"
+                >
+                  {loading ? (showCaptcha ? "验证中..." : "登录中...") : "登录"}
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
       </main>
 
       <footer className="absolute inset-x-0 bottom-4 text-center py-2 z-10">
