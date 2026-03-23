@@ -1,5 +1,6 @@
 import axios, { AxiosResponse } from 'axios';
 import { getPanelAddresses, isWebViewFunc} from '@/utils/panel';
+import { isDevBypassEnabled } from '@/utils/auth';
 
 
 interface PanelAddress {
@@ -44,6 +45,10 @@ interface ApiResponse<T = any> {
 
 // 处理token失效的逻辑
 function handleTokenExpired() {
+  if (isDevBypassEnabled()) {
+    return;
+  }
+
   // 清除localStorage中的token
   window.localStorage.removeItem('token');
   window.localStorage.removeItem('role_id');

@@ -17,7 +17,7 @@ import AdminLayout from "@/layouts/admin";
 import H5Layout from "@/layouts/h5";
 import H5SimpleLayout from "@/layouts/h5-simple";
 
-import { isLoggedIn } from "@/utils/auth";
+import { disableDevBypassSession, enableDevBypassSession, isLoggedIn } from "@/utils/auth";
 import { siteConfig } from "@/config/site";
 
 // 检测是否为H5模式
@@ -122,6 +122,31 @@ const LoginRoute = () => {
 };
 
 function App() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const bypass = params.get('dev-bypass');
+
+    if (bypass === '1') {
+      enableDevBypassSession();
+      navigate('/dashboard', { replace: true });
+    }
+
+    if (bypass === '0') {
+      disableDevBypassSession();
+      localStorage.removeItem('token');
+      localStorage.removeItem('role_id');
+      localStorage.removeItem('admin');
+      localStorage.removeItem('name');
+      navigate('/', { replace: true });
+    }
+  }, [navigate]);
+
   // 立即设置页面标题（使用已从缓存读取的配置）
   useEffect(() => {
     document.title = siteConfig.name;
