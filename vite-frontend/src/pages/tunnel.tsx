@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
@@ -136,6 +136,8 @@ export default function TunnelPage() {
   
   // 表单验证错误
   const [errors, setErrors] = useState<{[key: string]: string}>({});
+  const [keyword, setKeyword] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'port' | 'tunnel'>('all');
 
   useEffect(() => {
     loadData();
@@ -175,6 +177,27 @@ export default function TunnelPage() {
     batchDeleteApi: batchDeleteTunnels,
     reloadData: loadData
   });
+
+  const filteredTunnels = useMemo(() => {
+    const lowerKeyword = keyword.trim().toLowerCase();
+    return tunnels.filter((tunnel) => {
+      if (typeFilter === 'port' && tunnel.type !== 1) {
+        return false;
+      }
+      if (typeFilter === 'tunnel' && tunnel.type !== 2) {
+        return false;
+      }
+      if (!lowerKeyword) {
+        return true;
+      }
+      return [
+        tunnel.name,
+        tunnel.inIp,
+        String(tunnel.trafficRatio),
+        String(tunnel.id)
+      ].some((field) => field?.toLowerCase().includes(lowerKeyword));
+    });
+  }, [tunnels, keyword, typeFilter]);
 
   // 表单验证
   const validateForm = (): boolean => {
@@ -531,13 +554,74 @@ export default function TunnelPage() {
 
   return (
     
-      <div className="px-3 lg:px-6 py-8">
+      <div className="px-3 lg:px-6 py-4 lg:py-6 space-y-4">
+        <Card className="panel-shell">
+          <CardBody className="p-4 lg:p-5">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.14em] panel-muted">Tunnel Workspace</p>
+                <h1 className="text-xl lg:text-2xl font-semibold mt-1">隧道拓扑与策略管理</h1>
+              </div>
+              <div className="grid grid-cols-3 gap-2 w-full lg:w-auto lg:min-w-[360px]">
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">总数</p>
+                  <p className="text-sm font-semibold mt-1">{filteredTunnels.length}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">端口转发</p>
+                  <p className="text-sm font-semibold mt-1 text-sky-600 dark:text-sky-300">{filteredTunnels.filter((item) => item.type === 1).length}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">隧道转发</p>
+                  <p className="text-sm font-semibold mt-1 text-violet-600 dark:text-violet-300">{filteredTunnels.filter((item) => item.type === 2).length}</p>
+                </div>
+              </div>
+            </div>
+          </CardBody>
+        </Card>
+
         {/* 页面头部 */}
-        <div className="flex items-center justify-between mb-6">
-        <div className="flex-1">
+        <div className="panel-shell p-3 lg:p-4 flex flex-col gap-3">
+        <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+          <Input
+            size="sm"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="搜索隧道名称、入口地址、倍率或 ID"
+            className="w-full lg:max-w-sm"
+          />
+          <Select
+            selectedKeys={new Set([typeFilter])}
+            onSelectionChange={(keys) => {
+              const value = Array.from(keys)[0] as 'all' | 'port' | 'tunnel' | undefined;
+              setTypeFilter(value || 'all');
+            }}
+            size="sm"
+            className="w-full lg:w-[220px]"
+            aria-label="隧道类型筛选"
+          >
+            <SelectItem key="all">全部类型</SelectItem>
+            <SelectItem key="port">端口转发</SelectItem>
+            <SelectItem key="tunnel">隧道转发</SelectItem>
+          </Select>
         </div>
 
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-sm panel-muted">当前显示 {filteredTunnels.length} 条隧道记录</div>
         <div className="flex items-center gap-3">
+        {(keyword || typeFilter !== 'all') && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="default"
+            onPress={() => {
+              setKeyword('');
+              setTypeFilter('all');
+            }}
+          >
+            清除筛选
+          </Button>
+        )}
         {batchSelection.selectedCount > 0 && (
           <Button
             size="sm"
@@ -578,17 +662,18 @@ export default function TunnelPage() {
               新增
             </Button>
         </div>
+        </div>
      
         </div>
 
         {/* 隧道卡片网格 */}
-        {tunnels.length > 0 ? (
+        {filteredTunnels.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-            {tunnels.map((tunnel) => {
+            {filteredTunnels.map((tunnel) => {
               const typeDisplay = getTypeDisplay(tunnel.type);
               
               return (
-                <Card key={tunnel.id} className="shadow-sm border border-divider hover:shadow-md transition-shadow duration-200">
+                <Card key={tunnel.id} className="panel-shell panel-card-hover">
                   <CardHeader className="pb-2">
                     <div className="flex justify-between items-start w-full">
                       <div className="flex items-start gap-2 flex-1 min-w-0">
@@ -735,7 +820,7 @@ export default function TunnelPage() {
           </div>
         ) : (
           /* 空状态 */
-          <Card className="shadow-sm border border-gray-200 dark:border-gray-700">
+          <Card className="panel-shell">
             <CardBody className="text-center py-16">
               <div className="flex flex-col items-center gap-4">
                 <div className="w-16 h-16 bg-default-100 rounded-full flex items-center justify-center">
