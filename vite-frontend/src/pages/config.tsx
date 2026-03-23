@@ -364,8 +364,69 @@ export default function ConfigPage() {
     setHasChanges(hasChangesNow);
   };
 
+  const getChangedKeys = () => {
+    const changedFromCurrent = Object.keys(configs).filter(
+      (key) => configs[key] !== originalConfigs[key]
+    );
+    const changedFromOriginal = Object.keys(originalConfigs).filter(
+      (key) => originalConfigs[key] !== configs[key]
+    );
+    return Array.from(new Set([...changedFromCurrent, ...changedFromOriginal]));
+  };
+
+  const validateCaptchaProviderConfig = (changedKeys: string[]) => {
+    const captchaRelatedChanged = changedKeys.some(
+      (key) => key === 'captcha_enabled' || key === 'captcha_provider' || key.startsWith('captcha_')
+    );
+
+    if (!captchaRelatedChanged) {
+      return true;
+    }
+
+    if (configs.captcha_enabled !== 'true') {
+      return true;
+    }
+
+    const provider = (configs.captcha_provider || 'native').trim();
+    if (provider === 'native') {
+      return true;
+    }
+
+    const requiredFields: Record<string, { key: string; label: string }[]> = {
+      geetest: [
+        { key: 'captcha_geetest_id', label: 'GeeTest CAPTCHA ID' },
+        { key: 'captcha_geetest_key', label: 'GeeTest CAPTCHA KEY' }
+      ],
+      recaptcha: [
+        { key: 'captcha_recaptcha_site_key', label: 'reCAPTCHA Site Key' },
+        { key: 'captcha_recaptcha_secret_key', label: 'reCAPTCHA Secret Key' }
+      ],
+      hcaptcha: [
+        { key: 'captcha_hcaptcha_site_key', label: 'hCaptcha Site Key' },
+        { key: 'captcha_hcaptcha_secret_key', label: 'hCaptcha Secret Key' }
+      ]
+    };
+
+    const fields = requiredFields[provider] || [];
+    const missingLabels = fields
+      .filter((field) => !(configs[field.key] || '').trim())
+      .map((field) => field.label);
+
+    if (missingLabels.length > 0) {
+      toast.error(`请先填写完整验证码配置：${missingLabels.join('、')}`);
+      return false;
+    }
+
+    return true;
+  };
+
   // 保存配置
   const handleSave = async () => {
+    const changedKeys = getChangedKeys();
+    if (!validateCaptchaProviderConfig(changedKeys)) {
+      return;
+    }
+
     setSaving(true);
     try {
       const sensitiveKeys = new Set([
