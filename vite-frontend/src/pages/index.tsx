@@ -7,7 +7,6 @@ import toast from 'react-hot-toast';
 import axios from 'axios';
 import { isWebViewFunc } from '@/utils/panel';
 import { siteConfig } from '@/config/site';
-import { title } from "@/components/primitives";
 import { login, LoginData, checkCaptcha } from "@/api";
 import "@/utils/tac.css";
 import "@/utils/tac.min.js";
@@ -260,16 +259,15 @@ export default function IndexPage() {
         <div className="h-80 w-80 rounded-full bg-blue-300/20 blur-3xl absolute -bottom-20 -right-20" />
       </div>
 
-      <main className="relative z-10 min-h-screen flex items-center justify-center p-4 sm:p-8">
-        <Card className="w-full max-w-md border border-slate-200/80 dark:border-slate-700/70 bg-white/92 dark:bg-slate-900/88 backdrop-blur-xl shadow-2xl">
-          <CardHeader className="pb-0 pt-7 px-6 flex-col items-start">
-            <span className="inline-flex items-center rounded-full bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-300 text-xs px-2.5 py-1 font-medium">Welcome Back</span>
-            <h1 className={`${title({ size: "sm" })} mt-3`}>登录控制面板</h1>
-            <p className="text-small text-default-500 mt-2">输入账号信息以继续</p>
+      <main className="relative z-10 min-h-screen flex items-center justify-center px-4 py-10 sm:px-6">
+        <Card className="w-full max-w-md border border-slate-200/80 dark:border-slate-700/70 bg-white/94 dark:bg-slate-900/90 backdrop-blur-xl shadow-2xl">
+          <CardHeader className="px-7 pt-8 pb-2 flex-col items-center text-center">
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-white">欢迎回来</h2>
+            <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">登录到您的账户</p>
           </CardHeader>
 
-          <CardBody className="px-6 py-6">
-            <div className="space-y-4">
+          <CardBody className="px-7 pb-8 pt-5">
+            <div className="space-y-5">
               <Input
                 label="用户名"
                 placeholder="请输入用户名"
@@ -300,27 +298,16 @@ export default function IndexPage() {
                 onClick={handleLogin}
                 isLoading={loading}
                 disabled={loading}
-                className="w-full mt-2 font-semibold"
+                className="w-full font-semibold"
               >
                 {loading ? (showCaptcha ? "验证中..." : "登录中...") : "登录"}
               </Button>
-
-              <div className="grid grid-cols-2 gap-2 pt-1">
-                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-slate-50/70 dark:bg-slate-900/50">
-                  <p className="text-[11px] uppercase tracking-[0.14em] panel-muted">Auth</p>
-                  <p className="text-xs font-medium text-foreground mt-1">账号密码验证</p>
-                </div>
-                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-slate-50/70 dark:bg-slate-900/50">
-                  <p className="text-[11px] uppercase tracking-[0.14em] panel-muted">Captcha</p>
-                  <p className="text-xs font-medium text-foreground mt-1">按策略触发滑动验证</p>
-                </div>
-              </div>
             </div>
           </CardBody>
         </Card>
       </main>
 
-      <footer className="fixed inset-x-0 bottom-4 text-center py-2 z-10">
+      <footer className="absolute inset-x-0 bottom-4 text-center py-2 z-10">
         <p className="text-xs panel-muted">
           Powered by{' '}
           <a
