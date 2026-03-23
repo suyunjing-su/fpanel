@@ -2,6 +2,8 @@ import { getConfigByName, getConfigs } from '@/api';
 
 export type SiteConfig = typeof siteConfig;
 
+const PANEL_BRAND_SUFFIX = 'flux_panel';
+
 // 缓存相关常量
 const CACHE_PREFIX = 'vite_config_';
 const VERSION = "3.0.11-beta";
@@ -32,6 +34,11 @@ const getInitialConfig = () => {
 };
 
 export const siteConfig = getInitialConfig();
+
+export const formatPanelTitle = (appName?: string) => {
+  const normalized = (appName || siteConfig.name || 'flux').trim();
+  return `${normalized} | ${PANEL_BRAND_SUFFIX}`;
+};
 
 // 缓存工具函数
 export const configCache = {
@@ -126,7 +133,7 @@ export const updateSiteConfig = async () => {
     if (appName && appName !== siteConfig.name) {
       siteConfig.name = appName;
       // 更新页面标题
-      document.title = appName;
+      document.title = formatPanelTitle(appName);
     }
 };
 
