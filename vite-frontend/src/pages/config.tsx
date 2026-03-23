@@ -36,11 +36,15 @@ interface ConfigItem {
   label: string;
   placeholder?: string;
   description?: string;
+  inputType?: 'text' | 'password';
   type: 'input' | 'switch' | 'select';
   options?: { label: string; value: string; description?: string }[];
-  dependsOn?: string; // 依赖的配置项key
-  dependsValue?: string; // 依赖的配置项值
+  shouldShow?: (configs: Record<string, string>) => boolean;
 }
+
+const isCaptchaEnabled = (configs: Record<string, string>) => configs.captcha_enabled === 'true';
+const isNativeCaptchaProvider = (configs: Record<string, string>) =>
+  isCaptchaEnabled(configs) && (configs.captcha_provider || 'native') === 'native';
 
 // 网站配置项定义
 const CONFIG_ITEMS: ConfigItem[] = [
@@ -89,12 +93,40 @@ const CONFIG_ITEMS: ConfigItem[] = [
     type: 'switch'
   },
   {
+    key: 'captcha_provider',
+    label: '验证码提供商',
+    description: '选择登录验证码提供商，原生为内置验证码，其它为第三方服务',
+    type: 'select',
+    shouldShow: isCaptchaEnabled,
+    options: [
+      {
+        label: '原生',
+        value: 'native',
+        description: '使用系统内置验证码能力'
+      },
+      {
+        label: '极验 v4',
+        value: 'geetest',
+        description: '接入 GeeTest v4 行为验证码'
+      },
+      {
+        label: 'Google reCAPTCHA',
+        value: 'recaptcha',
+        description: '接入 Google reCAPTCHA (v2 Invisible)'
+      },
+      {
+        label: 'hCaptcha',
+        value: 'hcaptcha',
+        description: '接入 hCaptcha (Invisible)'
+      }
+    ]
+  },
+  {
     key: 'captcha_type',
     label: '验证码类型',
-    description: '选择验证码的显示类型，不同类型有不同的安全级别',
+    description: '原生验证码子类型设置',
     type: 'select',
-    dependsOn: 'captcha_enabled',
-    dependsValue: 'true',
+    shouldShow: isNativeCaptchaProvider,
     options: [
       { 
         label: '随机类型', 
@@ -122,6 +154,65 @@ const CONFIG_ITEMS: ConfigItem[] = [
         description: '拖动滑块完成图片拼接' 
       }
     ]
+  },
+  {
+    key: 'captcha_geetest_id',
+    label: 'GeeTest CAPTCHA ID',
+    placeholder: '请输入 GeeTest CAPTCHA ID',
+    description: '极验控制台中的 captcha_id',
+    type: 'input',
+    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'geetest'
+  },
+  {
+    key: 'captcha_geetest_key',
+    label: 'GeeTest CAPTCHA KEY',
+    placeholder: '请输入 GeeTest CAPTCHA KEY',
+    description: '极验控制台中的 captcha_key（敏感信息）',
+    type: 'input',
+    inputType: 'password',
+    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'geetest'
+  },
+  {
+    key: 'captcha_geetest_domain',
+    label: 'GeeTest API 域名',
+    placeholder: 'https://gcaptcha4.geetest.com',
+    description: '极验服务域名，默认 https://gcaptcha4.geetest.com',
+    type: 'input',
+    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'geetest'
+  },
+  {
+    key: 'captcha_recaptcha_site_key',
+    label: 'reCAPTCHA Site Key',
+    placeholder: '请输入 Google reCAPTCHA Site Key',
+    description: '前端公开站点密钥',
+    type: 'input',
+    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'recaptcha'
+  },
+  {
+    key: 'captcha_recaptcha_secret_key',
+    label: 'reCAPTCHA Secret Key',
+    placeholder: '请输入 Google reCAPTCHA Secret Key',
+    description: '后端校验密钥（敏感信息）',
+    type: 'input',
+    inputType: 'password',
+    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'recaptcha'
+  },
+  {
+    key: 'captcha_hcaptcha_site_key',
+    label: 'hCaptcha Site Key',
+    placeholder: '请输入 hCaptcha Site Key',
+    description: '前端公开站点密钥',
+    type: 'input',
+    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'hcaptcha'
+  },
+  {
+    key: 'captcha_hcaptcha_secret_key',
+    label: 'hCaptcha Secret Key',
+    placeholder: '请输入 hCaptcha Secret Key',
+    description: '后端校验密钥（敏感信息）',
+    type: 'input',
+    inputType: 'password',
+    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'hcaptcha'
   }
 ];
 
@@ -129,7 +220,23 @@ const CONFIG_ITEMS: ConfigItem[] = [
 const getInitialConfigs = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   
-  const configKeys = ['app_name', 'app_logo', 'login_page_description', 'captcha_enabled', 'captcha_type', 'ip', 'protocol_type'];
+  const configKeys = [
+    'app_name',
+    'app_logo',
+    'login_page_description',
+    'captcha_enabled',
+    'captcha_provider',
+    'captcha_type',
+    'captcha_geetest_id',
+    'captcha_geetest_key',
+    'captcha_geetest_domain',
+    'captcha_recaptcha_site_key',
+    'captcha_recaptcha_secret_key',
+    'captcha_hcaptcha_site_key',
+    'captcha_hcaptcha_secret_key',
+    'ip',
+    'protocol_type'
+  ];
   const initialConfigs: Record<string, string> = {};
   
   try {
@@ -144,6 +251,12 @@ const getInitialConfigs = (): Record<string, string> => {
 
   if (!initialConfigs.protocol_type) {
     initialConfigs.protocol_type = 'http';
+  }
+  if (!initialConfigs.captcha_provider) {
+    initialConfigs.captcha_provider = 'native';
+  }
+  if (!initialConfigs.captcha_geetest_domain) {
+    initialConfigs.captcha_geetest_domain = 'https://gcaptcha4.geetest.com';
   }
   
   return initialConfigs;
@@ -182,6 +295,12 @@ export default function ConfigPage() {
       if (!configData.protocol_type) {
         configData.protocol_type = 'http';
       }
+      if (!configData.captcha_provider) {
+        configData.captcha_provider = 'native';
+      }
+      if (!configData.captcha_geetest_domain) {
+        configData.captcha_geetest_domain = 'https://gcaptcha4.geetest.com';
+      }
       
       // 只有在数据有变化时才更新
       const hasDataChanged = JSON.stringify(configData) !== JSON.stringify(configsToCompare);
@@ -216,9 +335,22 @@ export default function ConfigPage() {
     
     // 特殊处理：启用验证码时，如果验证码类型未设置，默认为随机
     if (key === 'captcha_enabled' && value === 'true') {
+      if (!newConfigs.captcha_provider) {
+        newConfigs.captcha_provider = 'native';
+      }
       if (!newConfigs.captcha_type) {
         newConfigs.captcha_type = 'RANDOM';
       }
+    }
+
+    // 切换到原生时，确保原生子选项存在
+    if (key === 'captcha_provider' && value === 'native' && !newConfigs.captcha_type) {
+      newConfigs.captcha_type = 'RANDOM';
+    }
+
+    // 切换极验时，补齐默认域名
+    if (key === 'captcha_provider' && value === 'geetest' && !newConfigs.captcha_geetest_domain) {
+      newConfigs.captcha_geetest_domain = 'https://gcaptcha4.geetest.com';
     }
     
     setConfigs(newConfigs);
@@ -236,7 +368,21 @@ export default function ConfigPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const response = await updateConfigs(configs);
+      const sensitiveKeys = new Set([
+        'captcha_geetest_key',
+        'captcha_recaptcha_secret_key',
+        'captcha_hcaptcha_secret_key'
+      ]);
+      const payload: Record<string, string> = { ...configs };
+
+      sensitiveKeys.forEach((key) => {
+        const raw = payload[key] || '';
+        if (!raw.trim()) {
+          delete payload[key];
+        }
+      });
+
+      const response = await updateConfigs(payload);
       if (response.code === 0) {
         toast.success('配置保存成功');
         
@@ -244,8 +390,8 @@ export default function ConfigPage() {
         clearConfigCache();
         
         // 获取变更的配置项
-        const changedKeys = Object.keys(configs).filter(
-          key => configs[key] !== originalConfigs[key]
+        const changedKeys = Object.keys(payload).filter(
+          key => payload[key] !== originalConfigs[key]
         );
         
         setOriginalConfigs({ ...configs });
@@ -274,10 +420,10 @@ export default function ConfigPage() {
 
   // 检查配置项是否应该显示（依赖检查）
   const shouldShowItem = (item: ConfigItem): boolean => {
-    if (!item.dependsOn || !item.dependsValue) {
+    if (!item.shouldShow) {
       return true;
     }
-    return configs[item.dependsOn] === item.dependsValue;
+    return item.shouldShow(configs);
   };
 
   // 渲染不同类型的配置项
@@ -291,6 +437,7 @@ export default function ConfigPage() {
             value={configs[item.key] || ''}
             onChange={(e) => handleConfigChange(item.key, e.target.value)}
             placeholder={item.placeholder}
+            type={item.inputType || 'text'}
             variant="bordered"
             size="md"
             classNames={{
@@ -329,7 +476,7 @@ export default function ConfigPage() {
                 handleConfigChange(item.key, selectedKey);
               }
             }}
-            placeholder="请选择验证码类型"
+            placeholder="请选择"
             variant="bordered"
             size="md"
             classNames={{

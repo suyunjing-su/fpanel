@@ -5,6 +5,18 @@ export interface LoginData {
   username: string;
   password: string;
   captchaId: string;
+  captchaProvider?: string;
+  captchaToken?: string;
+  captchaPayload?: string;
+}
+
+export interface CaptchaRuntimeConfig {
+  enabled: boolean;
+  provider: 'native' | 'geetest' | 'recaptcha' | 'hcaptcha' | string;
+  nativeType?: string;
+  geetestCaptchaId?: string;
+  recaptchaSiteKey?: string;
+  hcaptchaSiteKey?: string;
 }
 
 export interface LoginResponse {
@@ -105,5 +117,6 @@ export const updateConfig = (name: string, value: string) => Network.post("/conf
 
 // 验证码相关接口
 export const checkCaptcha = () => Network.post("/captcha/check");
+export const getCaptchaRuntime = () => Network.post<CaptchaRuntimeConfig>("/captcha/runtime");
 export const generateCaptcha = () => Network.post(`/captcha/generate`);
 export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data); 

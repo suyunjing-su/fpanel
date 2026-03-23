@@ -5,9 +5,11 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import toast from 'react-hot-toast';
 import axios from 'axios';
+import ReCAPTCHA from 'react-google-recaptcha';
+import HCaptcha from '@hcaptcha/react-hcaptcha';
 import { isWebViewFunc } from '@/utils/panel';
 import { getCachedConfig, getPanelBrandLogo, siteConfig } from '@/config/site';
-import { login, LoginData, checkCaptcha } from "@/api";
+import { login, LoginData, checkCaptcha, getCaptchaRuntime, CaptchaRuntimeConfig } from "@/api";
 import "@/utils/tac.css";
 import "@/utils/tac.min.js";
 import bgImage from "@/images/bg.jpg";
@@ -17,6 +19,9 @@ interface LoginForm {
   username: string;
   password: string;
   captchaId: string;
+  captchaProvider?: string;
+  captchaToken?: string;
+  captchaPayload?: string;
 }
 
 
@@ -39,18 +44,38 @@ interface CaptchaStyle {
   moveTrackMaskBorderColor?: string;
 }
 
+type CaptchaProvider = 'native' | 'geetest' | 'recaptcha' | 'hcaptcha';
+
+const DEFAULT_CAPTCHA_RUNTIME: CaptchaRuntimeConfig = {
+  enabled: false,
+  provider: 'native',
+  nativeType: 'RANDOM',
+  geetestCaptchaId: '',
+  recaptchaSiteKey: '',
+  hcaptchaSiteKey: ''
+};
+
 export default function IndexPage() {
   const [form, setForm] = useState<LoginForm>({
     username: "",
     password: "",
     captchaId: "",
+    captchaProvider: 'native',
+    captchaToken: '',
+    captchaPayload: ''
   });
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Partial<LoginForm>>({});
   const [showCaptcha, setShowCaptcha] = useState(false);
+  const [captchaRuntime, setCaptchaRuntime] = useState<CaptchaRuntimeConfig>(DEFAULT_CAPTCHA_RUNTIME);
+  const [captchaProvider, setCaptchaProvider] = useState<CaptchaProvider>('native');
   const navigate = useNavigate();
   const tacInstanceRef = useRef<any>(null);
+  const geeTestRef = useRef<any>(null);
   const captchaContainerRef = useRef<HTMLDivElement>(null);
+  const recaptchaRef = useRef<ReCAPTCHA | null>(null);
+  const hcaptchaRef = useRef<HCaptcha | null>(null);
+  const geetestContainerId = 'geetest-captcha-container';
   const [isWebView, setIsWebView] = useState(false);
   const [appName, setAppName] = useState(siteConfig.name || 'flux');
   const [loginLogo, setLoginLogo] = useState(siteConfig.app_logo || '');
@@ -64,6 +89,10 @@ export default function IndexPage() {
       if (tacInstanceRef.current) {
         tacInstanceRef.current.destroyWindow();
         tacInstanceRef.current = null;
+      }
+      if (geeTestRef.current?.destroy) {
+        geeTestRef.current.destroy();
+        geeTestRef.current = null;
       }
     };
   }, []);
@@ -123,18 +152,44 @@ export default function IndexPage() {
     }
   };
 
-  // 初始化验证码
-  const initCaptcha = async () => {
+  const loadCaptchaRuntime = async (): Promise<CaptchaRuntimeConfig> => {
+    const runtimeResponse = await getCaptchaRuntime();
+    if (runtimeResponse.code !== 0 || !runtimeResponse.data) {
+      throw new Error(runtimeResponse.msg || '获取验证码配置失败');
+    }
+
+    const runtime = {
+      ...DEFAULT_CAPTCHA_RUNTIME,
+      ...runtimeResponse.data
+    };
+    const provider = (runtime.provider || 'native').toLowerCase() as CaptchaProvider;
+    runtime.provider = provider;
+    setCaptchaRuntime(runtime);
+    setCaptchaProvider(provider);
+    return runtime;
+  };
+
+  const resetCaptchaState = () => {
+    if (tacInstanceRef.current) {
+      tacInstanceRef.current.destroyWindow();
+      tacInstanceRef.current = null;
+    }
+    if (geeTestRef.current?.destroy) {
+      geeTestRef.current.destroy();
+      geeTestRef.current = null;
+    }
+    recaptchaRef.current?.reset();
+    hcaptchaRef.current?.resetCaptcha();
+  };
+
+  // 初始化原生验证码
+  const initNativeCaptcha = async () => {
     if (!window.TAC || !captchaContainerRef.current) {
       return;
     }
 
     try {
-      // 清理之前的验证码实例
-      if (tacInstanceRef.current) {
-        tacInstanceRef.current.destroyWindow();
-        tacInstanceRef.current = null;
-      }
+      resetCaptchaState();
 
       // 使用axios的baseURL，确保在WebView中使用正确的面板地址
       const baseURL = axios.defaults.baseURL || (import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/api/v1/` : '/api/v1/');
@@ -144,9 +199,10 @@ export default function IndexPage() {
         validCaptchaUrl: `${baseURL}captcha/verify`, 
         bindEl: "#captcha-container",
         validSuccess: (res: any, _: any, tac: any) => {
-          
-
-          form.captchaId = res.data.validToken
+          form.captchaId = res.data.validToken;
+          form.captchaProvider = 'native';
+          form.captchaToken = '';
+          form.captchaPayload = '';
 
           setShowCaptcha(false);
           tac.destroyWindow();
@@ -191,8 +247,111 @@ export default function IndexPage() {
     }
   };
 
+  const ensureGeeTestScript = async (): Promise<void> => {
+    if (window.initGeetest4) {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://static.geetest.com/v4/gt4.js';
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('加载 GeeTest SDK 失败'));
+      document.head.appendChild(script);
+    });
+  };
+
+  const initGeeTestCaptcha = async (runtime: CaptchaRuntimeConfig) => {
+    const captchaId = (runtime.geetestCaptchaId || '').trim();
+    if (!captchaId) {
+      throw new Error('GeeTest CAPTCHA ID 未配置');
+    }
+
+    await ensureGeeTestScript();
+    resetCaptchaState();
+
+    await new Promise<void>((resolve, reject) => {
+      if (!window.initGeetest4) {
+        reject(new Error('GeeTest SDK 未就绪'));
+        return;
+      }
+
+      window.initGeetest4(
+        {
+          captchaId,
+          product: 'bind'
+        },
+        (gt) => {
+          geeTestRef.current = gt;
+          gt
+            .appendTo(`#${geetestContainerId}`)
+            .onSuccess(() => {
+              const result = gt.getValidate();
+              const payload = JSON.stringify(result);
+              setForm((prev) => ({ ...prev, captchaId: '', captchaProvider: 'geetest', captchaToken: payload, captchaPayload: payload }));
+              setShowCaptcha(false);
+              void performLogin({
+                captchaProvider: 'geetest',
+                captchaToken: payload,
+                captchaPayload: payload
+              }).then(() => resolve()).catch((error) => reject(error));
+            })
+          ;
+
+          if (gt.onError) {
+            gt.onError(() => {
+              reject(new Error('GeeTest 初始化失败'));
+            });
+          }
+
+          gt.showBox();
+        }
+      );
+    });
+  };
+
+  const executeGoogleRecaptcha = async (runtime: CaptchaRuntimeConfig) => {
+    const siteKey = (runtime.recaptchaSiteKey || '').trim();
+    if (!siteKey) {
+      throw new Error('Google reCAPTCHA Site Key 未配置');
+    }
+
+    const token = await recaptchaRef.current?.executeAsync();
+    recaptchaRef.current?.reset();
+    if (!token) {
+      throw new Error('reCAPTCHA 验证失败');
+    }
+
+    await performLogin({
+      captchaProvider: 'recaptcha',
+      captchaToken: token,
+      captchaPayload: ''
+    });
+  };
+
+  const executeHCaptcha = async (runtime: CaptchaRuntimeConfig) => {
+    const siteKey = (runtime.hcaptchaSiteKey || '').trim();
+    if (!siteKey) {
+      throw new Error('hCaptcha Site Key 未配置');
+    }
+
+    const tokenResult = await (hcaptchaRef.current as any)?.execute({ async: true });
+    const token = typeof tokenResult === 'string' ? tokenResult : tokenResult?.response;
+    hcaptchaRef.current?.resetCaptcha();
+    if (!token) {
+      throw new Error('hCaptcha 验证失败');
+    }
+
+    await performLogin({
+      captchaProvider: 'hcaptcha',
+      captchaToken: token,
+      captchaPayload: ''
+    });
+  };
+
   // 执行登录请求
-  const performLogin = async () => {
+  const performLogin = async (captchaOverrides?: Partial<LoginData>) => {
 
 
     try {
@@ -200,6 +359,10 @@ export default function IndexPage() {
         username: form.username.trim(),
         password: form.password,
         captchaId: form.captchaId,
+        captchaProvider: form.captchaProvider || 'native',
+        captchaToken: form.captchaToken || '',
+        captchaPayload: form.captchaPayload || '',
+        ...captchaOverrides
       };
 
       const response = await login(loginData);
@@ -244,30 +407,71 @@ export default function IndexPage() {
     setLoading(true);
 
     try {
-      // 先检查是否需要验证码
       const checkResponse = await checkCaptcha();
-      
       if (checkResponse.code !== 0) {
-        toast.error("检查验证码状态失败，请重试" + checkResponse.msg);
+        toast.error('检查验证码状态失败，请重试' + checkResponse.msg);
         setLoading(false);
         return;
       }
 
-      // 根据返回值决定是否显示验证码
       if (checkResponse.data === 0) {
-        // 不需要验证码，直接登录
+        setCaptchaRuntime(DEFAULT_CAPTCHA_RUNTIME);
+        setCaptchaProvider('native');
+        setForm((prev) => ({
+          ...prev,
+          captchaId: '',
+          captchaProvider: 'native',
+          captchaToken: '',
+          captchaPayload: ''
+        }));
         await performLogin();
       } else {
-        // 需要验证码，显示验证码弹层
-        setShowCaptcha(true);
-        // 延时初始化验证码，确保DOM已渲染
-        setTimeout(() => {
-          initCaptcha();
-        }, 100);
+        const runtime = await loadCaptchaRuntime();
+        const provider = (runtime.provider || 'native').toLowerCase() as CaptchaProvider;
+
+        if (provider === 'native') {
+          setForm((prev) => ({
+            ...prev,
+            captchaProvider: 'native',
+            captchaToken: '',
+            captchaPayload: ''
+          }));
+          setShowCaptcha(true);
+          setTimeout(() => {
+            initNativeCaptcha();
+          }, 100);
+          return;
+        }
+
+        if (provider === 'geetest') {
+          setShowCaptcha(true);
+          setTimeout(() => {
+            initGeeTestCaptcha(runtime).catch((error) => {
+              console.error('初始化 GeeTest 失败:', error);
+              toast.error(error instanceof Error ? error.message : '初始化 GeeTest 失败');
+              setShowCaptcha(false);
+              setLoading(false);
+            });
+          }, 100);
+          return;
+        }
+
+        if (provider === 'recaptcha') {
+          await executeGoogleRecaptcha(runtime);
+          return;
+        }
+
+        if (provider === 'hcaptcha') {
+          await executeHCaptcha(runtime);
+          return;
+        }
+
+        toast.error('不支持的验证码提供商: ' + provider);
+        setLoading(false);
       }
     } catch (error) {
       console.error('检查验证码状态错误:', error);
-      toast.error("网络错误，请稍后重试" + error);
+      toast.error('网络错误，请稍后重试');
       setLoading(false);
     }
   };
@@ -372,18 +576,44 @@ export default function IndexPage() {
         </p>
       </footer>
 
+      {(captchaRuntime.recaptchaSiteKey || '').trim() && (
+        <div className="hidden">
+          <ReCAPTCHA
+            ref={recaptchaRef}
+            sitekey={captchaRuntime.recaptchaSiteKey || ''}
+            size="invisible"
+          />
+        </div>
+      )}
+
+      {(captchaRuntime.hcaptchaSiteKey || '').trim() && (
+        <div className="hidden">
+          <HCaptcha
+            ref={hcaptchaRef}
+            sitekey={captchaRuntime.hcaptchaSiteKey || ''}
+            size="invisible"
+          />
+        </div>
+      )}
+
       {/* 验证码弹层 */}
       {showCaptcha && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          {/* 背景遮罩层 - 模糊效果，暗黑模式下更深 */}
           <div className="absolute inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm captcha-backdrop-enter" />
-          {/* 验证码容器 */}
-          <div className="mb-4">
-            <div
-              id="captcha-container"
-              ref={captchaContainerRef}
-              className={`w-full flex justify-center ${isDarkMode ? 'brightness-[0.8] contrast-[0.9]' : ''}`}
-            />
+          <div className="relative mb-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-900/95 px-6 py-5 shadow-2xl min-w-[320px]">
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3 text-center">
+              {captchaProvider === 'geetest' ? '请完成极验验证' : '请完成人机验证'}
+            </p>
+            {captchaProvider === 'native' && (
+              <div
+                id="captcha-container"
+                ref={captchaContainerRef}
+                className={`w-full flex justify-center ${isDarkMode ? 'brightness-[0.8] contrast-[0.9]' : ''}`}
+              />
+            )}
+            {captchaProvider === 'geetest' && (
+              <div id={geetestContainerId} className="w-full flex justify-center min-h-[56px]" />
+            )}
           </div>
         </div>
       )}
