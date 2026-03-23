@@ -8,7 +8,6 @@ import axios from 'axios';
 import { isWebViewFunc } from '@/utils/panel';
 import { siteConfig } from '@/config/site';
 import { title } from "@/components/primitives";
-import DefaultLayout from "@/layouts/default";
 import { login, LoginData, checkCaptcha } from "@/api";
 import "@/utils/tac.css";
 import "@/utils/tac.min.js";
@@ -54,6 +53,9 @@ export default function IndexPage() {
   const tacInstanceRef = useRef<any>(null);
   const captchaContainerRef = useRef<HTMLDivElement>(null);
   const [isWebView, setIsWebView] = useState(false);
+  const isDarkMode = document.documentElement.classList.contains('dark') ||
+    document.documentElement.getAttribute('data-theme') === 'dark' ||
+    window.matchMedia('(prefers-color-scheme: dark)').matches;
   // 清理验证码实例
   useEffect(() => {
     return () => {
@@ -252,117 +254,104 @@ export default function IndexPage() {
   };
 
   return (
-    <DefaultLayout>
-      <section className="relative min-h-[calc(100dvh-170px)] flex items-center justify-center py-3 sm:py-6">
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="h-48 w-48 rounded-full bg-sky-300/25 blur-3xl absolute -top-8 -left-8" />
-          <div className="h-56 w-56 rounded-full bg-blue-300/20 blur-3xl absolute -bottom-10 -right-10" />
-        </div>
+    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-50 via-sky-50 to-blue-100/80 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950/50">
+      <div className="absolute inset-0 pointer-events-none">
+        <div className="h-72 w-72 rounded-full bg-cyan-300/25 blur-3xl absolute -top-20 -left-16" />
+        <div className="h-80 w-80 rounded-full bg-blue-300/20 blur-3xl absolute -bottom-20 -right-20" />
+      </div>
 
-        <div className="w-full max-w-md px-1 sm:px-0 relative z-10">
-          <Card className="w-full border border-slate-200/70 dark:border-slate-700/70 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md shadow-xl">
-            <CardHeader className="pb-2 pt-6 px-6 flex-col items-start">
-              <span className="inline-flex items-center rounded-full bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-300 text-xs px-2.5 py-1 font-medium">Secure Access</span>
-              <h1 className={`${title({ size: "sm" })} mt-3`}>欢迎登录</h1>
-              <p className="text-small text-default-500 mt-2">请输入账号信息进入控制台</p>
-            </CardHeader>
-            <CardBody className="px-6 py-6">
-              <div className="flex flex-col gap-4">
-                <Input
-                  label="用户名"
-                  placeholder="请输入用户名"
-                  value={form.username}
-                  onChange={(e) => handleInputChange('username', e.target.value)}
-                  onKeyDown={handleKeyPress}
-                  variant="bordered"
-                  isDisabled={loading}
-                  isInvalid={!!errors.username}
-                  errorMessage={errors.username}
-                />
-                
-                <Input
-                  label="密码"
-                  placeholder="请输入密码"
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => handleInputChange('password', e.target.value)}
-                  onKeyDown={handleKeyPress}
-                  variant="bordered"
-                  isDisabled={loading}
-                  isInvalid={!!errors.password}
-                />
+      <main className="relative z-10 min-h-screen flex items-center justify-center p-4 sm:p-8">
+        <Card className="w-full max-w-md border border-slate-200/80 dark:border-slate-700/70 bg-white/92 dark:bg-slate-900/88 backdrop-blur-xl shadow-2xl">
+          <CardHeader className="pb-0 pt-7 px-6 flex-col items-start">
+            <span className="inline-flex items-center rounded-full bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-300 text-xs px-2.5 py-1 font-medium">Welcome Back</span>
+            <h1 className={`${title({ size: "sm" })} mt-3`}>登录控制面板</h1>
+            <p className="text-small text-default-500 mt-2">输入账号信息以继续</p>
+          </CardHeader>
 
-                
-                <Button
-                  color="primary"
-                  size="lg"
-                  onClick={handleLogin}
-                  isLoading={loading}
-                  disabled={loading}
-                  className="mt-2 font-semibold"
-                >
-                  {loading ? (showCaptcha ? "验证中..." : "登录中...") : "登录"}
-                </Button>
+          <CardBody className="px-6 py-6">
+            <div className="space-y-4">
+              <Input
+                label="用户名"
+                placeholder="请输入用户名"
+                value={form.username}
+                onChange={(e) => handleInputChange('username', e.target.value)}
+                onKeyDown={handleKeyPress}
+                variant="bordered"
+                isDisabled={loading}
+                isInvalid={!!errors.username}
+                errorMessage={errors.username}
+              />
 
-                <div className="grid grid-cols-2 gap-2 pt-2">
-                  <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2">
-                    <p className="text-[11px] uppercase tracking-[0.14em] panel-muted">Auth</p>
-                    <p className="text-xs font-medium text-foreground mt-1">账号密码验证</p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2">
-                    <p className="text-[11px] uppercase tracking-[0.14em] panel-muted">Risk</p>
-                    <p className="text-xs font-medium text-foreground mt-1">按策略触发验证码</p>
-                  </div>
+              <Input
+                label="密码"
+                placeholder="请输入密码"
+                type="password"
+                value={form.password}
+                onChange={(e) => handleInputChange('password', e.target.value)}
+                onKeyDown={handleKeyPress}
+                variant="bordered"
+                isDisabled={loading}
+                isInvalid={!!errors.password}
+              />
+
+              <Button
+                color="primary"
+                size="lg"
+                onClick={handleLogin}
+                isLoading={loading}
+                disabled={loading}
+                className="w-full mt-2 font-semibold"
+              >
+                {loading ? (showCaptcha ? "验证中..." : "登录中...") : "登录"}
+              </Button>
+
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-slate-50/70 dark:bg-slate-900/50">
+                  <p className="text-[11px] uppercase tracking-[0.14em] panel-muted">Auth</p>
+                  <p className="text-xs font-medium text-foreground mt-1">账号密码验证</p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-slate-50/70 dark:bg-slate-900/50">
+                  <p className="text-[11px] uppercase tracking-[0.14em] panel-muted">Captcha</p>
+                  <p className="text-xs font-medium text-foreground mt-1">按策略触发滑动验证</p>
                 </div>
               </div>
-            </CardBody>
-          </Card>
-        </div>
+            </div>
+          </CardBody>
+        </Card>
+      </main>
 
+      <footer className="fixed inset-x-0 bottom-4 text-center py-2 z-10">
+        <p className="text-xs panel-muted">
+          Powered by{' '}
+          <a
+            href="https://github.com/suyunjing-su/fpanel"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-slate-500 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-300 transition-colors"
+          >
+            flux-panel
+          </a>
+        </p>
+        <p className="text-xs panel-muted mt-1">
+          v{isWebView ? siteConfig.app_version : siteConfig.version}
+        </p>
+      </footer>
 
-      {/* 版权信息 - 固定在底部，不占据布局空间 */}
-      
-               <div className="fixed inset-x-0 bottom-4 text-center py-2">
-               <p className="text-xs panel-muted">
-                 Powered by{' '}
-                 <a 
-                   href="https://github.com/suyunjing-su/fpanel" 
-                   target="_blank" 
-                   rel="noopener noreferrer"
-                   className="text-slate-500 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-300 transition-colors"
-                 >
-                   flux-panel
-                 </a>
-               </p>
-               <p className="text-xs panel-muted mt-1">
-                 v{ isWebView ? siteConfig.app_version : siteConfig.version}
-               </p>
-             </div>
-      
-   
-
-        {/* 验证码弹层 */}
-        {showCaptcha && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center">
-            {/* 背景遮罩层 - 模糊效果，暗黑模式下更深 */}
-            <div className="absolute inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm captcha-backdrop-enter" />
-           {/* 验证码容器 */}
-           <div className="mb-4">
-                <div 
-                  id="captcha-container" 
-                  ref={captchaContainerRef}
-                  className="w-full flex justify-center"
-                  style={{
-                    filter: document.documentElement.classList.contains('dark') || 
-                           document.documentElement.getAttribute('data-theme') === 'dark' ||
-                           window.matchMedia('(prefers-color-scheme: dark)').matches 
-                           ? 'brightness(0.8) contrast(0.9)' : 'none'
-                  }}
-                />
-              </div>
+      {/* 验证码弹层 */}
+      {showCaptcha && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          {/* 背景遮罩层 - 模糊效果，暗黑模式下更深 */}
+          <div className="absolute inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm captcha-backdrop-enter" />
+          {/* 验证码容器 */}
+          <div className="mb-4">
+            <div
+              id="captcha-container"
+              ref={captchaContainerRef}
+              className={`w-full flex justify-center ${isDarkMode ? 'brightness-[0.8] contrast-[0.9]' : ''}`}
+            />
           </div>
-        )}
-      </section>
-    </DefaultLayout>
+        </div>
+      )}
+    </div>
   );
 }
