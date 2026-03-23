@@ -69,6 +69,20 @@ const CONFIG_ITEMS: ConfigItem[] = [
     type: 'input'
   },
   {
+    key: 'app_logo',
+    label: '登录页Logo链接',
+    placeholder: 'https://example.com/logo.png',
+    description: '登录页面品牌区域显示的Logo地址，留空使用默认Logo',
+    type: 'input'
+  },
+  {
+    key: 'login_page_description',
+    label: '登录页面自定义简介',
+    placeholder: '例如：Subscription to API Conversion Platform',
+    description: '显示在登录页面应用名称下方，默认留空不显示',
+    type: 'input'
+  },
+  {
     key: 'captcha_enabled',
     label: '启用验证码',
     description: '开启后，用户登录时需要完成验证码验证',
@@ -115,7 +129,7 @@ const CONFIG_ITEMS: ConfigItem[] = [
 const getInitialConfigs = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   
-  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip', 'protocol_type'];
+  const configKeys = ['app_name', 'app_logo', 'login_page_description', 'captcha_enabled', 'captcha_type', 'ip', 'protocol_type'];
   const initialConfigs: Record<string, string> = {};
   
   try {

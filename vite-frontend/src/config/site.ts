@@ -15,21 +15,29 @@ const getInitialConfig = () => {
       name: "flux",
       version: VERSION,
       app_version: APP_VERSION,
+      app_logo: "",
+      login_page_description: "",
     };
   }
 
   const cachedAppName = localStorage.getItem(CACHE_PREFIX + 'app_name');
+  const cachedAppLogo = localStorage.getItem(CACHE_PREFIX + 'app_logo') || '';
+  const cachedLoginDescription = localStorage.getItem(CACHE_PREFIX + 'login_page_description') || '';
     if (cachedAppName) {
       return {
         name: cachedAppName,
         version: VERSION,
         app_version: APP_VERSION,
+        app_logo: cachedAppLogo,
+        login_page_description: cachedLoginDescription,
       };
     }
   return {
     name: "flux",
     version: VERSION,
     app_version: APP_VERSION,
+    app_logo: cachedAppLogo,
+    login_page_description: cachedLoginDescription,
   };
 };
 
@@ -92,7 +100,7 @@ export const getCachedConfig = async (key: string): Promise<string | null> => {
 // 获取所有配置（优先从缓存）
 export const getCachedConfigs = async (): Promise<Record<string, string>> => {
   // 尝试从缓存获取所有配置
-  const configKeys = ['app_name'];
+  const configKeys = ['app_name', 'app_logo', 'login_page_description'];
   const cachedConfigs: Record<string, string> = {};
   let hasCachedData = false;
 
@@ -130,11 +138,16 @@ export const getCachedConfigs = async (): Promise<Record<string, string>> => {
 // 动态更新网站配置
 export const updateSiteConfig = async () => {
   const appName = await getCachedConfig('app_name');
-    if (appName && appName !== siteConfig.name) {
-      siteConfig.name = appName;
-      // 更新页面标题
-      document.title = formatPanelTitle(appName);
-    }
+  const appLogo = await getCachedConfig('app_logo');
+  const loginDescription = await getCachedConfig('login_page_description');
+
+  if (appName && appName !== siteConfig.name) {
+    siteConfig.name = appName;
+    document.title = formatPanelTitle(appName);
+  }
+
+  siteConfig.app_logo = appLogo || '';
+  siteConfig.login_page_description = loginDescription || '';
 };
 
 // 清除配置缓存的工具函数
