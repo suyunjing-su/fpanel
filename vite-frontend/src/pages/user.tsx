@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Input } from "@heroui/input";
@@ -536,11 +536,43 @@ export default function UserPage() {
     speedLimit => speedLimit.tunnelId === editTunnelForm?.tunnelId
   );
 
+  const userSummary = useMemo(() => {
+    const total = users.length;
+    const active = users.filter((item) => item.status === 1).length;
+    const disabled = total - active;
+    return { total, active, disabled };
+  }, [users]);
+
   return (
     
-      <div className="px-3 lg:px-6 py-8">
+      <div className="px-3 lg:px-6 py-4 lg:py-6 space-y-4">
+      <Card className="panel-shell">
+        <CardBody className="p-4 lg:p-5">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.14em] panel-muted">User Workspace</p>
+              <h1 className="text-xl lg:text-2xl font-semibold mt-1">用户与权限管理</h1>
+            </div>
+            <div className="grid grid-cols-3 gap-2 w-full lg:w-auto lg:min-w-[360px]">
+              <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                <p className="text-xs panel-muted">当前页用户</p>
+                <p className="text-sm font-semibold mt-1">{userSummary.total}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                <p className="text-xs panel-muted">正常</p>
+                <p className="text-sm font-semibold mt-1 text-emerald-600 dark:text-emerald-300">{userSummary.active}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                <p className="text-xs panel-muted">禁用</p>
+                <p className="text-sm font-semibold mt-1 text-rose-600 dark:text-rose-300">{userSummary.disabled}</p>
+              </div>
+            </div>
+          </div>
+        </CardBody>
+      </Card>
+
       {/* 页面头部 */}
-      <div className="flex flex-col gap-4 mb-6">
+      <div className="panel-shell p-3 lg:p-4 flex flex-col gap-4">
         <div className="flex items-center gap-3">
         </div>
         
@@ -618,7 +650,7 @@ export default function UserPage() {
           </div>
         </div>
       ) : users.length === 0 ? (
-        <Card className="shadow-sm border border-gray-200 dark:border-gray-700">
+        <Card className="panel-shell">
           <CardBody className="text-center py-16">
             <div className="flex flex-col items-center gap-4">
               <div className="w-16 h-16 bg-default-100 rounded-full flex items-center justify-center">
@@ -642,7 +674,7 @@ export default function UserPage() {
             return (
               <Card 
                 key={user.id} 
-                className="shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
+                className="panel-shell panel-card-hover"
               >
                 <CardHeader className="pb-2">
                   <div className="flex justify-between items-start w-full">
