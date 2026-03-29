@@ -7,7 +7,7 @@ const PANEL_BRAND_SUFFIX = 'flux_panel';
 
 // 缓存相关常量
 const CACHE_PREFIX = 'vite_config_';
-const VERSION = "3.0.11-beta";
+const VERSION = "3.0.12-beta";
 const APP_VERSION = "1.0.3";
 
 const getInitialConfig = () => {
