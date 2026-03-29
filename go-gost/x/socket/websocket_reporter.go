@@ -780,11 +780,24 @@ func (w *WebSocketReporter) handleForcePullFullConfig() error {
 		return err
 	}
 
+	if !w.shouldReloadRuntimeAfterForcePull() {
+		return nil
+	}
+
 	if err := w.reloadRuntimeConfig(); err != nil {
 		return fmt.Errorf("全量配置已覆写但运行态重载失败: %v", err)
 	}
 
 	return nil
+}
+
+func (w *WebSocketReporter) shouldReloadRuntimeAfterForcePull() bool {
+	if len(registry.ServiceRegistry().GetAll()) > 0 {
+		return true
+	}
+
+	cfg := config.Global()
+	return cfg != nil && len(cfg.Services) > 0
 }
 
 func (w *WebSocketReporter) reloadRuntimeConfig() error {
