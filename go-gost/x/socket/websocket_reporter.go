@@ -16,7 +16,10 @@ import (
 	"time"
 
 	"github.com/go-gost/x/config"
+	"github.com/go-gost/x/config/loader"
+	config_parser "github.com/go-gost/x/config/parsing/parser"
 	"github.com/go-gost/x/internal/util/crypto"
+	"github.com/go-gost/x/registry"
 	"github.com/go-gost/x/service"
 	"github.com/gorilla/websocket"
 	"github.com/quic-go/quic-go"
@@ -194,6 +197,7 @@ type WebSocketReporter struct {
 	connected      bool
 	connecting     bool              // 新增：正在连接状态
 	connMutex      sync.Mutex        // 新增：连接状态锁
+	reloadMutex    sync.Mutex        // 避免并发全量重载导致运行态抖动
 	aesCrypto      *crypto.AESCrypto // 新增：AES加密器
 }
 
@@ -769,7 +773,39 @@ func (w *WebSocketReporter) recoverFromFullConfig(cause error) error {
 }
 
 func (w *WebSocketReporter) handleForcePullFullConfig() error {
-	return w.fetchAndOverwriteFullConfig()
+	w.reloadMutex.Lock()
+	defer w.reloadMutex.Unlock()
+
+	if err := w.fetchAndOverwriteFullConfig(); err != nil {
+		return err
+	}
+
+	if err := w.reloadRuntimeConfig(); err != nil {
+		return fmt.Errorf("全量配置已覆写但运行态重载失败: %v", err)
+	}
+
+	return nil
+}
+
+func (w *WebSocketReporter) reloadRuntimeConfig() error {
+	cfg, err := config_parser.Parse()
+	if err != nil {
+		return fmt.Errorf("解析运行配置失败: %v", err)
+	}
+
+	config.Set(cfg)
+	if err := loader.Load(cfg); err != nil {
+		return fmt.Errorf("加载运行配置失败: %v", err)
+	}
+
+	for _, svc := range registry.ServiceRegistry().GetAll() {
+		if svc == nil {
+			continue
+		}
+		go svc.Serve()
+	}
+
+	return nil
 }
 
 func (w *WebSocketReporter) fetchAndOverwriteFullConfig() error {
