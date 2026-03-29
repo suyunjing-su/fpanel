@@ -95,7 +95,7 @@ public class UserTunnelExitPolicyServiceImpl extends ServiceImpl<UserTunnelExitP
             }
             UserTunnelExitPolicy policy = new UserTunnelExitPolicy();
             policy.setUserTunnelId(userTunnelId);
-            policy.setTunnelId(userTunnel.getTunnelId().longValue());
+            policy.setTunnelId(userTunnel.getTunnelId());
             policy.setExitNodeId(exit.getNodeId());
             policy.setFlowQuotaGb(null);
             policy.setUsedFlow(0L);

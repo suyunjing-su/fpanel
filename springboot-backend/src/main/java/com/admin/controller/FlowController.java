@@ -196,6 +196,11 @@ public class FlowController extends BaseController {
             return SUCCESS_RESPONSE;
         }
 
+        Node node = nodeService.getOne(new QueryWrapper<Node>().eq("secret", secret));
+        if (node == null) {
+            return SUCCESS_RESPONSE;
+        }
+
         // 2. 尝试解密数据
         String decryptedData = decryptIfNeeded(rawData, secret);
 
