@@ -43,6 +43,7 @@ public class SQLiteConfig implements ApplicationRunner {
 
             ensureChainTunnelColumns(connection, statement);
             ensureUserTunnelExitPolicyTable(statement);
+            ensureUserTunnelEntryPolicyTable(statement);
             
             log.info("SQLite WAL mode configured successfully");
         } catch (Exception e) {
@@ -113,6 +114,25 @@ public class SQLiteConfig implements ApplicationRunner {
                     + ")");
         } catch (Exception e) {
             throw new RuntimeException("Failed to ensure user_tunnel_exit_policy table", e);
+        }
+    }
+
+    private void ensureUserTunnelEntryPolicyTable(Statement statement) {
+        try {
+            statement.execute("CREATE TABLE IF NOT EXISTS user_tunnel_entry_policy ("
+                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    + "user_tunnel_id INTEGER NOT NULL,"
+                    + "tunnel_id INTEGER NOT NULL,"
+                    + "entry_node_id INTEGER NOT NULL,"
+                    + "speed_limit_mbps INTEGER,"
+                    + "flow_quota_gb INTEGER,"
+                    + "used_flow INTEGER NOT NULL DEFAULT 0,"
+                    + "status INTEGER NOT NULL DEFAULT 1,"
+                    + "created_time INTEGER NOT NULL,"
+                    + "updated_time INTEGER NOT NULL"
+                    + ")");
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to ensure user_tunnel_entry_policy table", e);
         }
     }
 

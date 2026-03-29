@@ -10,6 +10,7 @@ import com.admin.entity.*;
 import com.admin.service.ChainTunnelService;
 import com.admin.service.ForwardPortService;
 import com.admin.service.SpeedLimitService;
+import com.admin.service.UserTunnelEntryPolicyService;
 import com.admin.service.UserTunnelExitPolicyService;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
@@ -90,6 +91,9 @@ public class FlowController extends BaseController {
 
     @Resource
     SpeedLimitService speedLimitService;
+
+    @Resource
+    UserTunnelEntryPolicyService userTunnelEntryPolicyService;
 
     @Resource
     UserTunnelExitPolicyService userTunnelExitPolicyService;
@@ -348,6 +352,9 @@ public class FlowController extends BaseController {
         updateForwardFlow(forwardId, flowDataList);
         updateUserFlow(userId, flowDataList);
         updateUserTunnelFlow(userTunnelId, flowDataList);
+        if (!Objects.equals(userTunnelId, DEFAULT_USER_TUNNEL_ID) && forward != null && reporterNode != null) {
+            updateUserEntryPolicyUsage(userTunnelId, forward.getTunnelId(), reporterNode.getId(), flowDataList);
+        }
         if (!Objects.equals(userTunnelId, DEFAULT_USER_TUNNEL_ID) && forward != null) {
             updateUserExitPolicyUsage(userTunnelId, forward.getTunnelId(), flowDataList);
         }
@@ -749,6 +756,7 @@ public class FlowController extends BaseController {
 
         Set<Long> limiterIds = new LinkedHashSet<>();
         Map<String, Integer> dynamicLimiterSpeeds = new HashMap<>();
+        Map<Integer, List<UserTunnelEntryPolicy>> userEntryPolicyCache = new HashMap<>();
         for (ForwardPort forwardPort : forwardPorts) {
             Forward forward = forwardService.getById(forwardPort.getForwardId());
             if (forward == null) {
@@ -771,8 +779,21 @@ public class FlowController extends BaseController {
                 continue;
             }
 
+            UserTunnelEntryPolicy userEntryPolicy = resolveUserEntryPolicy(userTunnel, forward.getTunnelId(), node.getId(), userEntryPolicyCache);
+            if (userEntryPolicy != null) {
+                if (!Objects.equals(userEntryPolicy.getStatus(), 1)) {
+                    continue;
+                }
+                if (isUserEntryPolicyQuotaReached(userEntryPolicy)) {
+                    continue;
+                }
+            }
+
             String overrideLimiter = null;
-            if (entryPolicy != null && entryPolicy.getSpeedLimitMbps() != null && entryPolicy.getSpeedLimitMbps() > 0) {
+            if (userEntryPolicy != null && userEntryPolicy.getSpeedLimitMbps() != null && userEntryPolicy.getSpeedLimitMbps() > 0) {
+                overrideLimiter = buildUserEntryLimiterName(userEntryPolicy.getUserTunnelId(), forward.getTunnelId().longValue(), node.getId());
+                dynamicLimiterSpeeds.put(overrideLimiter, userEntryPolicy.getSpeedLimitMbps());
+            } else if (entryPolicy != null && entryPolicy.getSpeedLimitMbps() != null && entryPolicy.getSpeedLimitMbps() > 0) {
                 overrideLimiter = buildEntryLimiterName(forward.getTunnelId().longValue(), node.getId());
                 dynamicLimiterSpeeds.put(overrideLimiter, entryPolicy.getSpeedLimitMbps());
             }
@@ -999,8 +1020,38 @@ public class FlowController extends BaseController {
         return "entry_" + tunnelId + "_" + nodeId;
     }
 
+    private String buildUserEntryLimiterName(Integer userTunnelId, Long tunnelId, Long nodeId) {
+        return "user_entry_" + userTunnelId + "_" + tunnelId + "_" + nodeId;
+    }
+
     private long safeLong(Long value) {
         return value == null ? 0L : value;
+    }
+
+    private UserTunnelEntryPolicy resolveUserEntryPolicy(UserTunnel userTunnel,
+                                                         Integer tunnelId,
+                                                         Long entryNodeId,
+                                                         Map<Integer, List<UserTunnelEntryPolicy>> cache) {
+        if (userTunnel == null || userTunnel.getId() == null || tunnelId == null || entryNodeId == null) {
+            return null;
+        }
+        List<UserTunnelEntryPolicy> policies = cache.computeIfAbsent(
+                userTunnel.getId(),
+                id -> userTunnelEntryPolicyService.syncAndListByUserTunnelId(id)
+        );
+        for (UserTunnelEntryPolicy policy : policies) {
+            if (Objects.equals(policy.getTunnelId(), tunnelId) && Objects.equals(policy.getEntryNodeId(), entryNodeId)) {
+                return policy;
+            }
+        }
+        return null;
+    }
+
+    private boolean isUserEntryPolicyQuotaReached(UserTunnelEntryPolicy policy) {
+        if (policy == null || policy.getFlowQuotaGb() == null || policy.getFlowQuotaGb() <= 0) {
+            return false;
+        }
+        return safeLong(policy.getUsedFlow()) >= policy.getFlowQuotaGb() * BYTES_TO_GB;
     }
 
     private String resolveForwardEntryChainName(Long tunnelId, String trafficProtocol, Set<Long> allowedExitNodeIds) {
@@ -1068,6 +1119,50 @@ public class FlowController extends BaseController {
             return false;
         }
         return safeLong(policy.getUsedFlow()) >= policy.getFlowQuotaGb() * BYTES_TO_GB;
+    }
+
+    private void updateUserEntryPolicyUsage(String userTunnelId, Integer tunnelId, Long entryNodeId, FlowDto flowStats) {
+        if (!StringUtils.hasText(userTunnelId) || tunnelId == null || entryNodeId == null || flowStats == null) {
+            return;
+        }
+
+        Integer userTunnelPk;
+        try {
+            userTunnelPk = Integer.parseInt(userTunnelId);
+        } catch (NumberFormatException ignored) {
+            return;
+        }
+
+        List<UserTunnelEntryPolicy> policies = userTunnelEntryPolicyService.syncAndListByUserTunnelId(userTunnelPk);
+        if (policies.isEmpty()) {
+            return;
+        }
+
+        UserTunnelEntryPolicy matchedPolicy = null;
+        for (UserTunnelEntryPolicy policy : policies) {
+            if (!Objects.equals(policy.getTunnelId(), tunnelId) || !Objects.equals(policy.getEntryNodeId(), entryNodeId)) {
+                continue;
+            }
+            matchedPolicy = policy;
+            break;
+        }
+        if (matchedPolicy == null || matchedPolicy.getId() == null) {
+            return;
+        }
+
+        long delta = Math.max(0L, flowStats.getD()) + Math.max(0L, flowStats.getU());
+        if (delta <= 0) {
+            return;
+        }
+
+        long before = safeLong(matchedPolicy.getUsedFlow());
+        userTunnelEntryPolicyService.addUsedFlow(matchedPolicy.getId(), delta);
+        if (matchedPolicy.getFlowQuotaGb() != null && matchedPolicy.getFlowQuotaGb() > 0) {
+            long limit = matchedPolicy.getFlowQuotaGb() * BYTES_TO_GB;
+            if (before < limit && before + delta >= limit) {
+                triggerTunnelConfigRefresh(tunnelId.longValue());
+            }
+        }
     }
 
     private void updateUserExitPolicyUsage(String userTunnelId, Integer tunnelId, FlowDto flowStats) {

@@ -106,6 +106,8 @@ export const deleteSpeedLimit = (id: number) => Network.post("/speed-limit/delet
 export const batchDeleteSpeedLimits = (ids: number[]) => Network.post<BatchDeleteResult>("/speed-limit/batch-delete", { ids });
 export const getSpeedLimitUserTunnelPolicies = (queryData: any = {}) => Network.post("/speed-limit/user-tunnel/list", queryData);
 export const updateSpeedLimitUserTunnelPolicy = (data: any) => Network.post("/speed-limit/user-tunnel/update", data);
+export const getSpeedLimitUserTunnelEntryPolicies = (queryData: any = {}) => Network.post("/speed-limit/user-tunnel/entry-policy/list", queryData);
+export const updateSpeedLimitUserTunnelEntryPolicy = (data: any) => Network.post("/speed-limit/user-tunnel/entry-policy/update", data);
 export const getSpeedLimitUserTunnelExitPolicies = (queryData: any = {}) => Network.post("/speed-limit/user-tunnel/exit-policy/list", queryData);
 export const updateSpeedLimitUserTunnelExitPolicy = (data: any) => Network.post("/speed-limit/user-tunnel/exit-policy/update", data);
 

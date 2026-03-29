@@ -3,6 +3,9 @@ package com.admin.service.impl;
 import com.admin.common.dto.GostDto;
 import com.admin.common.dto.SpeedLimitDto;
 import com.admin.common.dto.SpeedLimitUpdateDto;
+import com.admin.common.dto.UserTunnelEntryPolicyQueryDto;
+import com.admin.common.dto.UserTunnelEntryPolicyUpdateDto;
+import com.admin.common.dto.UserTunnelEntryPolicyViewDto;
 import com.admin.common.dto.UserTunnelExitPolicyQueryDto;
 import com.admin.common.dto.UserTunnelExitPolicyUpdateDto;
 import com.admin.common.dto.UserTunnelExitPolicyViewDto;
@@ -58,6 +61,9 @@ public class SpeedLimitServiceImpl extends ServiceImpl<SpeedLimitMapper, SpeedLi
 
     @Resource
     UserTunnelExitPolicyService userTunnelExitPolicyService;
+
+    @Resource
+    UserTunnelEntryPolicyService userTunnelEntryPolicyService;
 
 
     @Override
@@ -155,6 +161,55 @@ public class SpeedLimitServiceImpl extends ServiceImpl<SpeedLimitMapper, SpeedLi
     @Override
     public R updateUserTunnelPolicy(UserTunnelUpdateDto updateDto) {
         return userTunnelService.updateUserTunnel(updateDto);
+    }
+
+    @Override
+    public R getUserTunnelEntryPolicies(UserTunnelEntryPolicyQueryDto queryDto) {
+        List<UserTunnelEntryPolicy> policies = userTunnelEntryPolicyService.syncAndListByUserTunnelId(queryDto.getUserTunnelId());
+        List<UserTunnelEntryPolicyViewDto> result = new ArrayList<>();
+        for (UserTunnelEntryPolicy policy : policies) {
+            UserTunnelEntryPolicyViewDto viewDto = new UserTunnelEntryPolicyViewDto();
+            viewDto.setId(policy.getId());
+            viewDto.setUserTunnelId(policy.getUserTunnelId());
+            viewDto.setTunnelId(policy.getTunnelId());
+            viewDto.setEntryNodeId(policy.getEntryNodeId());
+            viewDto.setSpeedLimitMbps(policy.getSpeedLimitMbps());
+            viewDto.setFlowQuotaGb(policy.getFlowQuotaGb());
+            viewDto.setUsedFlow(policy.getUsedFlow());
+            viewDto.setStatus(policy.getStatus());
+
+            Node node = nodeService.getById(policy.getEntryNodeId());
+            if (node != null) {
+                viewDto.setEntryNodeName(node.getName());
+            }
+
+            result.add(viewDto);
+        }
+        return R.ok(result);
+    }
+
+    @Override
+    public R updateUserTunnelEntryPolicy(UserTunnelEntryPolicyUpdateDto updateDto) {
+        UserTunnelEntryPolicy policy = userTunnelEntryPolicyService.getById(updateDto.getId());
+        if (policy == null) {
+            return R.err("入口策略不存在");
+        }
+
+        Integer speedLimitMbps = updateDto.getSpeedLimitMbps();
+        if (speedLimitMbps != null && speedLimitMbps <= 0) {
+            speedLimitMbps = null;
+        }
+        Long flowQuotaGb = updateDto.getFlowQuotaGb();
+        if (flowQuotaGb != null && flowQuotaGb <= 0) {
+            flowQuotaGb = null;
+        }
+
+        policy.setSpeedLimitMbps(speedLimitMbps);
+        policy.setFlowQuotaGb(flowQuotaGb);
+        policy.setStatus(updateDto.getStatus());
+        policy.setUpdatedTime(System.currentTimeMillis());
+        userTunnelEntryPolicyService.updateById(policy);
+        return R.ok();
     }
 
     @Override

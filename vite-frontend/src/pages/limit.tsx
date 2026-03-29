@@ -14,9 +14,11 @@ import {
   createSpeedLimit, 
   getAllUsers,
   getSpeedLimitList, 
+  getSpeedLimitUserTunnelEntryPolicies,
   getSpeedLimitUserTunnelExitPolicies,
   getSpeedLimitUserTunnelPolicies,
   updateSpeedLimit, 
+  updateSpeedLimitUserTunnelEntryPolicy,
   updateSpeedLimitUserTunnelExitPolicy,
   updateSpeedLimitUserTunnelPolicy,
   deleteSpeedLimit, 
@@ -71,6 +73,18 @@ interface UserTunnelExitPolicy {
   lastLatencyMs?: number | null;
 }
 
+interface UserTunnelEntryPolicy {
+  id: number;
+  userTunnelId: number;
+  tunnelId: number;
+  entryNodeId: number;
+  entryNodeName?: string;
+  speedLimitMbps?: number | null;
+  flowQuotaGb?: number | null;
+  usedFlow?: number;
+  status: number;
+}
+
 interface SpeedLimitForm {
   id?: number;
   name: string;
@@ -100,6 +114,9 @@ export default function LimitPage() {
     status: 1
   });
   const [exitPolicies, setExitPolicies] = useState<UserTunnelExitPolicy[]>([]);
+  const [entryPolicies, setEntryPolicies] = useState<UserTunnelEntryPolicy[]>([]);
+  const [entryPolicyLoading, setEntryPolicyLoading] = useState(false);
+  const [entryPolicySavingId, setEntryPolicySavingId] = useState<number | null>(null);
   const [exitPolicyLoading, setExitPolicyLoading] = useState(false);
   const [exitPolicySavingId, setExitPolicySavingId] = useState<number | null>(null);
   
@@ -221,6 +238,23 @@ export default function LimitPage() {
     }
   };
 
+  const loadEntryPolicies = async (userTunnelId: number) => {
+    setEntryPolicyLoading(true);
+    try {
+      const response = await getSpeedLimitUserTunnelEntryPolicies({ userTunnelId });
+      if (response.code === 0) {
+        setEntryPolicies(response.data || []);
+      } else {
+        toast.error(response.msg || '获取入口策略失败');
+      }
+    } catch (error) {
+      console.error('加载入口策略失败:', error);
+      toast.error('加载入口策略失败');
+    } finally {
+      setEntryPolicyLoading(false);
+    }
+  };
+
   const openPolicyModal = async (policy: UserTunnelPolicy) => {
     setEditingPolicy(policy);
     setEditingPolicyForm({
@@ -231,8 +265,37 @@ export default function LimitPage() {
       speedId: policy.speedId ?? null,
       status: policy.status
     });
-    await loadExitPolicies(policy.id);
+    await Promise.all([loadEntryPolicies(policy.id), loadExitPolicies(policy.id)]);
     setPolicyModalOpen(true);
+  };
+
+  const updateEntryPolicyDraft = (id: number, patch: Partial<UserTunnelEntryPolicy>) => {
+    setEntryPolicies((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  };
+
+  const handleEntryPolicySave = async (item: UserTunnelEntryPolicy) => {
+    setEntryPolicySavingId(item.id);
+    try {
+      const response = await updateSpeedLimitUserTunnelEntryPolicy({
+        id: item.id,
+        speedLimitMbps: item.speedLimitMbps ?? 0,
+        flowQuotaGb: item.flowQuotaGb ?? 0,
+        status: item.status
+      });
+      if (response.code === 0) {
+        toast.success(`入口 ${item.entryNodeName || item.entryNodeId} 策略已更新`);
+        if (editingPolicy) {
+          loadEntryPolicies(editingPolicy.id);
+        }
+      } else {
+        toast.error(response.msg || '更新入口策略失败');
+      }
+    } catch (error) {
+      console.error('更新入口策略失败:', error);
+      toast.error('更新入口策略失败');
+    } finally {
+      setEntryPolicySavingId(null);
+    }
   };
 
   const handlePolicySubmit = async () => {
@@ -728,7 +791,7 @@ export default function LimitPage() {
                         <div>重置日: {item.flowResetTime === 0 ? '不重置' : `每月${item.flowResetTime}号`}</div>
                       </div>
                       <Button size="sm" color="primary" variant="flat" onPress={() => openPolicyModal(item)}>
-                        编辑用户隧道/出口策略
+                        编辑用户隧道/入口/出口策略
                       </Button>
                     </CardBody>
                   </Card>
@@ -918,6 +981,86 @@ export default function LimitPage() {
                   </div>
 
                   <div className="mt-2">
+                    <h3 className="text-base font-semibold">用户级入口限速/配额策略</h3>
+                    {entryPolicyLoading ? (
+                      <div className="mt-3 flex items-center gap-2 text-default-500">
+                        <Spinner size="sm" />
+                        正在加载入口策略...
+                      </div>
+                    ) : entryPolicies.length === 0 ? (
+                      <p className="mt-3 text-sm text-default-500">暂无可编辑入口策略</p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {entryPolicies.map((item) => (
+                          <Card key={item.id} className="border border-slate-200/80 dark:border-slate-700/70">
+                            <CardBody className="space-y-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="font-medium">{item.entryNodeName || `节点 ${item.entryNodeId}`}</p>
+                                <Chip size="sm" color={item.status === 1 ? 'success' : 'danger'} variant="flat">
+                                  {item.status === 1 ? '启用' : '禁用'}
+                                </Chip>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                <Input
+                                  label="入口限速(Mbps)"
+                                  type="number"
+                                  value={item.speedLimitMbps == null ? '' : String(item.speedLimitMbps)}
+                                  placeholder="留空表示不限速"
+                                  onChange={(e) => {
+                                    const value = e.target.value.trim();
+                                    updateEntryPolicyDraft(item.id, { speedLimitMbps: value === '' ? null : Number(value) });
+                                  }}
+                                  variant="bordered"
+                                />
+                                <Input
+                                  label="入口配额(GB)"
+                                  type="number"
+                                  value={item.flowQuotaGb == null ? '' : String(item.flowQuotaGb)}
+                                  placeholder="留空表示不限额"
+                                  onChange={(e) => {
+                                    const value = e.target.value.trim();
+                                    updateEntryPolicyDraft(item.id, { flowQuotaGb: value === '' ? null : Number(value) });
+                                  }}
+                                  variant="bordered"
+                                />
+                                <Input
+                                  label="已用流量(字节)"
+                                  value={String(item.usedFlow || 0)}
+                                  isReadOnly
+                                  variant="bordered"
+                                />
+                                <Select
+                                  label="策略状态"
+                                  selectedKeys={[String(item.status)]}
+                                  onSelectionChange={(keys) => {
+                                    const selectedKey = Array.from(keys)[0] as string | undefined;
+                                    updateEntryPolicyDraft(item.id, { status: selectedKey ? Number(selectedKey) : 1 });
+                                  }}
+                                  variant="bordered"
+                                >
+                                  <SelectItem key="1">启用</SelectItem>
+                                  <SelectItem key="0">禁用</SelectItem>
+                                </Select>
+                              </div>
+                              <div className="flex items-center justify-end">
+                                <Button
+                                  size="sm"
+                                  color="primary"
+                                  variant="flat"
+                                  isLoading={entryPolicySavingId === item.id}
+                                  onPress={() => handleEntryPolicySave(item)}
+                                >
+                                  保存该入口策略
+                                </Button>
+                              </div>
+                            </CardBody>
+                          </Card>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-4">
                     <h3 className="text-base font-semibold">用户级出口配额策略</h3>
                     {exitPolicyLoading ? (
                       <div className="mt-3 flex items-center gap-2 text-default-500">

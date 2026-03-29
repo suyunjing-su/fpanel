@@ -136,6 +136,19 @@ CREATE TABLE IF NOT EXISTS user_tunnel_exit_policy (
   updated_time INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS user_tunnel_entry_policy (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_tunnel_id INTEGER NOT NULL,
+  tunnel_id INTEGER NOT NULL,
+  entry_node_id INTEGER NOT NULL,
+  speed_limit_mbps INTEGER,
+  flow_quota_gb INTEGER,
+  used_flow INTEGER NOT NULL DEFAULT 0,
+  status INTEGER NOT NULL DEFAULT 1,
+  created_time INTEGER NOT NULL,
+  updated_time INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS vite_config (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name VARCHAR(200) NOT NULL UNIQUE,

@@ -1,6 +1,8 @@
 package com.admin.service;
 
 import com.admin.common.dto.SpeedLimitDto;
+import com.admin.common.dto.UserTunnelEntryPolicyQueryDto;
+import com.admin.common.dto.UserTunnelEntryPolicyUpdateDto;
 import com.admin.common.dto.SpeedLimitUpdateDto;
 import com.admin.common.dto.UserTunnelExitPolicyQueryDto;
 import com.admin.common.dto.UserTunnelExitPolicyUpdateDto;
@@ -58,6 +60,16 @@ public interface SpeedLimitService extends IService<SpeedLimit> {
     R updateUserTunnelPolicy(UserTunnelUpdateDto updateDto);
 
     /**
+        * 查询用户级入口限速/配额策略
+        */
+        R getUserTunnelEntryPolicies(UserTunnelEntryPolicyQueryDto queryDto);
+
+        /**
+        * 更新用户级入口限速/配额策略
+        */
+        R updateUserTunnelEntryPolicy(UserTunnelEntryPolicyUpdateDto updateDto);
+
+        /**
      * 查询用户级出口配额策略
      */
     R getUserTunnelExitPolicies(UserTunnelExitPolicyQueryDto queryDto);

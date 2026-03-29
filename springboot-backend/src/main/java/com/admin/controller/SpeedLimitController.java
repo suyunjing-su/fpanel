@@ -5,6 +5,8 @@ import com.admin.common.annotation.RequireRole;
 import com.admin.common.dto.BatchDeleteDto;
 import com.admin.common.dto.SpeedLimitDto;
 import com.admin.common.dto.SpeedLimitUpdateDto;
+import com.admin.common.dto.UserTunnelEntryPolicyQueryDto;
+import com.admin.common.dto.UserTunnelEntryPolicyUpdateDto;
 import com.admin.common.dto.UserTunnelExitPolicyQueryDto;
 import com.admin.common.dto.UserTunnelExitPolicyUpdateDto;
 import com.admin.common.dto.UserTunnelQueryDto;
@@ -99,6 +101,20 @@ public class SpeedLimitController extends BaseController {
     @PostMapping("/user-tunnel/update")
     public R updateUserTunnelPolicy(@Validated @RequestBody UserTunnelUpdateDto updateDto) {
         return speedLimitService.updateUserTunnelPolicy(updateDto);
+    }
+
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/user-tunnel/entry-policy/list")
+    public R getUserTunnelEntryPolicies(@Validated @RequestBody UserTunnelEntryPolicyQueryDto queryDto) {
+        return speedLimitService.getUserTunnelEntryPolicies(queryDto);
+    }
+
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/user-tunnel/entry-policy/update")
+    public R updateUserTunnelEntryPolicy(@Validated @RequestBody UserTunnelEntryPolicyUpdateDto updateDto) {
+        return speedLimitService.updateUserTunnelEntryPolicy(updateDto);
     }
 
     @LogAnnotation
