@@ -1,5 +1,6 @@
 import { getConfigByName, getConfigs } from '@/api';
 import defaultBrandIcon from '@/images/logo.ico';
+import { getPanelPageTitle } from '@/config/panel-navigation';
 
 export type SiteConfig = typeof siteConfig;
 
@@ -7,21 +8,6 @@ export type SiteConfig = typeof siteConfig;
 const CACHE_PREFIX = 'vite_config_';
 const VERSION = "3.0.12-beta";
 const APP_VERSION = "1.0.3";
-const DEFAULT_PANEL_PAGE_TITLE = '仪表盘';
-
-const PANEL_PAGE_TITLE_MAP: Record<string, string> = {
-  '/': '登录',
-  '/dashboard': '仪表盘',
-  '/forward': '转发管理',
-  '/tunnel': '隧道管理',
-  '/node': '节点监控',
-  '/limit': '限速管理',
-  '/user': '用户管理',
-  '/config': '网站配置',
-  '/profile': '个人中心',
-  '/change-password': '修改密码',
-  '/settings': '设置',
-};
 
 const getInitialConfig = () => {
   if (typeof window === 'undefined') {
@@ -57,16 +43,10 @@ const getInitialConfig = () => {
 
 export const siteConfig = getInitialConfig();
 
-export const getPanelPageTitle = (pathname?: string) => {
-  if (!pathname) {
-    return DEFAULT_PANEL_PAGE_TITLE;
-  }
-
-  return PANEL_PAGE_TITLE_MAP[pathname] || DEFAULT_PANEL_PAGE_TITLE;
-};
+export { getPanelPageTitle };
 
 export const formatPanelTitle = (pageTitle?: string, appName?: string) => {
-  const normalizedPageTitle = (pageTitle || DEFAULT_PANEL_PAGE_TITLE).trim();
+  const normalizedPageTitle = (pageTitle || getPanelPageTitle()).trim();
   const normalizedAppName = (appName || siteConfig.name || 'flux').trim();
   return `${normalizedPageTitle} | ${normalizedAppName}`;
 };
