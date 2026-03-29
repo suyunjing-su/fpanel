@@ -2,6 +2,8 @@ package com.admin.service;
 
 import com.admin.common.dto.SpeedLimitDto;
 import com.admin.common.dto.SpeedLimitUpdateDto;
+import com.admin.common.dto.UserTunnelQueryDto;
+import com.admin.common.dto.UserTunnelUpdateDto;
 import com.admin.common.lang.R;
 import com.admin.entity.SpeedLimit;
 import com.baomidou.mybatisplus.extension.service.IService;
@@ -42,4 +44,14 @@ public interface SpeedLimitService extends IService<SpeedLimit> {
      * @return 结果
      */
     R deleteSpeedLimit(Long id);
+
+    /**
+     * 查询用户隧道限速/配额策略
+     */
+    R getUserTunnelPolicies(UserTunnelQueryDto queryDto);
+
+    /**
+     * 更新用户隧道限速/配额策略
+     */
+    R updateUserTunnelPolicy(UserTunnelUpdateDto updateDto);
 }

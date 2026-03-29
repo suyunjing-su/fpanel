@@ -104,6 +104,8 @@ export const getSpeedLimitList = () => Network.post("/speed-limit/list");
 export const updateSpeedLimit = (data: any) => Network.post("/speed-limit/update", data);
 export const deleteSpeedLimit = (id: number) => Network.post("/speed-limit/delete", { id });
 export const batchDeleteSpeedLimits = (ids: number[]) => Network.post<BatchDeleteResult>("/speed-limit/batch-delete", { ids });
+export const getSpeedLimitUserTunnelPolicies = (queryData: any = {}) => Network.post("/speed-limit/user-tunnel/list", queryData);
+export const updateSpeedLimitUserTunnelPolicy = (data: any) => Network.post("/speed-limit/user-tunnel/update", data);
 
 // 修改密码接口
 export const updatePassword = (data: any) => Network.post("/user/updatePassword", data);

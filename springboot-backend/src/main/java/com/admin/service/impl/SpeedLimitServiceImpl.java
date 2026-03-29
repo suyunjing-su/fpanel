@@ -3,6 +3,8 @@ package com.admin.service.impl;
 import com.admin.common.dto.GostDto;
 import com.admin.common.dto.SpeedLimitDto;
 import com.admin.common.dto.SpeedLimitUpdateDto;
+import com.admin.common.dto.UserTunnelQueryDto;
+import com.admin.common.dto.UserTunnelUpdateDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.GostUtil;
 import com.admin.entity.*;
@@ -137,6 +139,16 @@ public class SpeedLimitServiceImpl extends ServiceImpl<SpeedLimitMapper, SpeedLi
         }
         this.removeById(id);
         return R.ok();
+    }
+
+    @Override
+    public R getUserTunnelPolicies(UserTunnelQueryDto queryDto) {
+        return userTunnelService.getUserTunnelList(queryDto);
+    }
+
+    @Override
+    public R updateUserTunnelPolicy(UserTunnelUpdateDto updateDto) {
+        return userTunnelService.updateUserTunnel(updateDto);
     }
 
     private String convertBitsToMBps(Integer speedInBits) {
