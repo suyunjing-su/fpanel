@@ -15,8 +15,12 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -44,33 +48,49 @@ public class ExitHealthCheckAsync {
             return;
         }
 
+        Map<Long, List<ChainTunnel>> exitsByTunnel = new HashMap<>();
+        for (ChainTunnel exit : exits) {
+            if (exit.getTunnelId() == null) {
+                continue;
+            }
+            exitsByTunnel.computeIfAbsent(exit.getTunnelId(), k -> new ArrayList<>()).add(exit);
+        }
+
         long now = System.currentTimeMillis();
         Set<Long> changedTunnelIds = new HashSet<>();
 
-        for (ChainTunnel exit : exits) {
-            if (exit.getId() == null || exit.getTunnelId() == null || exit.getNodeId() == null) {
+        for (Map.Entry<Long, List<ChainTunnel>> tunnelEntry : exitsByTunnel.entrySet()) {
+            List<ChainTunnel> tunnelExits = tunnelEntry.getValue();
+            if (tunnelExits == null || tunnelExits.size() <= 1) {
                 continue;
             }
 
-            HealthResult healthResult = evaluateExit(exit.getNodeId());
-            Integer nextStatus = healthResult.healthy ? 1 : 0;
+            for (ChainTunnel exit : tunnelExits) {
+                if (exit.getId() == null || exit.getNodeId() == null) {
+                    continue;
+                }
 
-            boolean changed = !Objects.equals(exit.getHealthStatus(), nextStatus)
-                    || !Objects.equals(exit.getLastLatencyMs(), healthResult.latencyMs);
-            if (changed) {
-                changedTunnelIds.add(exit.getTunnelId());
+                boolean beforeSelectable = isSelectableExit(exit.getHealthStatus(), exit.getLastLatencyMs());
+
+                HealthResult healthResult = evaluateExit(exit.getNodeId());
+                Integer nextStatus = healthResult.healthy ? 1 : 0;
+                Long nextLatency = healthResult.latencyMs;
+                boolean afterSelectable = isSelectableExit(nextStatus, nextLatency);
+                if (beforeSelectable != afterSelectable) {
+                    changedTunnelIds.add(tunnelEntry.getKey());
+                }
+
+                UpdateWrapper<ChainTunnel> updateWrapper = new UpdateWrapper<>();
+                updateWrapper.eq("id", exit.getId())
+                        .set("health_status", nextStatus)
+                        .set("last_latency_ms", nextLatency)
+                        .set("health_checked_time", now);
+                chainTunnelService.update(null, updateWrapper);
             }
-
-            UpdateWrapper<ChainTunnel> updateWrapper = new UpdateWrapper<>();
-            updateWrapper.eq("id", exit.getId())
-                    .set("health_status", nextStatus)
-                    .set("last_latency_ms", healthResult.latencyMs)
-                    .set("health_checked_time", now);
-            chainTunnelService.update(null, updateWrapper);
         }
 
         if (!changedTunnelIds.isEmpty()) {
-            forcePullTunnelConfigs(changedTunnelIds);
+            forcePullTunnelEntryConfigs(changedTunnelIds);
         }
     }
 
@@ -109,20 +129,37 @@ public class ExitHealthCheckAsync {
         }
     }
 
-    private void forcePullTunnelConfigs(Set<Long> tunnelIds) {
-        Set<Long> affectedNodeIds = new HashSet<>();
-        List<ChainTunnel> tunnelNodes = chainTunnelService.list(new QueryWrapper<ChainTunnel>().in("tunnel_id", tunnelIds));
-        for (ChainTunnel chainTunnel : tunnelNodes) {
+    private boolean isSelectableExit(Integer healthStatus, Long latencyMs) {
+        if (!Objects.equals(healthStatus, 1)) {
+            return false;
+        }
+        return latencyMs == null || latencyMs <= MAX_ALLOWED_LATENCY_MS;
+    }
+
+    private void forcePullTunnelEntryConfigs(Set<Long> tunnelIds) {
+        if (tunnelIds == null || tunnelIds.isEmpty()) {
+            return;
+        }
+
+        Set<Long> affectedNodeIds = new LinkedHashSet<>();
+        List<ChainTunnel> entryNodes = chainTunnelService.list(new QueryWrapper<ChainTunnel>()
+                .in("tunnel_id", tunnelIds)
+                .eq("chain_type", 1));
+        for (ChainTunnel chainTunnel : entryNodes) {
             if (chainTunnel.getNodeId() != null) {
                 affectedNodeIds.add(chainTunnel.getNodeId());
             }
+        }
+
+        if (affectedNodeIds.isEmpty()) {
+            return;
         }
 
         for (Long nodeId : affectedNodeIds) {
             try {
                 GostUtil.ForcePullFullConfig(nodeId);
             } catch (Exception ex) {
-                log.warn("force pull config failed for node {}", nodeId, ex);
+                log.warn("force pull entry config failed for node {}", nodeId, ex);
             }
         }
     }
