@@ -668,6 +668,10 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		err = w.handleSetProtocol(cmd.Data)
 		response.Type = "SetProtocolResponse"
 
+	case "ForcePullFullConfig":
+		err = w.handleForcePullFullConfig()
+		response.Type = "ForcePullFullConfigResponse"
+
 	default:
 		err = fmt.Errorf("未知命令类型: %s", cmd.Type)
 		response.Type = "UnknownCommandResponse"
@@ -762,6 +766,10 @@ func (w *WebSocketReporter) recoverFromFullConfig(cause error) error {
 	}
 
 	return nil
+}
+
+func (w *WebSocketReporter) handleForcePullFullConfig() error {
+	return w.fetchAndOverwriteFullConfig()
 }
 
 func (w *WebSocketReporter) fetchAndOverwriteFullConfig() error {
