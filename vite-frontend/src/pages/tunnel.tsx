@@ -104,6 +104,20 @@ interface DiagnosisResult {
   }>;
 }
 
+interface TunnelSyncNodeResult {
+  nodeId: number;
+  nodeName: string;
+  success: boolean;
+  message: string;
+}
+
+interface TunnelSyncResult {
+  totalCount: number;
+  successCount: number;
+  failureCount: number;
+  results: TunnelSyncNodeResult[];
+}
+
 export default function TunnelPage() {
   const [loading, setLoading] = useState(true);
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
@@ -113,6 +127,7 @@ export default function TunnelPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [diagnosisModalOpen, setDiagnosisModalOpen] = useState(false);
+  const [syncResultModalOpen, setSyncResultModalOpen] = useState(false);
   const [isEdit, setIsEdit] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -120,6 +135,7 @@ export default function TunnelPage() {
   const [tunnelToDelete, setTunnelToDelete] = useState<Tunnel | null>(null);
   const [currentDiagnosisTunnel, setCurrentDiagnosisTunnel] = useState<Tunnel | null>(null);
   const [diagnosisResult, setDiagnosisResult] = useState<DiagnosisResult | null>(null);
+  const [syncResult, setSyncResult] = useState<TunnelSyncResult | null>(null);
   
   // 表单状态
   const [form, setForm] = useState<TunnelForm>({
@@ -437,7 +453,22 @@ export default function TunnelPage() {
         : await createTunnel(data);
         
       if (response.code === 0) {
-        toast.success(isEdit ? '更新成功' : '创建成功');
+        if (isEdit) {
+          const result = response.data?.syncResult as TunnelSyncResult | undefined;
+          if (result?.results) {
+            setSyncResult(result);
+            setSyncResultModalOpen(true);
+            if (result.failureCount > 0) {
+              toast.error(`更新成功，同步失败 ${result.failureCount} 个节点`);
+            } else {
+              toast.success('更新成功，节点配置同步完成');
+            }
+          } else {
+            toast.success('更新成功');
+          }
+        } else {
+          toast.success('创建成功');
+        }
         setModalOpen(false);
         loadData();
       } else {
@@ -1469,6 +1500,68 @@ export default function TunnelPage() {
                   >
                     {batchSelection.failures.length > 0 ? '已完成' : '确认删除'}
                   </Button>
+                </ModalFooter>
+              </>
+            )}
+          </ModalContent>
+        </Modal>
+
+        <Modal
+          isOpen={syncResultModalOpen}
+          onOpenChange={setSyncResultModalOpen}
+          size="2xl"
+          scrollBehavior="inside"
+          backdrop="blur"
+          placement="center"
+        >
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader className="flex flex-col gap-1">
+                  <h2 className="text-lg font-bold">节点配置同步结果</h2>
+                  {syncResult && (
+                    <div className="flex items-center gap-2 text-xs text-default-500">
+                      <span>总计 {syncResult.totalCount}</span>
+                      <span>成功 {syncResult.successCount}</span>
+                      <span>失败 {syncResult.failureCount}</span>
+                    </div>
+                  )}
+                </ModalHeader>
+                <ModalBody>
+                  {syncResult && syncResult.results.length > 0 ? (
+                    <div className="space-y-2">
+                      {syncResult.results.map((item) => (
+                        <div
+                          key={item.nodeId}
+                          className={`rounded-lg border px-3 py-2 ${item.success
+                            ? 'border-success-200 bg-success-50/60 dark:bg-success-900/20'
+                            : 'border-danger-200 bg-danger-50/70 dark:bg-danger-900/30'}`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold truncate">{item.nodeName}</p>
+                              <p className="text-xs text-default-500">节点 ID: {item.nodeId}</p>
+                            </div>
+                            <Chip
+                              size="sm"
+                              variant="flat"
+                              color={item.success ? 'success' : 'danger'}
+                            >
+                              {item.success ? '成功' : '失败'}
+                            </Chip>
+                          </div>
+                          {!item.success && (
+                            <p className="text-xs text-danger mt-2 break-all">{item.message || '同步失败'}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Alert color="default" variant="flat" title="没有可展示的同步结果" />
+                  )}
+                </ModalBody>
+                <ModalFooter>
+                  <Button variant="light" onPress={onClose}>关闭</Button>
                 </ModalFooter>
               </>
             )}
