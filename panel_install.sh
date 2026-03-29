@@ -5,7 +5,7 @@ set -e
 export LANG=en_US.UTF-8
 export LC_ALL=C
 
-RELEASE_VERSION="3.0.14-beta"
+RELEASE_VERSION="3.0.15-beta"
 
 
 # 全局下载地址配置
