@@ -38,5 +38,22 @@ public class ChainTunnel implements Serializable {
     // 使用的协议 入口没有次配置为null
     private String protocol;
 
+    // Entry/exit quota in GB, null means unlimited.
+    private Long flowQuotaGb;
+
+    // Entry speed limit in Mbps, null means unlimited.
+    private Integer speedLimitMbps;
+
+    private Long inFlow;
+
+    private Long outFlow;
+
+    // 1: healthy, 0: unhealthy.
+    private Integer healthStatus;
+
+    private Long lastLatencyMs;
+
+    private Long healthCheckedTime;
+
 
 }

@@ -83,7 +83,14 @@ CREATE TABLE IF NOT EXISTS chain_tunnel (
     port INTEGER,
     strategy VARCHAR(10),
     inx  INTEGER,
-    protocol  VARCHAR(10)
+  protocol  VARCHAR(10),
+  flow_quota_gb INTEGER,
+  speed_limit_mbps INTEGER,
+  in_flow INTEGER NOT NULL DEFAULT 0,
+  out_flow INTEGER NOT NULL DEFAULT 0,
+  health_status INTEGER NOT NULL DEFAULT 1,
+  last_latency_ms INTEGER,
+  health_checked_time INTEGER
 );
 
 

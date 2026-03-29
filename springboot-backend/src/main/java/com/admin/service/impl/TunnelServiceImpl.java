@@ -85,7 +85,16 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
 
         List<Long> node_ids = new ArrayList<>();
         for (ChainTunnel in_node : tunnelDto.getInNodeId()) {
+            if (!isValidFlowQuota(in_node.getFlowQuotaGb())) return R.err("入口流量配额不能小于0");
+            if (!isValidSpeedLimit(in_node.getSpeedLimitMbps())) return R.err("入口限速不能小于0");
             node_ids.add(in_node.getNodeId());
+            in_node.setFlowQuotaGb(normalizeNullableLong(in_node.getFlowQuotaGb()));
+            in_node.setSpeedLimitMbps(normalizeNullableInteger(in_node.getSpeedLimitMbps()));
+            in_node.setInFlow(0L);
+            in_node.setOutFlow(0L);
+            in_node.setHealthStatus(1);
+            in_node.setLastLatencyMs(null);
+            in_node.setHealthCheckedTime(null);
             chainTunnels.add(in_node);
 
             Node node = nodeService.getById(in_node.getNodeId());
@@ -115,6 +124,8 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
             for (ChainTunnel out_node : tunnelDto.getOutNodeId()) {
                 String protocol = normalizeAndValidateChainProtocol(out_node);
                 if (protocol == null) return R.err("隧道协议不支持: " + out_node.getProtocol());
+                if (!isValidFlowQuota(out_node.getFlowQuotaGb())) return R.err("出口流量配额不能小于0");
+                if (!isValidSpeedLimit(out_node.getSpeedLimitMbps())) return R.err("出口限速不能小于0");
                 node_ids.add(out_node.getNodeId());
                 Node node = nodeService.getById(out_node.getNodeId());
                 if (node == null) return R.err("节点不存在");
@@ -122,6 +133,15 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 Integer nodePort = getNodePort(out_node.getNodeId(), protocol);
                 out_node.setPort(nodePort);
                 out_node.setProtocol(protocol);
+                out_node.setFlowQuotaGb(normalizeNullableLong(out_node.getFlowQuotaGb()));
+                out_node.setSpeedLimitMbps(normalizeNullableInteger(out_node.getSpeedLimitMbps()));
+                out_node.setInFlow(0L);
+                out_node.setOutFlow(0L);
+                if (out_node.getHealthStatus() == null) {
+                    out_node.setHealthStatus(1);
+                }
+                out_node.setLastLatencyMs(null);
+                out_node.setHealthCheckedTime(null);
                 chainTunnels.add(out_node);
             }
 
@@ -399,10 +419,17 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
             if (inNode == null || inNode.getNodeId() == null) {
                 return R.err("入口节点数据错误");
             }
+            if (!isValidFlowQuota(inNode.getFlowQuotaGb())) return R.err("入口流量配额不能小于0");
+            if (!isValidSpeedLimit(inNode.getSpeedLimitMbps())) return R.err("入口限速不能小于0");
             allNodeIds.add(inNode.getNodeId());
             ChainTunnel entry = new ChainTunnel();
             entry.setChainType(1);
             entry.setNodeId(inNode.getNodeId());
+            entry.setFlowQuotaGb(normalizeNullableLong(inNode.getFlowQuotaGb()));
+            entry.setSpeedLimitMbps(normalizeNullableInteger(inNode.getSpeedLimitMbps()));
+            entry.setInFlow(0L);
+            entry.setOutFlow(0L);
+            entry.setHealthStatus(1);
             updatedChainTunnels.add(entry);
         }
 
@@ -431,6 +458,9 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                     hopNode.setInx(inx);
                     hopNode.setProtocol(protocol);
                     hopNode.setStrategy(strategy);
+                    hopNode.setInFlow(0L);
+                    hopNode.setOutFlow(0L);
+                    hopNode.setHealthStatus(1);
                     updatedChainTunnels.add(hopNode);
                 }
                 inx++;
@@ -446,6 +476,8 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 if (protocol == null) return R.err("隧道协议不支持: " + outNode.getProtocol());
                 String strategy = normalizeAndValidateChainStrategy(outNode.getStrategy());
                 if (strategy == null) return R.err("负载策略不支持: " + outNode.getStrategy());
+                if (!isValidFlowQuota(outNode.getFlowQuotaGb())) return R.err("出口流量配额不能小于0");
+                if (!isValidSpeedLimit(outNode.getSpeedLimitMbps())) return R.err("出口限速不能小于0");
 
                 allNodeIds.add(outNode.getNodeId());
 
@@ -454,6 +486,11 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 exitNode.setNodeId(outNode.getNodeId());
                 exitNode.setProtocol(protocol);
                 exitNode.setStrategy(strategy);
+                exitNode.setFlowQuotaGb(normalizeNullableLong(outNode.getFlowQuotaGb()));
+                exitNode.setSpeedLimitMbps(normalizeNullableInteger(outNode.getSpeedLimitMbps()));
+                exitNode.setInFlow(0L);
+                exitNode.setOutFlow(0L);
+                exitNode.setHealthStatus(1);
                 updatedChainTunnels.add(exitNode);
             }
         }
@@ -527,6 +564,28 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
             return null;
         }
         return lower;
+    }
+
+    private boolean isValidFlowQuota(Long value) {
+        return value == null || value >= 0;
+    }
+
+    private boolean isValidSpeedLimit(Integer value) {
+        return value == null || value >= 0;
+    }
+
+    private Long normalizeNullableLong(Long value) {
+        if (value == null || value <= 0) {
+            return null;
+        }
+        return value;
+    }
+
+    private Integer normalizeNullableInteger(Integer value) {
+        if (value == null || value <= 0) {
+            return null;
+        }
+        return value;
     }
 
     private Map<String, Object> registerForcePullFullConfigAfterCommit(Set<Long> affectedNodeIds, Map<Long, String> affectedNodeNameMap) {

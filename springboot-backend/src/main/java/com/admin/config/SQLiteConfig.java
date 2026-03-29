@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import javax.annotation.PreDestroy;
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.Statement;
 
 /**
@@ -39,6 +40,8 @@ public class SQLiteConfig implements ApplicationRunner {
             statement.execute("PRAGMA temp_store=MEMORY;");
             statement.execute("PRAGMA busy_timeout=5000;"); // 5秒超时
             statement.execute("PRAGMA wal_autocheckpoint=1000;"); // 每1000页自动checkpoint
+
+            ensureChainTunnelColumns(connection, statement);
             
             log.info("SQLite WAL mode configured successfully");
         } catch (Exception e) {
@@ -77,6 +80,44 @@ public class SQLiteConfig implements ApplicationRunner {
             log.info("Final SQLite checkpoint completed successfully");
         } catch (Exception e) {
             log.error("Failed to perform final SQLite checkpoint", e);
+        }
+    }
+
+    private void ensureChainTunnelColumns(Connection connection, Statement statement) {
+        try {
+            addColumnIfMissing(connection, statement, "chain_tunnel", "flow_quota_gb", "INTEGER");
+            addColumnIfMissing(connection, statement, "chain_tunnel", "speed_limit_mbps", "INTEGER");
+            addColumnIfMissing(connection, statement, "chain_tunnel", "in_flow", "INTEGER NOT NULL DEFAULT 0");
+            addColumnIfMissing(connection, statement, "chain_tunnel", "out_flow", "INTEGER NOT NULL DEFAULT 0");
+            addColumnIfMissing(connection, statement, "chain_tunnel", "health_status", "INTEGER NOT NULL DEFAULT 1");
+            addColumnIfMissing(connection, statement, "chain_tunnel", "last_latency_ms", "INTEGER");
+            addColumnIfMissing(connection, statement, "chain_tunnel", "health_checked_time", "INTEGER");
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to ensure chain_tunnel columns", e);
+        }
+    }
+
+    private void addColumnIfMissing(Connection connection,
+                                    Statement statement,
+                                    String tableName,
+                                    String columnName,
+                                    String columnDefinition) throws Exception {
+        if (hasColumn(connection, tableName, columnName)) {
+            return;
+        }
+        statement.execute("ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + columnDefinition);
+        log.info("SQLite migration: added column {}.{}", tableName, columnName);
+    }
+
+    private boolean hasColumn(Connection connection, String tableName, String columnName) throws Exception {
+        try (Statement pragmaStatement = connection.createStatement();
+             ResultSet rs = pragmaStatement.executeQuery("PRAGMA table_info(" + tableName + ")")) {
+            while (rs.next()) {
+                if (columnName.equalsIgnoreCase(rs.getString("name"))) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 }
