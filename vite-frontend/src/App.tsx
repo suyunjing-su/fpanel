@@ -1,4 +1,4 @@
-import { Route, Routes, useNavigate } from "react-router-dom";
+import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 
 import IndexPage from "@/pages/index";
@@ -18,7 +18,7 @@ import H5Layout from "@/layouts/h5";
 import H5SimpleLayout from "@/layouts/h5-simple";
 
 import { disableDevBypassSession, enableDevBypassSession, isLoggedIn } from "@/utils/auth";
-import { formatPanelTitle, siteConfig } from "@/config/site";
+import { formatPanelTitle, getPanelPageTitle, siteConfig } from "@/config/site";
 
 // 检测是否为H5模式
 const useH5Mode = () => {
@@ -123,6 +123,7 @@ const LoginRoute = () => {
 
 function App() {
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     if (!import.meta.env.DEV) {
@@ -149,7 +150,8 @@ function App() {
 
   // 立即设置页面标题（使用已从缓存读取的配置）
   useEffect(() => {
-    document.title = formatPanelTitle(siteConfig.name);
+    const currentPageTitle = getPanelPageTitle(location.pathname);
+    document.title = formatPanelTitle(currentPageTitle, siteConfig.name);
     
     // 异步检查是否有配置更新
     const checkTitleUpdate = async () => {
@@ -158,7 +160,7 @@ function App() {
         const { getCachedConfig } = await import('@/config/site');
         const cachedAppName = await getCachedConfig('app_name');
         if (cachedAppName) {
-          const nextTitle = formatPanelTitle(cachedAppName);
+          const nextTitle = formatPanelTitle(currentPageTitle, cachedAppName);
           if (nextTitle !== document.title) {
             document.title = nextTitle;
           }
@@ -172,7 +174,7 @@ function App() {
     const timer = setTimeout(checkTitleUpdate, 100);
 
     return () => clearTimeout(timer);
-  }, []);
+  }, [location.pathname]);
 
   return (
     <Routes>
