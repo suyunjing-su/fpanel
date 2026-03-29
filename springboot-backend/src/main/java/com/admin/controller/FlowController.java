@@ -65,11 +65,14 @@ public class FlowController extends BaseController {
     private static final String FORBIDDEN_RESPONSE = "forbidden";
     private static final String DEFAULT_USER_TUNNEL_ID = "0";
     private static final long BYTES_TO_GB = 1024L * 1024L * 1024L;
+    private static final long EXIT_MAX_LATENCY_MS = 20L;
+    private static final long CONFIG_REFRESH_THROTTLE_MS = 30_000L;
 
     // 用于同步相同用户和隧道的流量更新操作
     private static final ConcurrentHashMap<String, Object> USER_LOCKS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, Object> TUNNEL_LOCKS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, Object> FORWARD_LOCKS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Long, Long> TUNNEL_CONFIG_REFRESH_AT = new ConcurrentHashMap<>();
 
     // 缓存加密器实例，避免重复创建
     private static final ConcurrentHashMap<String, AESCrypto> CRYPTO_CACHE = new ConcurrentHashMap<>();
@@ -199,7 +202,7 @@ public class FlowController extends BaseController {
             String jsonObject = flowDataList.getJSONObject(i).toJSONString();
             FlowDto flowDto = JSONObject.parseObject(jsonObject, FlowDto.class);
             if (!Objects.equals(flowDto.getN(), "web_api")) {
-                processFlowData(flowDto);
+                processFlowData(flowDto, node);
             }
         }
         return SUCCESS_RESPONSE;
@@ -284,8 +287,26 @@ public class FlowController extends BaseController {
     /**
      * 处理流量数据的核心逻辑
      */
-    private void processFlowData(FlowDto flowDataList) {
-        String[] serviceIds = parseServiceName(flowDataList.getN());
+    private void processFlowData(FlowDto flowDataList, Node reporterNode) {
+        if (flowDataList == null || !StringUtils.hasText(flowDataList.getN())) {
+            return;
+        }
+
+        String serviceName = flowDataList.getN();
+        Long relayTunnelId = GostUtil.parseTunnelIdFromChainServiceName(serviceName);
+        if (relayTunnelId != null) {
+            processExitRelayFlow(relayTunnelId, reporterNode, flowDataList);
+            return;
+        }
+
+        if (!isForwardServiceName(serviceName)) {
+            return;
+        }
+
+        String[] serviceIds = parseServiceName(serviceName);
+        if (serviceIds.length < 3) {
+            return;
+        }
         String forwardId = serviceIds[0];
         String userId = serviceIds[1];
         String userTunnelId = serviceIds[2];
@@ -293,6 +314,9 @@ public class FlowController extends BaseController {
         Forward forward = forwardService.getById(forwardId);
         if (forward != null){
             Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
+            if (tunnel == null) {
+                return;
+            }
 
             //  处理流量倍率及单双向计算
             BigDecimal trafficRatio = tunnel.getTrafficRatio();
@@ -302,6 +326,13 @@ public class FlowController extends BaseController {
             BigDecimal newU = originalU.multiply(trafficRatio);
             flowDataList.setD(newD.longValue() * tunnel.getFlow());
             flowDataList.setU(newU.longValue() * tunnel.getFlow());
+
+            if (reporterNode != null) {
+                updateChainNodeFlow(forward.getTunnelId().longValue(), reporterNode.getId(), 1, flowDataList);
+                if (isChainNodeQuotaExceeded(forward.getTunnelId().longValue(), reporterNode.getId(), 1)) {
+                    triggerTunnelConfigRefresh(forward.getTunnelId().longValue());
+                }
+            }
         }
 
         // 先更新所有流量统计 - 确保流量数据的一致性
@@ -316,6 +347,16 @@ public class FlowController extends BaseController {
             checkUserTunnelRelatedLimits(userTunnelId, name, userId);
         }
 
+    }
+
+    private void processExitRelayFlow(Long tunnelId, Node reporterNode, FlowDto flowStats) {
+        if (tunnelId == null || reporterNode == null || flowStats == null) {
+            return;
+        }
+        updateChainNodeFlow(tunnelId, reporterNode.getId(), 3, flowStats);
+        if (isChainNodeQuotaExceeded(tunnelId, reporterNode.getId(), 3)) {
+            triggerTunnelConfigRefresh(tunnelId);
+        }
     }
 
     private void checkUserRelatedLimits(String userId, String name) {
@@ -392,8 +433,7 @@ public class FlowController extends BaseController {
         synchronized (getForwardLock(forwardId)) {
             UpdateWrapper<Forward> updateWrapper = new UpdateWrapper<>();
             updateWrapper.eq("id", forwardId);
-            updateWrapper.setSql("in_flow = in_flow + " + flowStats.getD());
-            updateWrapper.setSql("out_flow = out_flow + " + flowStats.getU());
+            updateWrapper.setSql("in_flow = in_flow + " + flowStats.getD() + ", out_flow = out_flow + " + flowStats.getU());
 
             forwardService.update(null, updateWrapper);
         }
@@ -405,8 +445,7 @@ public class FlowController extends BaseController {
             UpdateWrapper<User> updateWrapper = new UpdateWrapper<>();
             updateWrapper.eq("id", userId);
 
-            updateWrapper.setSql("in_flow = in_flow + " + flowStats.getD());
-            updateWrapper.setSql("out_flow = out_flow + " + flowStats.getU());
+            updateWrapper.setSql("in_flow = in_flow + " + flowStats.getD() + ", out_flow = out_flow + " + flowStats.getU());
 
             userService.update(null, updateWrapper);
         }
@@ -421,9 +460,59 @@ public class FlowController extends BaseController {
         synchronized (getTunnelLock(userTunnelId)) {
             UpdateWrapper<UserTunnel> updateWrapper = new UpdateWrapper<>();
             updateWrapper.eq("id", userTunnelId);
-            updateWrapper.setSql("in_flow = in_flow + " + flowStats.getD());
-            updateWrapper.setSql("out_flow = out_flow + " + flowStats.getU());
+            updateWrapper.setSql("in_flow = in_flow + " + flowStats.getD() + ", out_flow = out_flow + " + flowStats.getU());
             userTunnelService.update(null, updateWrapper);
+        }
+    }
+
+    private void updateChainNodeFlow(Long tunnelId, Long nodeId, Integer chainType, FlowDto flowStats) {
+        if (tunnelId == null || nodeId == null || chainType == null || flowStats == null) {
+            return;
+        }
+        UpdateWrapper<ChainTunnel> updateWrapper = new UpdateWrapper<>();
+        updateWrapper.eq("tunnel_id", tunnelId)
+                .eq("node_id", nodeId)
+                .eq("chain_type", chainType)
+                .setSql("in_flow = in_flow + " + flowStats.getD() + ", out_flow = out_flow + " + flowStats.getU());
+        chainTunnelService.update(null, updateWrapper);
+    }
+
+    private boolean isChainNodeQuotaExceeded(Long tunnelId, Long nodeId, Integer chainType) {
+        ChainTunnel chainTunnel = chainTunnelService.getOne(new QueryWrapper<ChainTunnel>()
+                .eq("tunnel_id", tunnelId)
+                .eq("node_id", nodeId)
+                .eq("chain_type", chainType));
+        if (chainTunnel == null || chainTunnel.getFlowQuotaGb() == null || chainTunnel.getFlowQuotaGb() <= 0) {
+            return false;
+        }
+        long usedFlow = safeLong(chainTunnel.getInFlow()) + safeLong(chainTunnel.getOutFlow());
+        return usedFlow >= chainTunnel.getFlowQuotaGb() * BYTES_TO_GB;
+    }
+
+    private void triggerTunnelConfigRefresh(Long tunnelId) {
+        if (tunnelId == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Long lastRefresh = TUNNEL_CONFIG_REFRESH_AT.get(tunnelId);
+        if (lastRefresh != null && now - lastRefresh < CONFIG_REFRESH_THROTTLE_MS) {
+            return;
+        }
+        TUNNEL_CONFIG_REFRESH_AT.put(tunnelId, now);
+
+        List<ChainTunnel> chainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnelId));
+        Set<Long> nodeIds = new LinkedHashSet<>();
+        for (ChainTunnel chainTunnel : chainTunnels) {
+            if (chainTunnel.getNodeId() != null) {
+                nodeIds.add(chainTunnel.getNodeId());
+            }
+        }
+        for (Long nodeId : nodeIds) {
+            try {
+                GostUtil.ForcePullFullConfig(nodeId);
+            } catch (Exception ex) {
+                log.warn("force pull config failed for tunnel {} node {}", tunnelId, nodeId, ex);
+            }
         }
     }
 
@@ -535,7 +624,9 @@ public class FlowController extends BaseController {
                 continue;
             }
 
-            List<ChainTunnel> nextHops = getNextHops(chainTunnel, chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", chainTunnel.getTunnelId())));
+            List<ChainTunnel> tunnelChainItems = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", chainTunnel.getTunnelId()));
+            List<ChainTunnel> nextHops = getNextHops(chainTunnel, tunnelChainItems);
+            nextHops = filterUnavailableExitHops(nextHops);
             if (nextHops.isEmpty()) {
                 continue;
             }
@@ -645,6 +736,7 @@ public class FlowController extends BaseController {
         }
 
         Set<Long> limiterIds = new LinkedHashSet<>();
+        Map<String, Integer> dynamicLimiterSpeeds = new HashMap<>();
         for (ForwardPort forwardPort : forwardPorts) {
             Forward forward = forwardService.getById(forwardPort.getForwardId());
             if (forward == null) {
@@ -659,14 +751,34 @@ public class FlowController extends BaseController {
                     .eq("user_id", forward.getUserId())
                     .eq("tunnel_id", forward.getTunnelId()));
 
+            ChainTunnel entryPolicy = chainTunnelService.getOne(new QueryWrapper<ChainTunnel>()
+                    .eq("tunnel_id", forward.getTunnelId())
+                    .eq("chain_type", 1)
+                    .eq("node_id", node.getId()));
+            if (entryPolicy != null && isChainNodeQuotaReached(entryPolicy)) {
+                continue;
+            }
+
+            String overrideLimiter = null;
+            if (entryPolicy != null && entryPolicy.getSpeedLimitMbps() != null && entryPolicy.getSpeedLimitMbps() > 0) {
+                overrideLimiter = buildEntryLimiterName(forward.getTunnelId().longValue(), node.getId());
+                dynamicLimiterSpeeds.put(overrideLimiter, entryPolicy.getSpeedLimitMbps());
+            }
+
             int userTunnelId = userTunnel == null ? 0 : userTunnel.getId();
             String baseServiceName = forward.getId() + "_" + forward.getUserId() + "_" + userTunnelId;
             if (userTunnel != null && userTunnel.getSpeedId() != null) {
                 limiterIds.add(userTunnel.getSpeedId().longValue());
             }
 
-            services.add(buildForwardService(baseServiceName, "tcp", node, forward, forwardPort, tunnel, userTunnel));
-            services.add(buildForwardService(baseServiceName, "udp", node, forward, forwardPort, tunnel, userTunnel));
+            JSONObject tcpService = buildForwardService(baseServiceName, "tcp", node, forward, forwardPort, tunnel, userTunnel, overrideLimiter);
+            if (tcpService != null) {
+                services.add(tcpService);
+            }
+            JSONObject udpService = buildForwardService(baseServiceName, "udp", node, forward, forwardPort, tunnel, userTunnel, overrideLimiter);
+            if (udpService != null) {
+                services.add(udpService);
+            }
         }
 
         if (!limiterIds.isEmpty()) {
@@ -680,6 +792,16 @@ public class FlowController extends BaseController {
                 limiter.put("limits", limits);
                 limiters.add(limiter);
             }
+        }
+
+        for (Map.Entry<String, Integer> limiterEntry : dynamicLimiterSpeeds.entrySet()) {
+            JSONObject limiter = new JSONObject();
+            limiter.put("name", limiterEntry.getKey());
+            JSONArray limits = new JSONArray();
+            String speed = convertBitsToMBps(limiterEntry.getValue());
+            limits.add("$ " + speed + "MB " + speed + "MB");
+            limiter.put("limits", limits);
+            limiters.add(limiter);
         }
 
         config.put("services", services);
@@ -720,7 +842,8 @@ public class FlowController extends BaseController {
                                            Forward forward,
                                            ForwardPort forwardPort,
                                            Tunnel tunnel,
-                                           UserTunnel userTunnel) {
+                                           UserTunnel userTunnel,
+                                           String overrideLimiter) {
         JSONObject service = new JSONObject();
         service.put("name", baseServiceName + "_" + protocol);
 
@@ -736,14 +859,20 @@ public class FlowController extends BaseController {
             service.put("metadata", metadata);
         }
 
-        if (userTunnel != null && userTunnel.getSpeedId() != null) {
+        if (StringUtils.hasText(overrideLimiter)) {
+            service.put("limiter", overrideLimiter);
+        } else if (userTunnel != null && userTunnel.getSpeedId() != null) {
             service.put("limiter", userTunnel.getSpeedId().toString());
         }
 
         JSONObject handler = new JSONObject();
         handler.put("type", protocol);
         if (tunnel.getType() == 2) {
-            handler.put("chain", resolveForwardEntryChainName(forward.getTunnelId().longValue(), protocol));
+            String entryChainName = resolveForwardEntryChainName(forward.getTunnelId().longValue(), protocol);
+            if (!StringUtils.hasText(entryChainName)) {
+                return null;
+            }
+            handler.put("chain", entryChainName);
         }
         service.put("handler", handler);
 
@@ -794,17 +923,79 @@ public class FlowController extends BaseController {
         return List.of(GostUtil.PROTOCOL_TCP);
     }
 
+    private boolean isForwardServiceName(String serviceName) {
+        if (!StringUtils.hasText(serviceName)) {
+            return false;
+        }
+        String[] parts = serviceName.split("_");
+        if (parts.length < 3) {
+            return false;
+        }
+        return isNumeric(parts[0]) && isNumeric(parts[1]) && isNumeric(parts[2]);
+    }
+
+    private boolean isNumeric(String value) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (!Character.isDigit(value.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private List<ChainTunnel> filterUnavailableExitHops(List<ChainTunnel> nextHops) {
+        if (nextHops == null || nextHops.isEmpty()) {
+            return List.of();
+        }
+        if (!Objects.equals(nextHops.getFirst().getChainType(), 3)) {
+            return nextHops;
+        }
+        return nextHops.stream().filter(this::isExitNodeSelectable).toList();
+    }
+
+    private boolean isExitNodeSelectable(ChainTunnel chainTunnel) {
+        if (chainTunnel == null) {
+            return false;
+        }
+        if (isChainNodeQuotaReached(chainTunnel)) {
+            return false;
+        }
+        if (chainTunnel.getHealthStatus() != null && chainTunnel.getHealthStatus() != 1) {
+            return false;
+        }
+        return chainTunnel.getLastLatencyMs() == null || chainTunnel.getLastLatencyMs() <= EXIT_MAX_LATENCY_MS;
+    }
+
+    private boolean isChainNodeQuotaReached(ChainTunnel chainTunnel) {
+        if (chainTunnel == null || chainTunnel.getFlowQuotaGb() == null || chainTunnel.getFlowQuotaGb() <= 0) {
+            return false;
+        }
+        long usedFlow = safeLong(chainTunnel.getInFlow()) + safeLong(chainTunnel.getOutFlow());
+        return usedFlow >= chainTunnel.getFlowQuotaGb() * BYTES_TO_GB;
+    }
+
+    private String buildEntryLimiterName(Long tunnelId, Long nodeId) {
+        return "entry_" + tunnelId + "_" + nodeId;
+    }
+
+    private long safeLong(Long value) {
+        return value == null ? 0L : value;
+    }
+
     private String resolveForwardEntryChainName(Long tunnelId, String trafficProtocol) {
         List<ChainTunnel> all = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnelId));
         List<ChainTunnel> firstHop = all.stream()
                 .filter(item -> Objects.equals(item.getChainType(), 2) && Objects.equals(item.getInx(), 1))
                 .toList();
         if (firstHop.isEmpty()) {
-            firstHop = all.stream().filter(item -> Objects.equals(item.getChainType(), 3)).toList();
+            firstHop = filterUnavailableExitHops(all.stream().filter(item -> Objects.equals(item.getChainType(), 3)).toList());
         }
 
         if (firstHop.isEmpty()) {
-            return "chains_" + tunnelId;
+            return null;
         }
         return GostUtil.buildChainName(tunnelId, firstHop.getFirst().getProtocol(), trafficProtocol);
     }
