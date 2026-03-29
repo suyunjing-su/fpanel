@@ -30,6 +30,7 @@ export interface UserForm {
   num: number;
   expTime: Date | null;
   flowResetTime: number;
+  tunnelIds?: number[];
 }
 
 export interface UserTunnel {

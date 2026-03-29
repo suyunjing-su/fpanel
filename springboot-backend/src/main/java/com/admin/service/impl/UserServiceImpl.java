@@ -28,6 +28,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
@@ -40,6 +41,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
+import java.util.HashSet;
 
 
 @Slf4j
@@ -227,9 +230,23 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     }
 
     @Override
+    @Transactional
     public R createUser(UserDto userDto) {
         int count = this.count(new QueryWrapper<User>().eq("user", userDto.getUser()));
         if (count > 0) return R.err("用户名已存在");
+
+        Set<Integer> uniqueTunnelIds = new HashSet<>();
+        if (userDto.getTunnelIds() != null) {
+            uniqueTunnelIds.addAll(userDto.getTunnelIds());
+            uniqueTunnelIds.remove(null);
+        }
+        if (!uniqueTunnelIds.isEmpty()) {
+            int tunnelCount = tunnelService.count(new QueryWrapper<Tunnel>().in("id", uniqueTunnelIds));
+            if (tunnelCount != uniqueTunnelIds.size()) {
+                return R.err("部分隧道不存在");
+            }
+        }
+
         User user = new User();
         BeanUtils.copyProperties(userDto, user);
         user.setPwd(Md5Util.md5(userDto.getPwd()));
@@ -239,6 +256,23 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         user.setCreatedTime(currentTime);
         user.setUpdatedTime(currentTime);
         this.save(user);
+
+        if (!uniqueTunnelIds.isEmpty()) {
+            List<UserTunnel> initialUserTunnels = new ArrayList<>();
+            for (Integer tunnelId : uniqueTunnelIds) {
+                UserTunnel userTunnel = new UserTunnel();
+                userTunnel.setUserId(user.getId().intValue());
+                userTunnel.setTunnelId(tunnelId);
+                userTunnel.setFlow(userDto.getFlow());
+                userTunnel.setNum(userDto.getNum());
+                userTunnel.setFlowResetTime(userDto.getFlowResetTime());
+                userTunnel.setExpTime(userDto.getExpTime());
+                userTunnel.setStatus(1);
+                initialUserTunnels.add(userTunnel);
+            }
+            userTunnelService.saveBatch(initialUserTunnels);
+        }
+
         return R.ok();
     }
 

@@ -125,7 +125,8 @@ export default function UserPage() {
     flow: 100,
     num: 10,
     expTime: null,
-    flowResetTime: 0
+    flowResetTime: 0,
+    tunnelIds: []
   });
   const [userFormLoading, setUserFormLoading] = useState(false);
 
@@ -264,7 +265,8 @@ export default function UserPage() {
       flow: 100,
       num: 10,
       expTime: null,
-      flowResetTime: 0
+      flowResetTime: 0,
+      tunnelIds: []
     });
     onUserModalOpen();
   };
@@ -280,7 +282,8 @@ export default function UserPage() {
       flow: user.flow,
       num: user.num,
       expTime: user.expTime ? new Date(user.expTime) : null,
-      flowResetTime: user.flowResetTime ?? 0
+      flowResetTime: user.flowResetTime ?? 0,
+      tunnelIds: []
     });
     onUserModalOpen();
   };
@@ -323,6 +326,9 @@ export default function UserPage() {
 
       if (isEdit && !submitData.pwd) {
         delete submitData.pwd;
+      }
+      if (isEdit) {
+        delete submitData.tunnelIds;
       }
 
       const response = isEdit ? await updateUser(submitData) : await createUser(submitData);
@@ -907,6 +913,27 @@ export default function UserPage() {
                 showMonthAndYearPickers
                 className="cursor-pointer"
               />
+
+              {!isEdit && (
+                <Select
+                  label="初始隧道权限"
+                  selectionMode="multiple"
+                  selectedKeys={new Set((userForm.tunnelIds || []).map((id) => id.toString()))}
+                  onSelectionChange={(keys) => {
+                    const selectedIds = keys === "all"
+                      ? tunnels.map((item) => item.id)
+                      : Array.from(keys).map((key) => Number(key));
+                    setUserForm(prev => ({ ...prev, tunnelIds: selectedIds }));
+                  }}
+                  placeholder="可选，创建用户时自动分配"
+                >
+                  {tunnels.map((tunnel) => (
+                    <SelectItem key={tunnel.id.toString()} textValue={tunnel.name}>
+                      {tunnel.name}
+                    </SelectItem>
+                  ))}
+                </Select>
+              )}
             </div>
             
             <RadioGroup

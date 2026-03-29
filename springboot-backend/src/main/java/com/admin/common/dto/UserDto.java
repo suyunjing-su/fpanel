@@ -1,6 +1,7 @@
 package com.admin.common.dto;
 
 import lombok.Data;
+import java.util.List;
 
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
@@ -28,6 +29,8 @@ public class UserDto {
 
     @NotNull(message = "流量重置时间不能为空")
     private Long flowResetTime;
+
+    private List<Integer> tunnelIds;
 
     private Integer status;
 } 
