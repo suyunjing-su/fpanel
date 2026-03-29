@@ -12,8 +12,13 @@ import toast from 'react-hot-toast';
 import { 
   batchDeleteSpeedLimits,
   createSpeedLimit, 
+  getAllUsers,
   getSpeedLimitList, 
+  getSpeedLimitUserTunnelExitPolicies,
+  getSpeedLimitUserTunnelPolicies,
   updateSpeedLimit, 
+  updateSpeedLimitUserTunnelExitPolicy,
+  updateSpeedLimitUserTunnelPolicy,
   deleteSpeedLimit, 
   getTunnelList 
 } from "@/api";
@@ -35,6 +40,37 @@ interface Tunnel {
   name: string;
 }
 
+interface UserOption {
+  id: number;
+  user: string;
+}
+
+interface UserTunnelPolicy {
+  id: number;
+  tunnelId: number;
+  tunnelName: string;
+  flow: number;
+  num: number;
+  flowResetTime: number;
+  expTime: number;
+  speedId?: number | null;
+  speedLimitName?: string;
+  status: number;
+}
+
+interface UserTunnelExitPolicy {
+  id: number;
+  userTunnelId: number;
+  tunnelId: number;
+  exitNodeId: number;
+  exitNodeName?: string;
+  flowQuotaGb?: number | null;
+  usedFlow?: number;
+  status: number;
+  healthStatus?: number;
+  lastLatencyMs?: number | null;
+}
+
 interface SpeedLimitForm {
   id?: number;
   name: string;
@@ -48,6 +84,24 @@ export default function LimitPage() {
   const [loading, setLoading] = useState(true);
   const [rules, setRules] = useState<SpeedLimitRule[]>([]);
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
+  const [users, setUsers] = useState<UserOption[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
+  const [userTunnelPolicies, setUserTunnelPolicies] = useState<UserTunnelPolicy[]>([]);
+  const [userPolicyLoading, setUserPolicyLoading] = useState(false);
+  const [policyModalOpen, setPolicyModalOpen] = useState(false);
+  const [policySubmitting, setPolicySubmitting] = useState(false);
+  const [editingPolicy, setEditingPolicy] = useState<UserTunnelPolicy | null>(null);
+  const [editingPolicyForm, setEditingPolicyForm] = useState({
+    flow: 0,
+    num: 0,
+    flowResetTime: 0,
+    expTime: '',
+    speedId: null as number | null,
+    status: 1
+  });
+  const [exitPolicies, setExitPolicies] = useState<UserTunnelExitPolicy[]>([]);
+  const [exitPolicyLoading, setExitPolicyLoading] = useState(false);
+  const [exitPolicySavingId, setExitPolicySavingId] = useState<number | null>(null);
   
   // 模态框状态
   const [modalOpen, setModalOpen] = useState(false);
@@ -76,13 +130,22 @@ export default function LimitPage() {
     loadData();
   }, []);
 
+  useEffect(() => {
+    if (selectedUserId) {
+      loadUserTunnelPolicies(selectedUserId);
+    } else {
+      setUserTunnelPolicies([]);
+    }
+  }, [selectedUserId]);
+
   // 加载所有数据
   const loadData = async () => {
     setLoading(true);
     try {
-      const [rulesRes, tunnelsRes] = await Promise.all([
+      const [rulesRes, tunnelsRes, usersRes] = await Promise.all([
         getSpeedLimitList(),
-        getTunnelList()
+        getTunnelList(),
+        getAllUsers()
       ]);
       
       if (rulesRes.code === 0) {
@@ -96,6 +159,18 @@ export default function LimitPage() {
         setTunnels(tunnelsRes.data || []);
       } else {
         console.warn('获取隧道列表失败:', tunnelsRes.msg);
+      }
+
+      if (usersRes.code === 0) {
+        const userItems: UserOption[] = (usersRes.data || [])
+          .filter((item: any) => item.roleId !== 0)
+          .map((item: any) => ({ id: item.id, user: item.user }));
+        setUsers(userItems);
+        if (userItems.length > 0 && !selectedUserId) {
+          setSelectedUserId(userItems[0].id);
+        }
+      } else {
+        toast.error(usersRes.msg || '获取用户列表失败');
       }
     } catch (error) {
       console.error('加载数据失败:', error);
@@ -111,6 +186,114 @@ export default function LimitPage() {
     batchDeleteApi: batchDeleteSpeedLimits,
     reloadData: loadData
   });
+
+  const loadUserTunnelPolicies = async (userId: number) => {
+    setUserPolicyLoading(true);
+    try {
+      const response = await getSpeedLimitUserTunnelPolicies({ userId });
+      if (response.code === 0) {
+        setUserTunnelPolicies(response.data || []);
+      } else {
+        toast.error(response.msg || '获取用户隧道策略失败');
+      }
+    } catch (error) {
+      console.error('加载用户隧道策略失败:', error);
+      toast.error('加载用户隧道策略失败');
+    } finally {
+      setUserPolicyLoading(false);
+    }
+  };
+
+  const loadExitPolicies = async (userTunnelId: number) => {
+    setExitPolicyLoading(true);
+    try {
+      const response = await getSpeedLimitUserTunnelExitPolicies({ userTunnelId });
+      if (response.code === 0) {
+        setExitPolicies(response.data || []);
+      } else {
+        toast.error(response.msg || '获取出口配额策略失败');
+      }
+    } catch (error) {
+      console.error('加载出口配额策略失败:', error);
+      toast.error('加载出口配额策略失败');
+    } finally {
+      setExitPolicyLoading(false);
+    }
+  };
+
+  const openPolicyModal = async (policy: UserTunnelPolicy) => {
+    setEditingPolicy(policy);
+    setEditingPolicyForm({
+      flow: policy.flow,
+      num: policy.num,
+      flowResetTime: policy.flowResetTime,
+      expTime: policy.expTime ? new Date(policy.expTime).toISOString().slice(0, 16) : '',
+      speedId: policy.speedId ?? null,
+      status: policy.status
+    });
+    await loadExitPolicies(policy.id);
+    setPolicyModalOpen(true);
+  };
+
+  const handlePolicySubmit = async () => {
+    if (!editingPolicy) {
+      return;
+    }
+    setPolicySubmitting(true);
+    try {
+      const response = await updateSpeedLimitUserTunnelPolicy({
+        id: editingPolicy.id,
+        flow: editingPolicyForm.flow,
+        num: editingPolicyForm.num,
+        flowResetTime: editingPolicyForm.flowResetTime,
+        expTime: editingPolicyForm.expTime ? new Date(editingPolicyForm.expTime).getTime() : editingPolicy.expTime,
+        speedId: editingPolicyForm.speedId,
+        status: editingPolicyForm.status
+      });
+      if (response.code === 0) {
+        toast.success('用户隧道策略更新成功');
+        setPolicyModalOpen(false);
+        if (selectedUserId) {
+          loadUserTunnelPolicies(selectedUserId);
+        }
+      } else {
+        toast.error(response.msg || '更新用户隧道策略失败');
+      }
+    } catch (error) {
+      console.error('更新用户隧道策略失败:', error);
+      toast.error('更新用户隧道策略失败');
+    } finally {
+      setPolicySubmitting(false);
+    }
+  };
+
+  const updateExitPolicyDraft = (id: number, patch: Partial<UserTunnelExitPolicy>) => {
+    setExitPolicies((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  };
+
+  const handleExitPolicySave = async (item: UserTunnelExitPolicy) => {
+    setExitPolicySavingId(item.id);
+    try {
+      const response = await updateSpeedLimitUserTunnelExitPolicy({
+        id: item.id,
+        flowQuotaGb: item.flowQuotaGb ?? 0,
+        status: item.status
+      });
+      if (response.code === 0) {
+        toast.success(`出口 ${item.exitNodeName || item.exitNodeId} 配额策略已更新`);
+        if (editingPolicy) {
+          loadExitPolicies(editingPolicy.id);
+        }
+      } else {
+        toast.error(response.msg || '更新出口配额策略失败');
+      }
+    } catch (error) {
+      console.error('更新出口配额策略失败:', error);
+      toast.error('更新出口配额策略失败');
+    } finally {
+      setExitPolicySavingId(null);
+    }
+  };
 
   const filteredRules = useMemo(() => {
     const lowerKeyword = keyword.trim().toLowerCase();
@@ -484,6 +667,77 @@ export default function LimitPage() {
           </Card>
         )}
 
+        <Card className="panel-shell">
+          <CardHeader className="pb-2">
+            <div>
+              <p className="text-xs uppercase tracking-[0.14em] panel-muted">Tunnel Policy</p>
+              <h2 className="text-lg font-semibold mt-1">用户隧道策略（限速管理入口）</h2>
+            </div>
+          </CardHeader>
+          <CardBody className="space-y-4">
+            <div className="flex flex-col lg:flex-row gap-3 lg:items-center">
+              <Select
+                label="选择用户"
+                selectedKeys={selectedUserId ? [selectedUserId.toString()] : []}
+                onSelectionChange={(keys) => {
+                  const selectedKey = Array.from(keys)[0] as string | undefined;
+                  setSelectedUserId(selectedKey ? Number(selectedKey) : null);
+                }}
+                className="w-full lg:w-80"
+                variant="bordered"
+              >
+                {users.map((item) => (
+                  <SelectItem key={item.id}>{item.user}</SelectItem>
+                ))}
+              </Select>
+              <Button
+                color="primary"
+                variant="flat"
+                onPress={() => selectedUserId && loadUserTunnelPolicies(selectedUserId)}
+                isDisabled={!selectedUserId}
+              >
+                刷新策略
+              </Button>
+            </div>
+
+            {userPolicyLoading ? (
+              <div className="py-6 flex items-center gap-3 text-default-500">
+                <Spinner size="sm" />
+                正在加载用户隧道策略...
+              </div>
+            ) : userTunnelPolicies.length === 0 ? (
+              <div className="py-6 text-default-500 text-sm">当前用户暂无隧道策略</div>
+            ) : (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                {userTunnelPolicies.map((item) => (
+                  <Card key={item.id} className="border border-slate-200/80 dark:border-slate-700/70">
+                    <CardBody className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-medium">{item.tunnelName}</p>
+                          <p className="text-xs text-default-500">策略ID: {item.id}</p>
+                        </div>
+                        <Chip color={item.status === 1 ? 'success' : 'danger'} variant="flat" size="sm">
+                          {item.status === 1 ? '启用' : '禁用'}
+                        </Chip>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>配额: {item.flow} GB</div>
+                        <div>数量: {item.num}</div>
+                        <div>限速: {item.speedLimitName || '不限速'}</div>
+                        <div>重置日: {item.flowResetTime === 0 ? '不重置' : `每月${item.flowResetTime}号`}</div>
+                      </div>
+                      <Button size="sm" color="primary" variant="flat" onPress={() => openPolicyModal(item)}>
+                        编辑用户隧道/出口策略
+                      </Button>
+                    </CardBody>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </CardBody>
+        </Card>
+
         {/* 新增/编辑模态框 */}
         <Modal 
           isOpen={modalOpen}
@@ -577,6 +831,167 @@ export default function LimitPage() {
                     isLoading={submitLoading}
                   >
                     {isEdit ? '保存修改' : '创建规则'}
+                  </Button>
+                </ModalFooter>
+              </>
+            )}
+          </ModalContent>
+        </Modal>
+
+        <Modal
+          isOpen={policyModalOpen}
+          onOpenChange={setPolicyModalOpen}
+          size="4xl"
+          scrollBehavior="outside"
+          backdrop="blur"
+          placement="center"
+        >
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader className="flex flex-col gap-1">
+                  <h2 className="text-xl font-bold">编辑用户隧道策略</h2>
+                  <p className="text-small text-default-500">
+                    {editingPolicy ? `${editingPolicy.tunnelName}（策略ID: ${editingPolicy.id}）` : ''}
+                  </p>
+                </ModalHeader>
+                <ModalBody>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <Input
+                      label="流量配额 (GB)"
+                      type="number"
+                      value={editingPolicyForm.flow.toString()}
+                      onChange={(e) => setEditingPolicyForm((prev) => ({ ...prev, flow: Number(e.target.value || 0) }))}
+                      variant="bordered"
+                    />
+                    <Input
+                      label="转发数量"
+                      type="number"
+                      value={editingPolicyForm.num.toString()}
+                      onChange={(e) => setEditingPolicyForm((prev) => ({ ...prev, num: Number(e.target.value || 0) }))}
+                      variant="bordered"
+                    />
+                    <Input
+                      label="流量重置日"
+                      type="number"
+                      value={editingPolicyForm.flowResetTime.toString()}
+                      onChange={(e) => setEditingPolicyForm((prev) => ({ ...prev, flowResetTime: Number(e.target.value || 0) }))}
+                      variant="bordered"
+                    />
+                    <Input
+                      label="过期时间"
+                      type="datetime-local"
+                      value={editingPolicyForm.expTime}
+                      onChange={(e) => setEditingPolicyForm((prev) => ({ ...prev, expTime: e.target.value }))}
+                      variant="bordered"
+                    />
+                    <Select
+                      label="限速规则"
+                      selectedKeys={editingPolicyForm.speedId ? [String(editingPolicyForm.speedId)] : ['none']}
+                      onSelectionChange={(keys) => {
+                        const selectedKey = Array.from(keys)[0] as string | undefined;
+                        setEditingPolicyForm((prev) => ({
+                          ...prev,
+                          speedId: selectedKey && selectedKey !== 'none' ? Number(selectedKey) : null
+                        }));
+                      }}
+                      variant="bordered"
+                      items={[
+                        { key: 'none', label: '不限速' },
+                        ...rules.map((rule) => ({ key: String(rule.id), label: rule.name }))
+                      ]}
+                    >
+                      {(item) => <SelectItem key={item.key}>{item.label}</SelectItem>}
+                    </Select>
+                    <Select
+                      label="策略状态"
+                      selectedKeys={[String(editingPolicyForm.status)]}
+                      onSelectionChange={(keys) => {
+                        const selectedKey = Array.from(keys)[0] as string | undefined;
+                        setEditingPolicyForm((prev) => ({ ...prev, status: selectedKey ? Number(selectedKey) : 1 }));
+                      }}
+                      variant="bordered"
+                    >
+                      <SelectItem key="1">启用</SelectItem>
+                      <SelectItem key="0">禁用</SelectItem>
+                    </Select>
+                  </div>
+
+                  <div className="mt-2">
+                    <h3 className="text-base font-semibold">用户级出口配额策略</h3>
+                    {exitPolicyLoading ? (
+                      <div className="mt-3 flex items-center gap-2 text-default-500">
+                        <Spinner size="sm" />
+                        正在加载出口配额策略...
+                      </div>
+                    ) : exitPolicies.length === 0 ? (
+                      <p className="mt-3 text-sm text-default-500">暂无可编辑出口策略</p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {exitPolicies.map((item) => (
+                          <Card key={item.id} className="border border-slate-200/80 dark:border-slate-700/70">
+                            <CardBody className="space-y-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="font-medium">{item.exitNodeName || `节点 ${item.exitNodeId}`}</p>
+                                <Chip size="sm" color={item.healthStatus === 1 ? 'success' : 'danger'} variant="flat">
+                                  {item.healthStatus === 1 ? '健康' : '异常'}
+                                </Chip>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                <Input
+                                  label="出口配额(GB)"
+                                  type="number"
+                                  value={item.flowQuotaGb == null ? '' : String(item.flowQuotaGb)}
+                                  placeholder="留空表示不限额"
+                                  onChange={(e) => {
+                                    const value = e.target.value.trim();
+                                    updateExitPolicyDraft(item.id, { flowQuotaGb: value === '' ? null : Number(value) });
+                                  }}
+                                  variant="bordered"
+                                />
+                                <Input
+                                  label="已用流量(字节)"
+                                  value={String(item.usedFlow || 0)}
+                                  isReadOnly
+                                  variant="bordered"
+                                />
+                                <Select
+                                  label="策略状态"
+                                  selectedKeys={[String(item.status)]}
+                                  onSelectionChange={(keys) => {
+                                    const selectedKey = Array.from(keys)[0] as string | undefined;
+                                    updateExitPolicyDraft(item.id, { status: selectedKey ? Number(selectedKey) : 1 });
+                                  }}
+                                  variant="bordered"
+                                >
+                                  <SelectItem key="1">启用</SelectItem>
+                                  <SelectItem key="0">禁用</SelectItem>
+                                </Select>
+                              </div>
+                              <div className="flex items-center justify-end">
+                                <Button
+                                  size="sm"
+                                  color="primary"
+                                  variant="flat"
+                                  isLoading={exitPolicySavingId === item.id}
+                                  onPress={() => handleExitPolicySave(item)}
+                                >
+                                  保存该出口策略
+                                </Button>
+                              </div>
+                            </CardBody>
+                          </Card>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </ModalBody>
+                <ModalFooter>
+                  <Button variant="light" onPress={onClose}>
+                    取消
+                  </Button>
+                  <Button color="primary" onPress={handlePolicySubmit} isLoading={policySubmitting}>
+                    保存用户隧道策略
                   </Button>
                 </ModalFooter>
               </>
