@@ -1,13 +1,9 @@
 package com.admin.common.dto;
 
 import com.admin.entity.ChainTunnel;
-import com.baomidou.mybatisplus.annotation.FieldStrategy;
-import com.baomidou.mybatisplus.annotation.TableField;
 import lombok.Data;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.Max;
 import javax.validation.constraints.DecimalMin;
 import javax.validation.constraints.DecimalMax;
 import java.math.BigDecimal;
@@ -24,6 +20,13 @@ public class TunnelUpdateDto {
 
     @NotNull(message = "流量计算类型不能为空")
     private Integer flow;
+
+    @NotNull(message = "入口节点不能为空")
+    private List<ChainTunnel> inNodeId;
+
+    private List<List<ChainTunnel>> chainNodes;
+
+    private List<ChainTunnel> outNodeId;
 
     private String inIp;
 
