@@ -52,6 +52,7 @@ import {
 import { useBatchDeleteSelection } from '@/hooks/useBatchDeleteSelection';
 import { SearchIcon, EditIcon, DeleteIcon, UserIcon, SettingsIcon } from '@/components/icons';
 import { parseDate } from "@internationalized/date";
+import { PANEL_CARD_GRID_CLASS } from '@/config/layout';
 
 
 // 工具函数
@@ -670,7 +671,7 @@ export default function UserPage() {
           </CardBody>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+        <div className={PANEL_CARD_GRID_CLASS}>
           {users.map((user) => {
             const userStatus = getUserStatus(user);
             const expStatus = user.expTime ? getExpireStatus(user.expTime) : null;

@@ -25,6 +25,7 @@ import {
   getTunnelList 
 } from "@/api";
 import { useBatchDeleteSelection } from "@/hooks/useBatchDeleteSelection";
+import { PANEL_CARD_GRID_CLASS } from "@/config/layout";
 
 interface SpeedLimitRule {
   id: number;
@@ -632,7 +633,7 @@ export default function LimitPage() {
 
         {/* 统一卡片网格 */}
         {filteredRules.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+          <div className={PANEL_CARD_GRID_CLASS}>
             {filteredRules.map((rule) => (
               <Card key={rule.id} className="panel-shell panel-card-hover">
                 <CardHeader className="pb-3">
@@ -771,7 +772,7 @@ export default function LimitPage() {
             ) : userTunnelPolicies.length === 0 ? (
               <div className="py-6 text-default-500 text-sm">当前用户暂无隧道策略</div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+              <div className={PANEL_CARD_GRID_CLASS}>
                 {userTunnelPolicies.map((item) => (
                   <Card key={item.id} className="panel-shell panel-card-hover">
                     <CardHeader className="pb-2">
