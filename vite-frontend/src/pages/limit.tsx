@@ -771,7 +771,7 @@ export default function LimitPage() {
             ) : userTunnelPolicies.length === 0 ? (
               <div className="py-6 text-default-500 text-sm">当前用户暂无隧道策略</div>
             ) : (
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                 {userTunnelPolicies.map((item) => (
                   <Card key={item.id} className="border border-slate-200/80 dark:border-slate-700/70">
                     <CardBody className="space-y-3">
