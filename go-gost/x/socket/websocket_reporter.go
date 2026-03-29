@@ -764,9 +764,8 @@ func (w *WebSocketReporter) validateMergedConfigConflicts() error {
 }
 
 func (w *WebSocketReporter) recoverFromFullConfig(cause error) error {
-	fetchErr := w.fetchAndOverwriteFullConfig()
-	if fetchErr != nil {
-		return fmt.Errorf("检测到端口冲突且全量配置恢复失败: %v, 原始错误: %v", fetchErr, cause)
+	if err := w.handleForcePullFullConfig(); err != nil {
+		return fmt.Errorf("检测到端口冲突且全量配置恢复失败: %v, 原始错误: %v", err, cause)
 	}
 
 	return nil
@@ -792,12 +791,14 @@ func (w *WebSocketReporter) handleForcePullFullConfig() error {
 }
 
 func (w *WebSocketReporter) shouldReloadRuntimeAfterForcePull() bool {
+	// Only reload when runtime registries are initialized to avoid startup race.
 	if len(registry.ServiceRegistry().GetAll()) > 0 {
 		return true
 	}
-
-	cfg := config.Global()
-	return cfg != nil && len(cfg.Services) > 0
+	if len(registry.ChainRegistry().GetAll()) > 0 {
+		return true
+	}
+	return len(registry.TrafficLimiterRegistry().GetAll()) > 0
 }
 
 func (w *WebSocketReporter) reloadRuntimeConfig() error {
