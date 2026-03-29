@@ -773,17 +773,19 @@ export default function LimitPage() {
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                 {userTunnelPolicies.map((item) => (
-                  <Card key={item.id} className="border border-slate-200/80 dark:border-slate-700/70">
-                    <CardBody className="space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="font-medium">{item.tunnelName}</p>
+                  <Card key={item.id} className="panel-shell panel-card-hover">
+                    <CardHeader className="pb-2">
+                      <div className="flex items-center justify-between gap-3 w-full">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-foreground truncate text-sm">{item.tunnelName}</p>
                           <p className="text-xs text-default-500">策略ID: {item.id}</p>
                         </div>
-                        <Chip color={item.status === 1 ? 'success' : 'danger'} variant="flat" size="sm">
+                        <Chip color={item.status === 1 ? 'success' : 'danger'} variant="flat" size="sm" className="text-xs">
                           {item.status === 1 ? '启用' : '禁用'}
                         </Chip>
                       </div>
+                    </CardHeader>
+                    <CardBody className="pt-0 pb-3 space-y-3">
                       <div className="grid grid-cols-2 gap-2 text-sm">
                         <div>配额: {item.flow} GB</div>
                         <div>数量: {item.num}</div>
