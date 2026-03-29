@@ -4,6 +4,8 @@ import cloud.tianai.captcha.application.ImageCaptchaApplication;
 import cloud.tianai.captcha.spring.plugins.secondary.SecondaryVerificationApplication;
 import cn.hutool.core.map.MapUtil;
 import cn.hutool.core.util.StrUtil;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import com.admin.common.dto.*;
 import com.admin.common.lang.R;
 import com.admin.common.utils.GostUtil;
@@ -20,11 +22,23 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.RestTemplate;
 
 import javax.annotation.Resource;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 
@@ -68,8 +82,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     public R login(LoginDto loginDto) {
         ViteConfig viteConfig = viteConfigService.getOne(new QueryWrapper<ViteConfig>().eq("name", "captcha_enabled"));
         if (viteConfig != null && Objects.equals(viteConfig.getValue(), "true")) {
-            if (StringUtils.isBlank(loginDto.getCaptchaId())) return R.err("验证码校验失败");
-            boolean valid = ((SecondaryVerificationApplication) application).secondaryVerification(loginDto.getCaptchaId());
+            boolean valid = verifyCaptcha(loginDto);
             if (!valid)  return R.err("验证码校验失败");
         }
 
@@ -85,6 +98,132 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
                 .put("role_id", user.getRoleId())
                 .put("requirePasswordChange", requirePasswordChange)
                 .build());
+    }
+
+    private boolean verifyCaptcha(LoginDto loginDto) {
+        String provider = getConfigValueOrDefault("captcha_provider", "native").toLowerCase(Locale.ROOT);
+        return switch (provider) {
+            case "geetest", "geetest_v4" -> verifyGeeTestV4(loginDto);
+            case "recaptcha", "google_recaptcha" -> verifyGoogleRecaptcha(loginDto);
+            case "hcaptcha" -> verifyHCaptcha(loginDto);
+            default -> verifyNativeCaptcha(loginDto);
+        };
+    }
+
+    private boolean verifyNativeCaptcha(LoginDto loginDto) {
+        if (StringUtils.isBlank(loginDto.getCaptchaId())) {
+            return false;
+        }
+        return ((SecondaryVerificationApplication) application).secondaryVerification(loginDto.getCaptchaId());
+    }
+
+    private boolean verifyGeeTestV4(LoginDto loginDto) {
+        String payload = StringUtils.defaultIfBlank(loginDto.getCaptchaPayload(), loginDto.getCaptchaToken());
+        if (StringUtils.isBlank(payload)) {
+            return false;
+        }
+
+        String captchaId = getConfigValue("captcha_geetest_id");
+        String captchaKey = getConfigValue("captcha_geetest_key");
+        String domain = getConfigValueOrDefault("captcha_geetest_domain", "https://gcaptcha4.geetest.com");
+        if (StringUtils.isAnyBlank(captchaId, captchaKey, domain)) {
+            log.warn("GeeTest v4 配置不完整，拒绝登录");
+            return false;
+        }
+
+        try {
+            JSONObject payloadObj = JSON.parseObject(payload);
+            String lotNumber = payloadObj.getString("lot_number");
+            String captchaOutput = payloadObj.getString("captcha_output");
+            String passToken = payloadObj.getString("pass_token");
+            String genTime = payloadObj.getString("gen_time");
+            if (StringUtils.isAnyBlank(lotNumber, captchaOutput, passToken, genTime)) {
+                return false;
+            }
+
+            String signToken = hmacSha256Hex(captchaKey, lotNumber);
+
+            MultiValueMap<String, String> queryParams = new LinkedMultiValueMap<>();
+            queryParams.add("lot_number", lotNumber);
+            queryParams.add("captcha_output", captchaOutput);
+            queryParams.add("pass_token", passToken);
+            queryParams.add("gen_time", genTime);
+            queryParams.add("sign_token", signToken);
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+            HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(queryParams, headers);
+
+            String normalizedDomain = domain.endsWith("/") ? domain.substring(0, domain.length() - 1) : domain;
+            String url = normalizedDomain + "/validate?captcha_id=" + captchaId;
+            ResponseEntity<String> response = new RestTemplate().exchange(url, HttpMethod.POST, requestEntity, String.class);
+
+            JSONObject resJson = JSON.parseObject(response.getBody());
+            return "success".equalsIgnoreCase(resJson.getString("result"));
+        } catch (Exception ex) {
+            log.warn("GeeTest v4 校验失败", ex);
+            return false;
+        }
+    }
+
+    private boolean verifyGoogleRecaptcha(LoginDto loginDto) {
+        String secret = getConfigValue("captcha_recaptcha_secret_key");
+        String token = StringUtils.defaultIfBlank(loginDto.getCaptchaToken(), loginDto.getCaptchaId());
+        return verifyTokenCaptcha(secret, token, "https://www.google.com/recaptcha/api/siteverify");
+    }
+
+    private boolean verifyHCaptcha(LoginDto loginDto) {
+        String secret = getConfigValue("captcha_hcaptcha_secret_key");
+        String token = StringUtils.defaultIfBlank(loginDto.getCaptchaToken(), loginDto.getCaptchaId());
+        return verifyTokenCaptcha(secret, token, "https://hcaptcha.com/siteverify");
+    }
+
+    private boolean verifyTokenCaptcha(String secret, String token, String verifyUrl) {
+        if (StringUtils.isAnyBlank(secret, token)) {
+            return false;
+        }
+
+        try {
+            MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+            form.add("secret", secret);
+            form.add("response", token);
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+            HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(form, headers);
+
+            ResponseEntity<String> response = new RestTemplate().exchange(verifyUrl, HttpMethod.POST, requestEntity, String.class);
+            JSONObject resJson = JSON.parseObject(response.getBody());
+            return Boolean.TRUE.equals(resJson.getBoolean("success"));
+        } catch (Exception ex) {
+            log.warn("验证码提供商校验失败: {}", verifyUrl, ex);
+            return false;
+        }
+    }
+
+    private String getConfigValue(String key) {
+        ViteConfig config = viteConfigService.getOne(new QueryWrapper<ViteConfig>().eq("name", key));
+        if (config == null) {
+            return null;
+        }
+        return StringUtils.trimToNull(config.getValue());
+    }
+
+    private String getConfigValueOrDefault(String key, String defaultValue) {
+        String value = getConfigValue(key);
+        return value == null ? defaultValue : value;
+    }
+
+    private String hmacSha256Hex(String key, String message) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        SecretKeySpec keySpec = new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
+        mac.init(keySpec);
+        byte[] bytes = mac.doFinal(message.getBytes(StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) {
+            sb.append(String.format("%02x", value));
+        }
+        return sb.toString();
     }
 
     @Override

@@ -600,6 +600,10 @@ export default function DashboardPage() {
     return inFlow + outFlow;
   };
 
+  const usedFlow = calculateUserTotalUsedFlow();
+  const flowUsage = calculateUsagePercentage('flow');
+  const forwardUsage = calculateUsagePercentage('forwards');
+
       if (loading) {
       return (
         
@@ -617,11 +621,33 @@ export default function DashboardPage() {
 
       return (
       
-        <div className="px-3 lg:px-6 py-2 lg:py-4">
+        <div className="px-3 lg:px-6 py-3 lg:py-4 space-y-4 lg:space-y-5">
+
+         <Card className="panel-shell overflow-hidden">
+           <CardBody className="p-4 lg:p-5">
+             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+               <div>
+                 <p className="text-xs uppercase tracking-[0.14em] panel-muted">Dashboard</p>
+                 <h1 className="text-xl lg:text-2xl font-semibold mt-1 text-foreground">流量与转发总览</h1>
+                 <p className="text-sm panel-muted mt-1">核心使用指标与 24 小时趋势</p>
+               </div>
+               <div className="grid grid-cols-2 gap-2 w-full lg:w-auto lg:min-w-[320px]">
+                 <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                   <p className="text-xs panel-muted">已用流量</p>
+                   <p className="text-sm font-semibold mt-1">{formatFlow(usedFlow)}</p>
+                 </div>
+                 <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                   <p className="text-xs panel-muted">转发数量</p>
+                   <p className="text-sm font-semibold mt-1">{forwardList.length} / {formatNumber(userInfo.num || 0)}</p>
+                 </div>
+               </div>
+             </div>
+           </CardBody>
+         </Card>
 
                           {/* 响应式统计卡片 */}
          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4 mb-6 lg:mb-8">
-           <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
+           <Card className="panel-shell panel-card-hover">
              <CardBody className="p-3 lg:p-4">
                <div className="flex flex-col space-y-2">
                  <div className="flex items-center justify-between">
@@ -637,7 +663,7 @@ export default function DashboardPage() {
              </CardBody>
            </Card>
 
-           <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
+           <Card className="panel-shell panel-card-hover">
              <CardBody className="p-3 lg:p-4">
                <div className="flex flex-col space-y-2">
                  <div className="flex items-center justify-between">
@@ -648,12 +674,12 @@ export default function DashboardPage() {
                      </svg>
                    </div>
                  </div>
-                 <p className="text-base lg:text-xl font-bold text-foreground truncate">{formatFlow(calculateUserTotalUsedFlow())}</p>
+                 <p className="text-base lg:text-xl font-bold text-foreground truncate">{formatFlow(usedFlow)}</p>
                  <div className="mt-1">
-                   {renderProgressBar(calculateUsagePercentage('flow'), 'sm', userInfo.flow === 99999)}
+                   {renderProgressBar(flowUsage, 'sm', userInfo.flow === 99999)}
                    <div className="flex items-center justify-between mt-1">
                      <p className="text-xs text-default-500 truncate">
-                       {userInfo.flow === 99999 ? '无限制' : `${calculateUsagePercentage('flow').toFixed(1)}%`}
+                       {userInfo.flow === 99999 ? '无限制' : `${flowUsage.toFixed(1)}%`}
                      </p>
                      {(userInfo.flowResetTime !== undefined && userInfo.flowResetTime !== null) && (
                        <div className="text-xs text-default-500 flex items-center gap-1">
@@ -669,7 +695,7 @@ export default function DashboardPage() {
              </CardBody>
            </Card>
 
-           <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
+           <Card className="panel-shell panel-card-hover">
              <CardBody className="p-3 lg:p-4">
                <div className="flex flex-col space-y-2">
                  <div className="flex items-center justify-between">
@@ -685,7 +711,7 @@ export default function DashboardPage() {
              </CardBody>
            </Card>
 
-           <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
+           <Card className="panel-shell panel-card-hover">
              <CardBody className="p-3 lg:p-4">
                <div className="flex flex-col space-y-2">
                  <div className="flex items-center justify-between">
@@ -698,9 +724,9 @@ export default function DashboardPage() {
                  </div>
                  <p className="text-base lg:text-xl font-bold text-foreground truncate">{forwardList.length}</p>
                  <div className="mt-1">
-                   {renderProgressBar(calculateUsagePercentage('forwards'), 'sm', userInfo.num === 99999)}
+                   {renderProgressBar(forwardUsage, 'sm', userInfo.num === 99999)}
                    <p className="text-xs text-default-500 mt-1 truncate">
-                     {userInfo.num === 99999 ? '无限制' : `${calculateUsagePercentage('forwards').toFixed(1)}%`}
+                     {userInfo.num === 99999 ? '无限制' : `${forwardUsage.toFixed(1)}%`}
                    </p>
                  </div>
                </div>
@@ -709,7 +735,7 @@ export default function DashboardPage() {
          </div>
 
          {/* 24小时流量统计图表 */}
-         <Card className="mb-6 lg:mb-8 border border-gray-200 dark:border-default-200 shadow-md">
+         <Card className="mb-6 lg:mb-8 panel-shell">
            <CardHeader className="pb-3">
              <div className="flex items-center gap-2">
                <svg className="w-5 h-5 text-primary" fill="currentColor" viewBox="0 0 20 20">
@@ -786,7 +812,7 @@ export default function DashboardPage() {
 
                  {/* 隧道权限 - 管理员不显示 */}
          {!isAdmin && (
-          <Card className="mb-6 lg:mb-8 border border-gray-200 dark:border-default-200 shadow-md">
+          <Card className="mb-6 lg:mb-8 panel-shell">
            <CardHeader className="pb-3">
              <div className="flex items-center gap-2">
                <svg className="w-5 h-5 text-primary" fill="currentColor" viewBox="0 0 20 20">
@@ -865,7 +891,7 @@ export default function DashboardPage() {
          )}
 
                  {/* 转发配置 */}
-         <Card className="border border-gray-200 dark:border-default-200 shadow-md">
+                 <Card className="panel-shell">
            <CardHeader className="pb-3">
              <div className="flex items-center gap-2">
                <svg className="w-5 h-5 text-primary" fill="currentColor" viewBox="0 0 20 20">

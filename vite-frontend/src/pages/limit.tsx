@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
@@ -68,6 +68,9 @@ export default function LimitPage() {
   
   // 表单验证错误
   const [errors, setErrors] = useState<{[key: string]: string}>({});
+  const [keyword, setKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'abnormal'>('all');
+  const [tunnelFilter, setTunnelFilter] = useState<number | 'all'>('all');
 
   useEffect(() => {
     loadData();
@@ -108,6 +111,27 @@ export default function LimitPage() {
     batchDeleteApi: batchDeleteSpeedLimits,
     reloadData: loadData
   });
+
+  const filteredRules = useMemo(() => {
+    const lowerKeyword = keyword.trim().toLowerCase();
+    return rules.filter((rule) => {
+      if (statusFilter === 'running' && rule.status !== 1) {
+        return false;
+      }
+      if (statusFilter === 'abnormal' && rule.status === 1) {
+        return false;
+      }
+      if (tunnelFilter !== 'all' && rule.tunnelId !== tunnelFilter) {
+        return false;
+      }
+      if (!lowerKeyword) {
+        return true;
+      }
+      return [rule.name, rule.tunnelName, String(rule.speed)].some((field) =>
+        field?.toLowerCase().includes(lowerKeyword)
+      );
+    });
+  }, [rules, keyword, statusFilter, tunnelFilter]);
 
   // 表单验证
   const validateForm = (): boolean => {
@@ -232,13 +256,91 @@ export default function LimitPage() {
 
   return (
     
-      <div className="px-3 lg:px-6 py-8">
+      <div className="px-3 lg:px-6 py-4 lg:py-6 space-y-4">
+        <Card className="panel-shell">
+          <CardBody className="p-4 lg:p-5">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.14em] panel-muted">Speed Policy</p>
+                <h1 className="text-xl lg:text-2xl font-semibold mt-1">限速规则管理</h1>
+              </div>
+              <div className="grid grid-cols-3 gap-2 w-full lg:w-auto lg:min-w-[360px]">
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">规则总数</p>
+                  <p className="text-sm font-semibold mt-1">{filteredRules.length}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">运行中</p>
+                  <p className="text-sm font-semibold mt-1 text-emerald-600 dark:text-emerald-300">{filteredRules.filter((item) => item.status === 1).length}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 px-3 py-2 bg-white/70 dark:bg-slate-900/60">
+                  <p className="text-xs panel-muted">异常</p>
+                  <p className="text-sm font-semibold mt-1 text-rose-600 dark:text-rose-300">{filteredRules.filter((item) => item.status !== 1).length}</p>
+                </div>
+              </div>
+            </div>
+          </CardBody>
+        </Card>
+
         {/* 页面头部 */}
-        <div className="flex items-center justify-between mb-6">
-        <div className="flex-1">
+        <div className="panel-shell p-3 lg:p-4 flex flex-col gap-3">
+        <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+          <Input
+            size="sm"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="搜索规则名、隧道或速率"
+            className="w-full lg:max-w-sm"
+          />
+          <Select
+            selectedKeys={new Set([statusFilter])}
+            onSelectionChange={(keys) => {
+              const value = Array.from(keys)[0] as 'all' | 'running' | 'abnormal' | undefined;
+              setStatusFilter(value || 'all');
+            }}
+            size="sm"
+            className="w-full lg:w-[180px]"
+            aria-label="规则状态"
+          >
+            <SelectItem key="all">全部状态</SelectItem>
+            <SelectItem key="running">运行中</SelectItem>
+            <SelectItem key="abnormal">异常</SelectItem>
+          </Select>
+          <Select
+            selectedKeys={new Set([String(tunnelFilter)])}
+            onSelectionChange={(keys) => {
+              const value = Array.from(keys)[0] as string | undefined;
+              setTunnelFilter(value && value !== 'all' ? Number(value) : 'all');
+            }}
+            size="sm"
+            className="w-full lg:w-[220px]"
+            aria-label="隧道筛选"
+            items={[
+              { key: 'all', label: '全部隧道' },
+              ...tunnels.map((tunnel) => ({ key: String(tunnel.id), label: tunnel.name }))
+            ]}
+          >
+            {(item) => <SelectItem key={item.key}>{item.label}</SelectItem>}
+          </Select>
         </div>
 
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-sm panel-muted">当前显示 {filteredRules.length} 条规则</div>
         <div className="flex items-center gap-3">
+        {(keyword || statusFilter !== 'all' || tunnelFilter !== 'all') && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="default"
+            onPress={() => {
+              setKeyword('');
+              setStatusFilter('all');
+              setTunnelFilter('all');
+            }}
+          >
+            清除筛选
+          </Button>
+        )}
         {batchSelection.selectedCount > 0 && (
           <Button
             size="sm"
@@ -280,12 +382,13 @@ export default function LimitPage() {
             </Button>
         </div>
         </div>
+        </div>
 
         {/* 统一卡片网格 */}
-        {rules.length > 0 ? (
+        {filteredRules.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-            {rules.map((rule) => (
-              <Card key={rule.id} className="shadow-sm border border-gray-200 dark:border-gray-700">
+            {filteredRules.map((rule) => (
+              <Card key={rule.id} className="panel-shell panel-card-hover">
                 <CardHeader className="pb-3">
                   <div className="flex justify-between items-start w-full">
                     <div className="flex items-start gap-2 min-w-0">
@@ -364,7 +467,7 @@ export default function LimitPage() {
           </div>
         ) : (
           /* 空状态 */
-          <Card className="shadow-sm border border-gray-200 dark:border-gray-700">
+          <Card className="panel-shell">
             <CardBody className="text-center py-16">
               <div className="flex flex-col items-center gap-4">
                 <div className="w-16 h-16 bg-default-100 rounded-full flex items-center justify-center">

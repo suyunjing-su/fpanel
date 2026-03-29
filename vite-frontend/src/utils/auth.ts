@@ -1,5 +1,31 @@
 import { getRoleIdFromToken, isTokenValid } from './jwt';
 
+const DEV_BYPASS_KEY = '__flux_dev_bypass__';
+
+export function isDevBypassEnabled(): boolean {
+  if (!import.meta.env.DEV) {
+    return false;
+  }
+  return localStorage.getItem(DEV_BYPASS_KEY) === '1';
+}
+
+export function enableDevBypassSession(): void {
+  if (!import.meta.env.DEV) {
+    return;
+  }
+
+  // Keep bypass data explicit so it is easy to turn off from localStorage.
+  localStorage.setItem(DEV_BYPASS_KEY, '1');
+  localStorage.setItem('token', 'dev-bypass-token');
+  localStorage.setItem('role_id', '0');
+  localStorage.setItem('admin', 'true');
+  localStorage.setItem('name', 'DevAdmin');
+}
+
+export function disableDevBypassSession(): void {
+  localStorage.removeItem(DEV_BYPASS_KEY);
+}
+
 /**
  * 权限工具类
  */
@@ -17,6 +43,11 @@ export function getToken(): string | null {
  * @returns 角色ID
  */
 export function getCurrentUserRoleId(): number | null {
+  if (isDevBypassEnabled()) {
+    const roleId = parseInt(localStorage.getItem('role_id') || '0', 10);
+    return Number.isNaN(roleId) ? 0 : roleId;
+  }
+
   const token = getToken();
   if (!token || !isTokenValid(token)) {
     return null;
@@ -48,6 +79,10 @@ export function hasRole(targetRoleId: number): boolean {
  * @returns 是否已登录
  */
 export function isLoggedIn(): boolean {
+  if (isDevBypassEnabled()) {
+    return true;
+  }
+
   const token = getToken();
   return token ? isTokenValid(token) : false;
 }

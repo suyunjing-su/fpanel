@@ -241,12 +241,14 @@ export default function AdminLayout({
     !item.adminOnly || isAdmin
   );
 
+  const activeMenuItem = filteredMenuItems.find(item => item.path === location.pathname);
+
   return (
-          <div className={`flex ${isMobile ? 'min-h-screen' : 'h-screen'} bg-gray-100 dark:bg-black`}>
+    <div className={`flex ${isMobile ? 'min-h-screen p-0' : 'h-screen p-3'} bg-transparent gap-3`}>
       {/* 移动端遮罩层 */}
       {isMobile && mobileMenuVisible && (
         <div 
-          className="fixed inset-0 backdrop-blur-sm bg-white/50 dark:bg-black/30 z-40"
+          className="fixed inset-0 backdrop-blur-md bg-slate-900/35 z-40"
           onClick={hideMobileMenu}
         />
       )}
@@ -255,10 +257,9 @@ export default function AdminLayout({
       <aside className={`
         ${isMobile ? 'fixed' : 'relative'} 
         ${isMobile && !mobileMenuVisible ? '-translate-x-full' : 'translate-x-0'}
-        ${isMobile ? 'w-64' : 'w-72'} 
-        bg-white dark:bg-black 
-        shadow-lg 
-        border-r border-gray-200 dark:border-gray-600
+        ${isMobile ? 'w-[82vw] max-w-[320px] rounded-none' : 'w-64 rounded-2xl panel-shell'}
+        ${isMobile ? 'bg-white/95 dark:bg-slate-950/95 border-r border-slate-200 dark:border-slate-700' : ''}
+        ${isMobile ? 'shadow-2xl' : ''}
         z-50 
         transition-transform duration-300 ease-in-out
         flex flex-col
@@ -266,19 +267,19 @@ export default function AdminLayout({
         ${isMobile ? 'top-0 left-0' : ''}
       `}>
                  {/* Logo 区域 */}
-         <div className="px-3 py-3 h-14 flex items-center">
+         <div className="px-4 py-4 h-16 flex items-center border-b border-slate-200/70 dark:border-slate-700/60">
            <div className="flex items-center gap-2 w-full">
              <Logo size={24} />
              <div className="flex-1 min-w-0">
-               <h1 className="text-sm font-bold text-foreground overflow-hidden whitespace-nowrap">{siteConfig.name}</h1>
-               <p className="text-xs text-default-500">v{siteConfig.version}</p>
+               <h1 className="text-sm font-bold text-foreground overflow-hidden whitespace-nowrap tracking-wide">{siteConfig.name}</h1>
+               <p className="text-[11px] panel-muted">v{siteConfig.version}</p>
              </div>
            </div>
          </div>
 
                  {/* 菜单导航 */}
-         <nav className="flex-1 px-4 py-6 overflow-y-auto">
-           <ul className="space-y-1">
+         <nav className="flex-1 px-3 py-4 overflow-y-auto">
+           <ul className="space-y-1.5">
             {filteredMenuItems.map((item) => {
               const isActive = location.pathname === item.path;
               return (
@@ -286,18 +287,18 @@ export default function AdminLayout({
                                      <button
                      onClick={() => handleMenuClick(item.path)}
                      className={`
-                       w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left
-                       transition-colors duration-200 min-h-[44px]
+                       w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left
+                       transition-all duration-200 min-h-[44px] panel-focus-ring
                        ${isActive 
-                         ? 'bg-primary-100 dark:bg-primary-600/20 text-primary-600 dark:text-primary-300' 
-                         : 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-900'
+                         ? 'bg-gradient-to-r from-sky-100 to-blue-100 dark:from-sky-600/20 dark:to-blue-600/25 text-sky-700 dark:text-sky-300 shadow-sm' 
+                         : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100/80 dark:hover:bg-slate-800/70'
                        }
                      `}
                    >
                      <div className="flex-shrink-0">
                        {item.icon}
                      </div>
-                     <span className="font-medium text-sm">{item.label}</span>
+                     <span className="font-medium text-sm tracking-wide">{item.label}</span>
                    </button>
                 </li>
               );
@@ -306,15 +307,15 @@ export default function AdminLayout({
         </nav>
 
                 {/* 底部版权信息 */}
-        <div className="px-4 py-2 pb-4 mt-auto flex-shrink-0">
+        <div className="px-4 py-3 mt-auto flex-shrink-0 border-t border-slate-200/70 dark:border-slate-700/60">
           <div className="text-center">
-            <p className="text-xs text-gray-400 dark:text-gray-500">
+            <p className="text-xs panel-muted">
               Powered by{' '}
               <a 
                 href="https://github.com/suyunjing-su/fpanel" 
                 target="_blank" 
                 rel="noopener noreferrer"
-                className="text-gray-500 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                className="text-slate-500 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-300 transition-colors"
               >
                 flux-panel
               </a>
@@ -326,7 +327,7 @@ export default function AdminLayout({
       {/* 主内容区域 */}
       <div className={`flex flex-col flex-1 ${isMobile ? 'min-h-0' : 'h-full overflow-hidden'}`}>
                  {/* 顶部导航栏 */}
-         <header className="bg-white dark:bg-black shadow-md border-b border-gray-200 dark:border-gray-600 h-14 flex items-center justify-between px-4 lg:px-6 relative z-10">
+        <header className={`h-14 flex items-center justify-between px-4 lg:px-6 relative z-10 ${isMobile ? 'bg-white/95 dark:bg-slate-950/95 border-b border-slate-200 dark:border-slate-700' : 'panel-shell rounded-2xl'}`}>
           <div className="flex items-center gap-4">
             {/* 移动端菜单按钮 */}
             {isMobile && (
@@ -341,13 +342,19 @@ export default function AdminLayout({
                 </svg>
               </Button>
             )}
+            {!isMobile && (
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] panel-muted">Workspace</p>
+                <h2 className="text-sm font-semibold text-foreground">{activeMenuItem?.label || '控制台'}</h2>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
             {/* 用户菜单 */}
              <Dropdown placement="bottom-end">
                <DropdownTrigger>
-                 <Button variant="light" className="text-sm font-medium text-foreground">
+                 <Button variant="light" className="text-sm font-medium text-foreground rounded-xl">
                    {username}
                    <svg className="w-4 h-4 ml-1" fill="currentColor" viewBox="0 0 20 20">
                      <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
@@ -385,7 +392,7 @@ export default function AdminLayout({
         </header>
 
         {/* 主内容 */}
-        <main className={`flex-1 bg-gray-100 dark:bg-black ${isMobile ? '' : 'overflow-y-auto'}`}>
+        <main className={`flex-1 ${isMobile ? 'bg-transparent' : 'overflow-y-auto bg-transparent pt-3'} `}>
           {children}
         </main>
       </div>

@@ -16,5 +16,11 @@ public class LoginDto {
 
     private String captchaId;
 
+    private String captchaProvider;
+
+    private String captchaToken;
+
+    private String captchaPayload;
+
 
 }

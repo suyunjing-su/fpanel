@@ -5,11 +5,11 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import toast from 'react-hot-toast';
 import axios from 'axios';
+import ReCAPTCHA from 'react-google-recaptcha';
+import HCaptcha from '@hcaptcha/react-hcaptcha';
 import { isWebViewFunc } from '@/utils/panel';
-import { siteConfig } from '@/config/site';
-import { title } from "@/components/primitives";
-import DefaultLayout from "@/layouts/default";
-import { login, LoginData, checkCaptcha } from "@/api";
+import { getCachedConfig, getPanelBrandLogo, siteConfig } from '@/config/site';
+import { login, LoginData, checkCaptcha, getCaptchaRuntime, CaptchaRuntimeConfig } from "@/api";
 import "@/utils/tac.css";
 import "@/utils/tac.min.js";
 import bgImage from "@/images/bg.jpg";
@@ -19,6 +19,9 @@ interface LoginForm {
   username: string;
   password: string;
   captchaId: string;
+  captchaProvider?: string;
+  captchaToken?: string;
+  captchaPayload?: string;
 }
 
 
@@ -41,19 +44,45 @@ interface CaptchaStyle {
   moveTrackMaskBorderColor?: string;
 }
 
+type CaptchaProvider = 'native' | 'geetest' | 'recaptcha' | 'hcaptcha';
+
+const DEFAULT_CAPTCHA_RUNTIME: CaptchaRuntimeConfig = {
+  enabled: false,
+  provider: 'native',
+  nativeType: 'RANDOM',
+  geetestCaptchaId: '',
+  recaptchaSiteKey: '',
+  hcaptchaSiteKey: ''
+};
+
 export default function IndexPage() {
   const [form, setForm] = useState<LoginForm>({
     username: "",
     password: "",
     captchaId: "",
+    captchaProvider: 'native',
+    captchaToken: '',
+    captchaPayload: ''
   });
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Partial<LoginForm>>({});
   const [showCaptcha, setShowCaptcha] = useState(false);
+  const [captchaRuntime, setCaptchaRuntime] = useState<CaptchaRuntimeConfig>(DEFAULT_CAPTCHA_RUNTIME);
+  const [captchaProvider, setCaptchaProvider] = useState<CaptchaProvider>('native');
   const navigate = useNavigate();
   const tacInstanceRef = useRef<any>(null);
+  const geeTestRef = useRef<any>(null);
   const captchaContainerRef = useRef<HTMLDivElement>(null);
+  const recaptchaRef = useRef<ReCAPTCHA | null>(null);
+  const hcaptchaRef = useRef<HCaptcha | null>(null);
+  const geetestContainerId = 'geetest-captcha-container';
   const [isWebView, setIsWebView] = useState(false);
+  const [appName, setAppName] = useState(siteConfig.name || 'flux');
+  const [loginLogo, setLoginLogo] = useState(siteConfig.app_logo || '');
+  const [loginDescription, setLoginDescription] = useState(siteConfig.login_page_description || '');
+  const isDarkMode = document.documentElement.classList.contains('dark') ||
+    document.documentElement.getAttribute('data-theme') === 'dark' ||
+    window.matchMedia('(prefers-color-scheme: dark)').matches;
   // 清理验证码实例
   useEffect(() => {
     return () => {
@@ -61,11 +90,39 @@ export default function IndexPage() {
         tacInstanceRef.current.destroyWindow();
         tacInstanceRef.current = null;
       }
+      if (geeTestRef.current?.destroy) {
+        geeTestRef.current.destroy();
+        geeTestRef.current = null;
+      }
     };
   }, []);
   // 检测是否在WebView中运行
   useEffect(() => {
     setIsWebView(isWebViewFunc());
+  }, []);
+
+  useEffect(() => {
+    const syncLoginBranding = async () => {
+      try {
+        const [cachedAppName, cachedLogo, cachedDescription] = await Promise.all([
+          getCachedConfig('app_name'),
+          getCachedConfig('app_logo'),
+          getCachedConfig('login_page_description')
+        ]);
+
+        if (cachedAppName) {
+          setAppName(cachedAppName);
+        }
+        setLoginLogo(cachedLogo || '');
+        setLoginDescription(cachedDescription || '');
+      } catch (error) {
+        console.warn('同步登录品牌配置失败:', error);
+      }
+    };
+
+    syncLoginBranding();
+    window.addEventListener('configUpdated', syncLoginBranding);
+    return () => window.removeEventListener('configUpdated', syncLoginBranding);
   }, []);
   // 验证表单
   const validateForm = (): boolean => {
@@ -95,18 +152,44 @@ export default function IndexPage() {
     }
   };
 
-  // 初始化验证码
-  const initCaptcha = async () => {
+  const loadCaptchaRuntime = async (): Promise<CaptchaRuntimeConfig> => {
+    const runtimeResponse = await getCaptchaRuntime();
+    if (runtimeResponse.code !== 0 || !runtimeResponse.data) {
+      throw new Error(runtimeResponse.msg || '获取验证码配置失败');
+    }
+
+    const runtime = {
+      ...DEFAULT_CAPTCHA_RUNTIME,
+      ...runtimeResponse.data
+    };
+    const provider = (runtime.provider || 'native').toLowerCase() as CaptchaProvider;
+    runtime.provider = provider;
+    setCaptchaRuntime(runtime);
+    setCaptchaProvider(provider);
+    return runtime;
+  };
+
+  const resetCaptchaState = () => {
+    if (tacInstanceRef.current) {
+      tacInstanceRef.current.destroyWindow();
+      tacInstanceRef.current = null;
+    }
+    if (geeTestRef.current?.destroy) {
+      geeTestRef.current.destroy();
+      geeTestRef.current = null;
+    }
+    recaptchaRef.current?.reset();
+    hcaptchaRef.current?.resetCaptcha();
+  };
+
+  // 初始化原生验证码
+  const initNativeCaptcha = async () => {
     if (!window.TAC || !captchaContainerRef.current) {
       return;
     }
 
     try {
-      // 清理之前的验证码实例
-      if (tacInstanceRef.current) {
-        tacInstanceRef.current.destroyWindow();
-        tacInstanceRef.current = null;
-      }
+      resetCaptchaState();
 
       // 使用axios的baseURL，确保在WebView中使用正确的面板地址
       const baseURL = axios.defaults.baseURL || (import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/api/v1/` : '/api/v1/');
@@ -116,9 +199,10 @@ export default function IndexPage() {
         validCaptchaUrl: `${baseURL}captcha/verify`, 
         bindEl: "#captcha-container",
         validSuccess: (res: any, _: any, tac: any) => {
-          
-
-          form.captchaId = res.data.validToken
+          form.captchaId = res.data.validToken;
+          form.captchaProvider = 'native';
+          form.captchaToken = '';
+          form.captchaPayload = '';
 
           setShowCaptcha(false);
           tac.destroyWindow();
@@ -163,8 +247,111 @@ export default function IndexPage() {
     }
   };
 
+  const ensureGeeTestScript = async (): Promise<void> => {
+    if (window.initGeetest4) {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://static.geetest.com/v4/gt4.js';
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('加载 GeeTest SDK 失败'));
+      document.head.appendChild(script);
+    });
+  };
+
+  const initGeeTestCaptcha = async (runtime: CaptchaRuntimeConfig) => {
+    const captchaId = (runtime.geetestCaptchaId || '').trim();
+    if (!captchaId) {
+      throw new Error('GeeTest CAPTCHA ID 未配置');
+    }
+
+    await ensureGeeTestScript();
+    resetCaptchaState();
+
+    await new Promise<void>((resolve, reject) => {
+      if (!window.initGeetest4) {
+        reject(new Error('GeeTest SDK 未就绪'));
+        return;
+      }
+
+      window.initGeetest4(
+        {
+          captchaId,
+          product: 'bind'
+        },
+        (gt) => {
+          geeTestRef.current = gt;
+          gt
+            .appendTo(`#${geetestContainerId}`)
+            .onSuccess(() => {
+              const result = gt.getValidate();
+              const payload = JSON.stringify(result);
+              setForm((prev) => ({ ...prev, captchaId: '', captchaProvider: 'geetest', captchaToken: payload, captchaPayload: payload }));
+              setShowCaptcha(false);
+              void performLogin({
+                captchaProvider: 'geetest',
+                captchaToken: payload,
+                captchaPayload: payload
+              }).then(() => resolve()).catch((error) => reject(error));
+            })
+          ;
+
+          if (gt.onError) {
+            gt.onError(() => {
+              reject(new Error('GeeTest 初始化失败'));
+            });
+          }
+
+          gt.showBox();
+        }
+      );
+    });
+  };
+
+  const executeGoogleRecaptcha = async (runtime: CaptchaRuntimeConfig) => {
+    const siteKey = (runtime.recaptchaSiteKey || '').trim();
+    if (!siteKey) {
+      throw new Error('Google reCAPTCHA Site Key 未配置');
+    }
+
+    const token = await recaptchaRef.current?.executeAsync();
+    recaptchaRef.current?.reset();
+    if (!token) {
+      throw new Error('reCAPTCHA 验证失败');
+    }
+
+    await performLogin({
+      captchaProvider: 'recaptcha',
+      captchaToken: token,
+      captchaPayload: ''
+    });
+  };
+
+  const executeHCaptcha = async (runtime: CaptchaRuntimeConfig) => {
+    const siteKey = (runtime.hcaptchaSiteKey || '').trim();
+    if (!siteKey) {
+      throw new Error('hCaptcha Site Key 未配置');
+    }
+
+    const tokenResult = await (hcaptchaRef.current as any)?.execute({ async: true });
+    const token = typeof tokenResult === 'string' ? tokenResult : tokenResult?.response;
+    hcaptchaRef.current?.resetCaptcha();
+    if (!token) {
+      throw new Error('hCaptcha 验证失败');
+    }
+
+    await performLogin({
+      captchaProvider: 'hcaptcha',
+      captchaToken: token,
+      captchaPayload: ''
+    });
+  };
+
   // 执行登录请求
-  const performLogin = async () => {
+  const performLogin = async (captchaOverrides?: Partial<LoginData>) => {
 
 
     try {
@@ -172,6 +359,10 @@ export default function IndexPage() {
         username: form.username.trim(),
         password: form.password,
         captchaId: form.captchaId,
+        captchaProvider: form.captchaProvider || 'native',
+        captchaToken: form.captchaToken || '',
+        captchaPayload: form.captchaPayload || '',
+        ...captchaOverrides
       };
 
       const response = await login(loginData);
@@ -216,30 +407,71 @@ export default function IndexPage() {
     setLoading(true);
 
     try {
-      // 先检查是否需要验证码
       const checkResponse = await checkCaptcha();
-      
       if (checkResponse.code !== 0) {
-        toast.error("检查验证码状态失败，请重试" + checkResponse.msg);
+        toast.error('检查验证码状态失败，请重试' + checkResponse.msg);
         setLoading(false);
         return;
       }
 
-      // 根据返回值决定是否显示验证码
       if (checkResponse.data === 0) {
-        // 不需要验证码，直接登录
+        setCaptchaRuntime(DEFAULT_CAPTCHA_RUNTIME);
+        setCaptchaProvider('native');
+        setForm((prev) => ({
+          ...prev,
+          captchaId: '',
+          captchaProvider: 'native',
+          captchaToken: '',
+          captchaPayload: ''
+        }));
         await performLogin();
       } else {
-        // 需要验证码，显示验证码弹层
-        setShowCaptcha(true);
-        // 延时初始化验证码，确保DOM已渲染
-        setTimeout(() => {
-          initCaptcha();
-        }, 100);
+        const runtime = await loadCaptchaRuntime();
+        const provider = (runtime.provider || 'native').toLowerCase() as CaptchaProvider;
+
+        if (provider === 'native') {
+          setForm((prev) => ({
+            ...prev,
+            captchaProvider: 'native',
+            captchaToken: '',
+            captchaPayload: ''
+          }));
+          setShowCaptcha(true);
+          setTimeout(() => {
+            initNativeCaptcha();
+          }, 100);
+          return;
+        }
+
+        if (provider === 'geetest') {
+          setShowCaptcha(true);
+          setTimeout(() => {
+            initGeeTestCaptcha(runtime).catch((error) => {
+              console.error('初始化 GeeTest 失败:', error);
+              toast.error(error instanceof Error ? error.message : '初始化 GeeTest 失败');
+              setShowCaptcha(false);
+              setLoading(false);
+            });
+          }, 100);
+          return;
+        }
+
+        if (provider === 'recaptcha') {
+          await executeGoogleRecaptcha(runtime);
+          return;
+        }
+
+        if (provider === 'hcaptcha') {
+          await executeHCaptcha(runtime);
+          return;
+        }
+
+        toast.error('不支持的验证码提供商: ' + provider);
+        setLoading(false);
       }
     } catch (error) {
       console.error('检查验证码状态错误:', error);
-      toast.error("网络错误，请稍后重试" + error);
+      toast.error('网络错误，请稍后重试');
       setLoading(false);
     }
   };
@@ -252,16 +484,41 @@ export default function IndexPage() {
   };
 
   return (
-    <DefaultLayout>
-      <section className="flex flex-col items-center justify-center gap-4 py-4 sm:py-8 md:py-10 pb-20 min-h-[calc(100dvh-120px)] sm:min-h-[calc(100dvh-200px)]">
-        <div className="w-full max-w-md px-4 sm:px-0">
-          <Card className="w-full">
-            <CardHeader className="pb-0 pt-6 px-6 flex-col items-center">
-              <h1 className={title({ size: "sm" })}>登陆</h1>
-              <p className="text-small text-default-500 mt-2">请输入您的账号信息</p>
+    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-50 via-sky-50 to-blue-100/80 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950/50">
+      <div className="absolute inset-0 pointer-events-none">
+        <div className="h-72 w-72 rounded-full bg-cyan-300/25 blur-3xl absolute -top-20 -left-16" />
+        <div className="h-80 w-80 rounded-full bg-blue-300/20 blur-3xl absolute -bottom-20 -right-20" />
+      </div>
+
+      <main className="relative z-10 min-h-screen flex items-center justify-center px-4 py-10 sm:px-6">
+        <div className="w-full max-w-md">
+          <div className="mb-8 text-center">
+            <div className="mb-4 inline-flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl shadow-lg shadow-sky-500/30 bg-white/80 dark:bg-slate-900/70 border border-slate-200/70 dark:border-slate-700/70">
+              <img
+                src={getPanelBrandLogo(loginLogo)}
+                alt="Logo"
+                className="h-full w-full object-contain"
+                onError={(event) => {
+                  event.currentTarget.src = getPanelBrandLogo('');
+                }}
+              />
+            </div>
+            <h1 className="mb-2 text-3xl font-bold bg-gradient-to-r from-sky-600 to-blue-500 bg-clip-text text-transparent">
+              {appName}
+            </h1>
+            {loginDescription.trim() && (
+              <p className="text-sm text-slate-500 dark:text-slate-400">{loginDescription}</p>
+            )}
+          </div>
+
+          <Card className="w-full max-w-md border border-slate-200/80 dark:border-slate-700/70 bg-white/94 dark:bg-slate-900/90 backdrop-blur-xl shadow-2xl">
+            <CardHeader className="px-7 pt-8 pb-2 flex-col items-center text-center">
+              <h2 className="text-2xl font-bold text-slate-900 dark:text-white">欢迎回来</h2>
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">登录到您的账户</p>
             </CardHeader>
-            <CardBody className="px-6 py-6">
-              <div className="flex flex-col gap-4">
+
+            <CardBody className="px-7 pb-8 pt-5">
+              <div className="space-y-5">
                 <Input
                   label="用户名"
                   placeholder="请输入用户名"
@@ -273,7 +530,7 @@ export default function IndexPage() {
                   isInvalid={!!errors.username}
                   errorMessage={errors.username}
                 />
-                
+
                 <Input
                   label="密码"
                   placeholder="请输入密码"
@@ -286,14 +543,13 @@ export default function IndexPage() {
                   isInvalid={!!errors.password}
                 />
 
-                
                 <Button
                   color="primary"
                   size="lg"
                   onClick={handleLogin}
                   isLoading={loading}
                   disabled={loading}
-                  className="mt-2"
+                  className="w-full font-semibold"
                 >
                   {loading ? (showCaptcha ? "验证中..." : "登录中...") : "登录"}
                 </Button>
@@ -301,51 +557,66 @@ export default function IndexPage() {
             </CardBody>
           </Card>
         </div>
+      </main>
 
+      <footer className="absolute inset-x-0 bottom-4 text-center py-2 z-10">
+        <p className="text-xs panel-muted">
+          Powered by{' '}
+          <a
+            href="https://github.com/suyunjing-su/fpanel"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-slate-500 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-300 transition-colors"
+          >
+            flux-panel
+          </a>
+        </p>
+        <p className="text-xs panel-muted mt-1">
+          v{isWebView ? siteConfig.app_version : siteConfig.version}
+        </p>
+      </footer>
 
-      {/* 版权信息 - 固定在底部，不占据布局空间 */}
-      
-               <div className="fixed inset-x-0 bottom-4 text-center py-4">
-               <p className="text-xs text-gray-400 dark:text-gray-500">
-                 Powered by{' '}
-                 <a 
-                   href="https://github.com/suyunjing-su/fpanel" 
-                   target="_blank" 
-                   rel="noopener noreferrer"
-                   className="text-gray-500 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                 >
-                   flux-panel
-                 </a>
-               </p>
-               <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                 v{ isWebView ? siteConfig.app_version : siteConfig.version}
-               </p>
-             </div>
-      
-   
+      {(captchaRuntime.recaptchaSiteKey || '').trim() && (
+        <div className="hidden">
+          <ReCAPTCHA
+            ref={recaptchaRef}
+            sitekey={captchaRuntime.recaptchaSiteKey || ''}
+            size="invisible"
+          />
+        </div>
+      )}
 
-        {/* 验证码弹层 */}
-        {showCaptcha && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center">
-            {/* 背景遮罩层 - 模糊效果，暗黑模式下更深 */}
-            <div className="absolute inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm captcha-backdrop-enter" />
-           {/* 验证码容器 */}
-           <div className="mb-4">
-                <div 
-                  id="captcha-container" 
-                  ref={captchaContainerRef}
-                  className="w-full flex justify-center"
-                  style={{
-                    filter: document.documentElement.classList.contains('dark') || 
-                           document.documentElement.getAttribute('data-theme') === 'dark' ||
-                           window.matchMedia('(prefers-color-scheme: dark)').matches 
-                           ? 'brightness(0.8) contrast(0.9)' : 'none'
-                  }}
-                />
-              </div>
+      {(captchaRuntime.hcaptchaSiteKey || '').trim() && (
+        <div className="hidden">
+          <HCaptcha
+            ref={hcaptchaRef}
+            sitekey={captchaRuntime.hcaptchaSiteKey || ''}
+            size="invisible"
+          />
+        </div>
+      )}
+
+      {/* 验证码弹层 */}
+      {showCaptcha && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm captcha-backdrop-enter" />
+          <div className="relative mb-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-900/95 px-6 py-5 shadow-2xl min-w-[320px]">
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3 text-center">
+              {captchaProvider === 'geetest' ? '请完成极验验证' : '请完成人机验证'}
+            </p>
+            {captchaProvider === 'native' && (
+              <div
+                id="captcha-container"
+                ref={captchaContainerRef}
+                className={`w-full flex justify-center ${isDarkMode ? 'brightness-[0.8] contrast-[0.9]' : ''}`}
+              />
+            )}
+            {captchaProvider === 'geetest' && (
+              <div id={geetestContainerId} className="w-full flex justify-center min-h-[56px]" />
+            )}
           </div>
-        )}
-      </section>
-    </DefaultLayout>
+        </div>
+      )}
+    </div>
   );
 }

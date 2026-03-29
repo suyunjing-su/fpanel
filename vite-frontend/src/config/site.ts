@@ -1,6 +1,9 @@
 import { getConfigByName, getConfigs } from '@/api';
+import defaultBrandIcon from '@/images/logo.ico';
 
 export type SiteConfig = typeof siteConfig;
+
+const PANEL_BRAND_SUFFIX = 'flux_panel';
 
 // 缓存相关常量
 const CACHE_PREFIX = 'vite_config_';
@@ -13,25 +16,60 @@ const getInitialConfig = () => {
       name: "flux",
       version: VERSION,
       app_version: APP_VERSION,
+      app_logo: "",
+      login_page_description: "",
     };
   }
 
   const cachedAppName = localStorage.getItem(CACHE_PREFIX + 'app_name');
+  const cachedAppLogo = localStorage.getItem(CACHE_PREFIX + 'app_logo') || '';
+  const cachedLoginDescription = localStorage.getItem(CACHE_PREFIX + 'login_page_description') || '';
     if (cachedAppName) {
       return {
         name: cachedAppName,
         version: VERSION,
         app_version: APP_VERSION,
+        app_logo: cachedAppLogo,
+        login_page_description: cachedLoginDescription,
       };
     }
   return {
     name: "flux",
     version: VERSION,
     app_version: APP_VERSION,
+    app_logo: cachedAppLogo,
+    login_page_description: cachedLoginDescription,
   };
 };
 
 export const siteConfig = getInitialConfig();
+
+export const formatPanelTitle = (appName?: string) => {
+  const normalized = (appName || siteConfig.name || 'flux').trim();
+  return `${normalized} | ${PANEL_BRAND_SUFFIX}`;
+};
+
+export const getPanelBrandLogo = (logo?: string) => {
+  const normalized = (logo || '').trim();
+  return normalized || defaultBrandIcon;
+};
+
+export const updateFavicon = (logo?: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const faviconHref = getPanelBrandLogo(logo);
+  let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+
+  link.type = faviconHref.endsWith('.svg') ? 'image/svg+xml' : 'image/x-icon';
+  link.href = faviconHref;
+};
 
 // 缓存工具函数
 export const configCache = {
@@ -85,7 +123,18 @@ export const getCachedConfig = async (key: string): Promise<string | null> => {
 // 获取所有配置（优先从缓存）
 export const getCachedConfigs = async (): Promise<Record<string, string>> => {
   // 尝试从缓存获取所有配置
-  const configKeys = ['app_name'];
+  const configKeys = [
+    'app_name',
+    'app_logo',
+    'login_page_description',
+    'captcha_enabled',
+    'captcha_provider',
+    'captcha_type',
+    'captcha_geetest_id',
+    'captcha_geetest_domain',
+    'captcha_recaptcha_site_key',
+    'captcha_hcaptcha_site_key'
+  ];
   const cachedConfigs: Record<string, string> = {};
   let hasCachedData = false;
 
@@ -123,11 +172,17 @@ export const getCachedConfigs = async (): Promise<Record<string, string>> => {
 // 动态更新网站配置
 export const updateSiteConfig = async () => {
   const appName = await getCachedConfig('app_name');
-    if (appName && appName !== siteConfig.name) {
-      siteConfig.name = appName;
-      // 更新页面标题
-      document.title = appName;
-    }
+  const appLogo = await getCachedConfig('app_logo');
+  const loginDescription = await getCachedConfig('login_page_description');
+
+  if (appName && appName !== siteConfig.name) {
+    siteConfig.name = appName;
+    document.title = formatPanelTitle(appName);
+  }
+
+  siteConfig.app_logo = appLogo || '';
+  siteConfig.login_page_description = loginDescription || '';
+  updateFavicon(siteConfig.app_logo);
 };
 
 // 清除配置缓存的工具函数
@@ -146,6 +201,8 @@ export const clearConfigCache = (keys?: string[]) => {
 
 // 在页面加载时异步更新配置（如果有更新的话）
 if (typeof window !== 'undefined') {
+  updateFavicon(siteConfig.app_logo);
+
   // 延迟执行，避免阻塞初始渲染
   setTimeout(() => {
     updateSiteConfig();
