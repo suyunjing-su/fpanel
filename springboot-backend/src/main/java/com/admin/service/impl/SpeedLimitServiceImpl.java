@@ -3,6 +3,9 @@ package com.admin.service.impl;
 import com.admin.common.dto.GostDto;
 import com.admin.common.dto.SpeedLimitDto;
 import com.admin.common.dto.SpeedLimitUpdateDto;
+import com.admin.common.dto.UserTunnelExitPolicyQueryDto;
+import com.admin.common.dto.UserTunnelExitPolicyUpdateDto;
+import com.admin.common.dto.UserTunnelExitPolicyViewDto;
 import com.admin.common.dto.UserTunnelQueryDto;
 import com.admin.common.dto.UserTunnelUpdateDto;
 import com.admin.common.lang.R;
@@ -52,6 +55,9 @@ public class SpeedLimitServiceImpl extends ServiceImpl<SpeedLimitMapper, SpeedLi
 
     @Resource
     ChainTunnelService chainTunnelService;
+
+    @Resource
+    UserTunnelExitPolicyService userTunnelExitPolicyService;
 
 
     @Override
@@ -149,6 +155,57 @@ public class SpeedLimitServiceImpl extends ServiceImpl<SpeedLimitMapper, SpeedLi
     @Override
     public R updateUserTunnelPolicy(UserTunnelUpdateDto updateDto) {
         return userTunnelService.updateUserTunnel(updateDto);
+    }
+
+    @Override
+    public R getUserTunnelExitPolicies(UserTunnelExitPolicyQueryDto queryDto) {
+        List<UserTunnelExitPolicy> policies = userTunnelExitPolicyService.syncAndListByUserTunnelId(queryDto.getUserTunnelId());
+        List<UserTunnelExitPolicyViewDto> result = new ArrayList<>();
+        for (UserTunnelExitPolicy policy : policies) {
+            UserTunnelExitPolicyViewDto viewDto = new UserTunnelExitPolicyViewDto();
+            viewDto.setId(policy.getId());
+            viewDto.setUserTunnelId(policy.getUserTunnelId());
+            viewDto.setTunnelId(policy.getTunnelId());
+            viewDto.setExitNodeId(policy.getExitNodeId());
+            viewDto.setFlowQuotaGb(policy.getFlowQuotaGb());
+            viewDto.setUsedFlow(policy.getUsedFlow());
+            viewDto.setStatus(policy.getStatus());
+
+            ChainTunnel exit = chainTunnelService.getOne(new QueryWrapper<ChainTunnel>()
+                    .eq("tunnel_id", policy.getTunnelId())
+                    .eq("chain_type", 3)
+                    .eq("node_id", policy.getExitNodeId()));
+            if (exit != null) {
+                viewDto.setHealthStatus(exit.getHealthStatus());
+                viewDto.setLastLatencyMs(exit.getLastLatencyMs());
+            }
+
+            Node node = nodeService.getById(policy.getExitNodeId());
+            if (node != null) {
+                viewDto.setExitNodeName(node.getName());
+            }
+
+            result.add(viewDto);
+        }
+        return R.ok(result);
+    }
+
+    @Override
+    public R updateUserTunnelExitPolicy(UserTunnelExitPolicyUpdateDto updateDto) {
+        UserTunnelExitPolicy policy = userTunnelExitPolicyService.getById(updateDto.getId());
+        if (policy == null) {
+            return R.err("出口策略不存在");
+        }
+
+        Long quota = updateDto.getFlowQuotaGb();
+        if (quota != null && quota <= 0) {
+            quota = null;
+        }
+        policy.setFlowQuotaGb(quota);
+        policy.setStatus(updateDto.getStatus());
+        policy.setUpdatedTime(System.currentTimeMillis());
+        userTunnelExitPolicyService.updateById(policy);
+        return R.ok();
     }
 
     private String convertBitsToMBps(Integer speedInBits) {

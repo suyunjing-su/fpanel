@@ -42,6 +42,7 @@ public class SQLiteConfig implements ApplicationRunner {
             statement.execute("PRAGMA wal_autocheckpoint=1000;"); // 每1000页自动checkpoint
 
             ensureChainTunnelColumns(connection, statement);
+            ensureUserTunnelExitPolicyTable(statement);
             
             log.info("SQLite WAL mode configured successfully");
         } catch (Exception e) {
@@ -94,6 +95,24 @@ public class SQLiteConfig implements ApplicationRunner {
             addColumnIfMissing(connection, statement, "chain_tunnel", "health_checked_time", "INTEGER");
         } catch (Exception e) {
             throw new RuntimeException("Failed to ensure chain_tunnel columns", e);
+        }
+    }
+
+    private void ensureUserTunnelExitPolicyTable(Statement statement) {
+        try {
+            statement.execute("CREATE TABLE IF NOT EXISTS user_tunnel_exit_policy ("
+                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    + "user_tunnel_id INTEGER NOT NULL,"
+                    + "tunnel_id INTEGER NOT NULL,"
+                    + "exit_node_id INTEGER NOT NULL,"
+                    + "flow_quota_gb INTEGER,"
+                    + "used_flow INTEGER NOT NULL DEFAULT 0,"
+                    + "status INTEGER NOT NULL DEFAULT 1,"
+                    + "created_time INTEGER NOT NULL,"
+                    + "updated_time INTEGER NOT NULL"
+                    + ")");
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to ensure user_tunnel_exit_policy table", e);
         }
     }
 
