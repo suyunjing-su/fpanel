@@ -90,7 +90,7 @@ public class UserTunnelEntryPolicyServiceImpl extends ServiceImpl<UserTunnelEntr
                 .eq("user_id", userTunnel.getUserId())
                 .eq("tunnel_id", userTunnel.getTunnelId()));
         if (!forwards.isEmpty()) {
-            List<Integer> forwardIds = forwards.stream().map(Forward::getId).toList();
+            List<Long> forwardIds = forwards.stream().map(Forward::getId).toList();
             List<ForwardPort> ports = forwardPortService.list(new QueryWrapper<ForwardPort>()
                     .in("forward_id", forwardIds));
             for (ForwardPort port : ports) {
