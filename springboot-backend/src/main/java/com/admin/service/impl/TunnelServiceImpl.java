@@ -474,6 +474,8 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         affectedNodeIds.addAll(uniqueNodeIds);
+        Map<Long, String> affectedNodeNameMap = nodeService.list(new QueryWrapper<Node>().in("id", affectedNodeIds)).stream()
+            .collect(Collectors.toMap(Node::getId, Node::getName, (left, right) -> left));
 
         chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", existingTunnel.getId()));
         for (ChainTunnel chainTunnel : updatedChainTunnels) {
@@ -510,8 +512,10 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         }
 
         this.updateById(tunnel);
-        registerForcePullFullConfigAfterCommit(affectedNodeIds);
-        return R.ok();
+        Map<String, Object> syncResult = registerForcePullFullConfigAfterCommit(affectedNodeIds, affectedNodeNameMap);
+        Map<String, Object> data = new HashMap<>();
+        data.put("syncResult", syncResult);
+        return R.ok(data);
     }
 
     private String normalizeAndValidateChainStrategy(String strategy) {
@@ -525,33 +529,70 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         return lower;
     }
 
-    private void registerForcePullFullConfigAfterCommit(Set<Long> affectedNodeIds) {
+    private Map<String, Object> registerForcePullFullConfigAfterCommit(Set<Long> affectedNodeIds, Map<Long, String> affectedNodeNameMap) {
+        List<Map<String, Object>> nodeResults = new ArrayList<>();
+        Map<String, Object> summary = buildSyncSummary(nodeResults);
         if (affectedNodeIds == null || affectedNodeIds.isEmpty()) {
-            return;
+            return summary;
         }
+
         Set<Long> nodeIds = new HashSet<>(affectedNodeIds);
+        Runnable syncRunner = () -> {
+            nodeResults.clear();
+            nodeResults.addAll(forcePullFullConfig(nodeIds, affectedNodeNameMap));
+            summary.putAll(buildSyncSummary(nodeResults));
+        };
+
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    forcePullFullConfig(nodeIds);
+                    syncRunner.run();
                 }
             });
-            return;
+        } else {
+            syncRunner.run();
         }
-        forcePullFullConfig(nodeIds);
+        return summary;
     }
 
-    private void forcePullFullConfig(Set<Long> nodeIds) {
+    private List<Map<String, Object>> forcePullFullConfig(Set<Long> nodeIds, Map<Long, String> affectedNodeNameMap) {
+        List<Map<String, Object>> results = new ArrayList<>();
         for (Long nodeId : nodeIds) {
             if (nodeId == null) {
                 continue;
             }
+            Map<String, Object> item = new HashMap<>();
+            item.put("nodeId", nodeId);
+            item.put("nodeName", Optional.ofNullable(affectedNodeNameMap.get(nodeId)).orElse(String.valueOf(nodeId)));
             try {
-                GostUtil.ForcePullFullConfig(nodeId);
-            } catch (Exception ignored) {
+                GostDto gostDto = GostUtil.ForcePullFullConfig(nodeId);
+                String msg = gostDto == null ? "节点无响应" : gostDto.getMsg();
+                item.put("success", Objects.equals(msg, "OK"));
+                item.put("message", msg);
+            } catch (Exception ex) {
+                item.put("success", false);
+                item.put("message", ex.getMessage());
+            }
+            results.add(item);
+        }
+        return results;
+    }
+
+    private Map<String, Object> buildSyncSummary(List<Map<String, Object>> nodeResults) {
+        int total = nodeResults.size();
+        int successCount = 0;
+        for (Map<String, Object> nodeResult : nodeResults) {
+            if (Boolean.TRUE.equals(nodeResult.get("success"))) {
+                successCount++;
             }
         }
+        Map<String, Object> summary = new HashMap<>();
+        summary.put("totalCount", total);
+        summary.put("successCount", successCount);
+        summary.put("failureCount", total - successCount);
+        summary.put("results", nodeResults);
+        return summary;
     }
 
 
