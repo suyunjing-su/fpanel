@@ -19,6 +19,8 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.annotation.Resource;
 import java.util.*;
@@ -42,6 +44,12 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
             "mtls",
             "mwss",
             "mtcp"
+    );
+
+    private static final Set<String> SUPPORTED_CHAIN_STRATEGIES = Set.of(
+            "fifo",
+            "round",
+            "rand"
     );
 
 
@@ -371,22 +379,130 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
 
 
     @Override
+    @Transactional
     public R updateTunnel(TunnelUpdateDto tunnelUpdateDto) {
         Tunnel existingTunnel = this.getById(tunnelUpdateDto.getId());
         if (existingTunnel == null) return R.err("隧道不存在");
+
+        int duplicateCount = this.count(new QueryWrapper<Tunnel>()
+                .eq("name", tunnelUpdateDto.getName())
+                .ne("id", tunnelUpdateDto.getId()));
+        if (duplicateCount > 0) return R.err("隧道名称重复");
+
+        List<ChainTunnel> updatedChainTunnels = new ArrayList<>();
+        List<Long> allNodeIds = new ArrayList<>();
+        Map<Long, Node> nodes = new HashMap<>();
+
+        List<ChainTunnel> inNodes = Optional.ofNullable(tunnelUpdateDto.getInNodeId()).orElse(Collections.emptyList());
+        if (inNodes.isEmpty()) return R.err("请至少选择一个入口节点");
+        for (ChainTunnel inNode : inNodes) {
+            if (inNode == null || inNode.getNodeId() == null) {
+                return R.err("入口节点数据错误");
+            }
+            allNodeIds.add(inNode.getNodeId());
+            ChainTunnel entry = new ChainTunnel();
+            entry.setChainType(1);
+            entry.setNodeId(inNode.getNodeId());
+            updatedChainTunnels.add(entry);
+        }
+
+        if (existingTunnel.getType() == 2) {
+            List<List<ChainTunnel>> chainNodes = Optional.ofNullable(tunnelUpdateDto.getChainNodes()).orElse(Collections.emptyList());
+            int inx = 1;
+            for (List<ChainTunnel> chainGroup : chainNodes) {
+                if (chainGroup == null || chainGroup.isEmpty()) {
+                    inx++;
+                    continue;
+                }
+                for (ChainTunnel chainNode : chainGroup) {
+                    if (chainNode == null || chainNode.getNodeId() == null) {
+                        return R.err("转发链节点数据错误");
+                    }
+                    String protocol = normalizeAndValidateChainProtocol(chainNode);
+                    if (protocol == null) return R.err("隧道协议不支持: " + chainNode.getProtocol());
+                    String strategy = normalizeAndValidateChainStrategy(chainNode.getStrategy());
+                    if (strategy == null) return R.err("负载策略不支持: " + chainNode.getStrategy());
+
+                    allNodeIds.add(chainNode.getNodeId());
+
+                    ChainTunnel hopNode = new ChainTunnel();
+                    hopNode.setChainType(2);
+                    hopNode.setNodeId(chainNode.getNodeId());
+                    hopNode.setInx(inx);
+                    hopNode.setProtocol(protocol);
+                    hopNode.setStrategy(strategy);
+                    updatedChainTunnels.add(hopNode);
+                }
+                inx++;
+            }
+
+            List<ChainTunnel> outNodes = Optional.ofNullable(tunnelUpdateDto.getOutNodeId()).orElse(Collections.emptyList());
+            if (outNodes.isEmpty()) return R.err("请至少选择一个出口节点");
+            for (ChainTunnel outNode : outNodes) {
+                if (outNode == null || outNode.getNodeId() == null) {
+                    return R.err("出口节点数据错误");
+                }
+                String protocol = normalizeAndValidateChainProtocol(outNode);
+                if (protocol == null) return R.err("隧道协议不支持: " + outNode.getProtocol());
+                String strategy = normalizeAndValidateChainStrategy(outNode.getStrategy());
+                if (strategy == null) return R.err("负载策略不支持: " + outNode.getStrategy());
+
+                allNodeIds.add(outNode.getNodeId());
+
+                ChainTunnel exitNode = new ChainTunnel();
+                exitNode.setChainType(3);
+                exitNode.setNodeId(outNode.getNodeId());
+                exitNode.setProtocol(protocol);
+                exitNode.setStrategy(strategy);
+                updatedChainTunnels.add(exitNode);
+            }
+        }
+
+        Set<Long> uniqueNodeIds = new HashSet<>(allNodeIds);
+        if (uniqueNodeIds.size() != allNodeIds.size()) return R.err("节点重复");
+
+        List<Node> nodeList = nodeService.list(new QueryWrapper<Node>().in("id", uniqueNodeIds));
+        if (nodeList.size() != uniqueNodeIds.size()) return R.err("部分节点不存在");
+        for (Node node : nodeList) {
+            if (node.getStatus() != 1) return R.err("部分节点不在线");
+            nodes.put(node.getId(), node);
+        }
+
+        List<ChainTunnel> oldChainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", existingTunnel.getId()));
+        Set<Long> affectedNodeIds = oldChainTunnels.stream()
+                .map(ChainTunnel::getNodeId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        affectedNodeIds.addAll(uniqueNodeIds);
+
+        chainTunnelService.remove(new QueryWrapper<ChainTunnel>().eq("tunnel_id", existingTunnel.getId()));
+        for (ChainTunnel chainTunnel : updatedChainTunnels) {
+            chainTunnel.setTunnelId(existingTunnel.getId());
+            if (Objects.equals(chainTunnel.getChainType(), 2) || Objects.equals(chainTunnel.getChainType(), 3)) {
+                Integer nodePort = getNodePort(chainTunnel.getNodeId(), chainTunnel.getProtocol());
+                chainTunnel.setPort(nodePort);
+            }
+        }
+        if (!updatedChainTunnels.isEmpty()) {
+            chainTunnelService.saveBatch(updatedChainTunnels);
+        }
+
         Tunnel tunnel = new Tunnel();
         tunnel.setId(tunnelUpdateDto.getId());
         tunnel.setName(tunnelUpdateDto.getName());
         tunnel.setFlow(tunnelUpdateDto.getFlow());
         tunnel.setTrafficRatio(tunnelUpdateDto.getTrafficRatio());
         tunnel.setInIp(tunnelUpdateDto.getInIp());
+        tunnel.setUpdatedTime(System.currentTimeMillis());
 
         if (StringUtils.isEmpty(tunnel.getInIp())){
             StringBuilder in_ip = new StringBuilder();
-            List<ChainTunnel> chainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()).eq("chain_type", 1));
+            List<ChainTunnel> chainTunnels = updatedChainTunnels.stream()
+                    .filter(item -> Objects.equals(item.getChainType(), 1))
+                    .toList();
             for (ChainTunnel chainTunnel : chainTunnels) {
-                Node node = nodeService.getById(chainTunnel.getNodeId());
-                if (node == null)return R.err("隧道节点数据错误，部分节点不存在");
+                Node node = nodes.get(chainTunnel.getNodeId());
+                if (node == null) return R.err("隧道节点数据错误，部分节点不存在");
                 in_ip.append(node.getServerIp()).append(",");
             }
             in_ip.deleteCharAt(in_ip.length() - 1);
@@ -394,7 +510,48 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         }
 
         this.updateById(tunnel);
+        registerForcePullFullConfigAfterCommit(affectedNodeIds);
         return R.ok();
+    }
+
+    private String normalizeAndValidateChainStrategy(String strategy) {
+        if (StringUtils.isBlank(strategy)) {
+            return "round";
+        }
+        String lower = strategy.trim().toLowerCase();
+        if (!SUPPORTED_CHAIN_STRATEGIES.contains(lower)) {
+            return null;
+        }
+        return lower;
+    }
+
+    private void registerForcePullFullConfigAfterCommit(Set<Long> affectedNodeIds) {
+        if (affectedNodeIds == null || affectedNodeIds.isEmpty()) {
+            return;
+        }
+        Set<Long> nodeIds = new HashSet<>(affectedNodeIds);
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    forcePullFullConfig(nodeIds);
+                }
+            });
+            return;
+        }
+        forcePullFullConfig(nodeIds);
+    }
+
+    private void forcePullFullConfig(Set<Long> nodeIds) {
+        for (Long nodeId : nodeIds) {
+            if (nodeId == null) {
+                continue;
+            }
+            try {
+                GostUtil.ForcePullFullConfig(nodeId);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
 

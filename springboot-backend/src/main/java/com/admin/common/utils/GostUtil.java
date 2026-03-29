@@ -230,6 +230,10 @@ public class GostUtil {
         return WebSocketServer.send_msg(node_id, data, meth);
     }
 
+    public static GostDto ForcePullFullConfig(Long node_id) {
+        return WebSocketServer.send_msg(node_id, new JSONObject(), "ForcePullFullConfig");
+    }
+
 
     private static JSONObject createLimiterData(Long name, String speed) {
         JSONObject data = new JSONObject();
