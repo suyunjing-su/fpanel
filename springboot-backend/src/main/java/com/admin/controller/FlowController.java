@@ -70,6 +70,12 @@ public class FlowController extends BaseController {
     private static final long EXIT_MAX_LATENCY_MS = 20L;
     private static final long CONFIG_REFRESH_THROTTLE_MS = 30_000L;
 
+    private enum TunnelConfigRefreshScope {
+        TUNNEL_NODES,
+        ENTRY_NODES,
+        ENTRY_NODE_TARGET
+    }
+
     // 用于同步相同用户和隧道的流量更新操作
     private static final ConcurrentHashMap<String, Object> USER_LOCKS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, Object> TUNNEL_LOCKS = new ConcurrentHashMap<>();
@@ -343,7 +349,7 @@ public class FlowController extends BaseController {
             if (reporterNode != null) {
                 updateChainNodeFlow(forward.getTunnelId().longValue(), reporterNode.getId(), 1, flowDataList);
                 if (isChainNodeQuotaExceeded(forward.getTunnelId().longValue(), reporterNode.getId(), 1)) {
-                    triggerTunnelConfigRefresh(forward.getTunnelId().longValue());
+                    triggerTunnelEntryConfigRefresh(forward.getTunnelId().longValue(), reporterNode.getId());
                 }
             }
         }
@@ -374,7 +380,7 @@ public class FlowController extends BaseController {
         }
         updateChainNodeFlow(tunnelId, reporterNode.getId(), 3, flowStats);
         if (isChainNodeQuotaExceeded(tunnelId, reporterNode.getId(), 3)) {
-            triggerTunnelConfigRefresh(tunnelId);
+            triggerTunnelEntryConfigRefresh(tunnelId);
         }
     }
 
@@ -509,6 +515,18 @@ public class FlowController extends BaseController {
     }
 
     private void triggerTunnelConfigRefresh(Long tunnelId) {
+        triggerTunnelConfigRefresh(tunnelId, TunnelConfigRefreshScope.TUNNEL_NODES, null);
+    }
+
+    private void triggerTunnelEntryConfigRefresh(Long tunnelId) {
+        triggerTunnelConfigRefresh(tunnelId, TunnelConfigRefreshScope.ENTRY_NODES, null);
+    }
+
+    private void triggerTunnelEntryConfigRefresh(Long tunnelId, Long entryNodeId) {
+        triggerTunnelConfigRefresh(tunnelId, TunnelConfigRefreshScope.ENTRY_NODE_TARGET, entryNodeId);
+    }
+
+    private void triggerTunnelConfigRefresh(Long tunnelId, TunnelConfigRefreshScope scope, Long targetNodeId) {
         if (tunnelId == null) {
             return;
         }
@@ -520,11 +538,9 @@ public class FlowController extends BaseController {
         TUNNEL_CONFIG_REFRESH_AT.put(tunnelId, now);
 
         List<ChainTunnel> chainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnelId));
-        Set<Long> nodeIds = new LinkedHashSet<>();
-        for (ChainTunnel chainTunnel : chainTunnels) {
-            if (chainTunnel.getNodeId() != null) {
-                nodeIds.add(chainTunnel.getNodeId());
-            }
+        Set<Long> nodeIds = resolveRefreshNodeIds(chainTunnels, scope, targetNodeId);
+        if (nodeIds.isEmpty() && !Objects.equals(scope, TunnelConfigRefreshScope.TUNNEL_NODES)) {
+            nodeIds = resolveRefreshNodeIds(chainTunnels, TunnelConfigRefreshScope.TUNNEL_NODES, null);
         }
         for (Long nodeId : nodeIds) {
             try {
@@ -533,6 +549,40 @@ public class FlowController extends BaseController {
                 log.warn("force pull config failed for tunnel {} node {}", tunnelId, nodeId, ex);
             }
         }
+    }
+
+    private Set<Long> resolveRefreshNodeIds(List<ChainTunnel> chainTunnels,
+                                            TunnelConfigRefreshScope scope,
+                                            Long targetNodeId) {
+        Set<Long> nodeIds = new LinkedHashSet<>();
+        if (chainTunnels == null || chainTunnels.isEmpty()) {
+            return nodeIds;
+        }
+
+        for (ChainTunnel chainTunnel : chainTunnels) {
+            Long nodeId = chainTunnel.getNodeId();
+            if (nodeId == null) {
+                continue;
+            }
+
+            if (Objects.equals(scope, TunnelConfigRefreshScope.ENTRY_NODE_TARGET)) {
+                if (Objects.equals(chainTunnel.getChainType(), 1) && Objects.equals(nodeId, targetNodeId)) {
+                    nodeIds.add(nodeId);
+                }
+                continue;
+            }
+
+            if (Objects.equals(scope, TunnelConfigRefreshScope.ENTRY_NODES)) {
+                if (Objects.equals(chainTunnel.getChainType(), 1)) {
+                    nodeIds.add(nodeId);
+                }
+                continue;
+            }
+
+            nodeIds.add(nodeId);
+        }
+
+        return nodeIds;
     }
 
     private Object getUserLock(String userId) {
@@ -1160,7 +1210,7 @@ public class FlowController extends BaseController {
         if (matchedPolicy.getFlowQuotaGb() != null && matchedPolicy.getFlowQuotaGb() > 0) {
             long limit = matchedPolicy.getFlowQuotaGb() * BYTES_TO_GB;
             if (before < limit && before + delta >= limit) {
-                triggerTunnelConfigRefresh(tunnelId.longValue());
+                triggerTunnelEntryConfigRefresh(tunnelId.longValue(), entryNodeId);
             }
         }
     }
@@ -1215,7 +1265,7 @@ public class FlowController extends BaseController {
         if (activePolicy.getFlowQuotaGb() != null && activePolicy.getFlowQuotaGb() > 0) {
             long limit = activePolicy.getFlowQuotaGb() * BYTES_TO_GB;
             if (before < limit && before + delta >= limit) {
-                triggerTunnelConfigRefresh(tunnelId.longValue());
+                triggerTunnelEntryConfigRefresh(tunnelId.longValue());
             }
         }
     }
