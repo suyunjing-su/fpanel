@@ -8,7 +8,7 @@ import { Divider } from "@heroui/divider";
 import { Switch } from "@heroui/switch";
 import { Select, SelectItem } from "@heroui/select";
 import toast from 'react-hot-toast';
-import { updateConfigs } from '@/api';
+import { CaptchaRuntimeConfig, getCaptchaRuntime, updateConfigs } from '@/api';
 import { SettingsIcon } from '@/components/icons';
 
 import { isAdmin } from '@/utils/auth';
@@ -59,6 +59,12 @@ const CAPTCHA_PROVIDER_REQUIRED_FIELDS: Record<string, { key: string; label: str
     { key: 'captcha_hcaptcha_site_key', label: 'hCaptcha Site Key' },
     { key: 'captcha_hcaptcha_secret_key', label: 'hCaptcha Secret Key' }
   ]
+};
+
+const DEFAULT_CAPTCHA_SECRET_STATUS = {
+  geetestKeyConfigured: false,
+  recaptchaSecretKeyConfigured: false,
+  hcaptchaSecretKeyConfigured: false
 };
 
 // 网站配置项定义
@@ -285,6 +291,7 @@ export default function ConfigPage() {
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const [originalConfigs, setOriginalConfigs] = useState<Record<string, string>>(initialConfigs);
+  const [captchaSecretStatus, setCaptchaSecretStatus] = useState(DEFAULT_CAPTCHA_SECRET_STATUS);
 
   // 权限检查
   useEffect(() => {
@@ -315,6 +322,19 @@ export default function ConfigPage() {
       }
       if (!configData.captcha_geetest_domain) {
         configData.captcha_geetest_domain = 'https://gcaptcha4.geetest.com';
+      }
+
+      try {
+        const runtimeResponse = await getCaptchaRuntime();
+        if (runtimeResponse.code === 0 && runtimeResponse.data) {
+          const runtimeData = runtimeResponse.data as CaptchaRuntimeConfig;
+          setCaptchaSecretStatus({
+            geetestKeyConfigured: !!runtimeData.geetestKeyConfigured,
+            recaptchaSecretKeyConfigured: !!runtimeData.recaptchaSecretKeyConfigured,
+            hcaptchaSecretKeyConfigured: !!runtimeData.hcaptchaSecretKeyConfigured
+          });
+        }
+      } catch (runtimeError) {
       }
       
       // 只有在数据有变化时才更新
@@ -389,6 +409,19 @@ export default function ConfigPage() {
     return Array.from(new Set([...changedFromCurrent, ...changedFromOriginal]));
   };
 
+  const isSensitiveFieldConfigured = (key: string) => {
+    if (key === 'captcha_geetest_key') {
+      return captchaSecretStatus.geetestKeyConfigured;
+    }
+    if (key === 'captcha_recaptcha_secret_key') {
+      return captchaSecretStatus.recaptchaSecretKeyConfigured;
+    }
+    if (key === 'captcha_hcaptcha_secret_key') {
+      return captchaSecretStatus.hcaptchaSecretKeyConfigured;
+    }
+    return false;
+  };
+
   const getCaptchaProviderMissingLabels = () => {
     if (configs.captcha_enabled !== 'true') {
       return [] as string[];
@@ -401,7 +434,13 @@ export default function ConfigPage() {
 
     const fields = CAPTCHA_PROVIDER_REQUIRED_FIELDS[provider] || [];
     return fields
-      .filter((field) => !(configs[field.key] || '').trim())
+      .filter((field) => {
+        const value = (configs[field.key] || '').trim();
+        if (value) {
+          return false;
+        }
+        return !isSensitiveFieldConfigured(field.key);
+      })
       .map((field) => field.label);
   };
 
@@ -432,12 +471,15 @@ export default function ConfigPage() {
     return true;
   };
 
+  const changedKeys = getChangedKeys();
+  const hasCaptchaRelatedChanges = changedKeys.some(
+    (key) => key === 'captcha_enabled' || key === 'captcha_provider' || key.startsWith('captcha_')
+  );
   const missingCaptchaLabels = getCaptchaProviderMissingLabels();
-  const hasCaptchaConfigError = missingCaptchaLabels.length > 0;
+  const hasCaptchaConfigError = hasCaptchaRelatedChanges && missingCaptchaLabels.length > 0;
 
   // 保存配置
   const handleSave = async () => {
-    const changedKeys = getChangedKeys();
     if (!validateCaptchaProviderConfig(changedKeys)) {
       return;
     }

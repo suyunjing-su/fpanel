@@ -15,8 +15,11 @@ export interface CaptchaRuntimeConfig {
   provider: 'native' | 'geetest' | 'recaptcha' | 'hcaptcha' | string;
   nativeType?: string;
   geetestCaptchaId?: string;
+  geetestKeyConfigured?: boolean;
   recaptchaSiteKey?: string;
+  recaptchaSecretKeyConfigured?: boolean;
   hcaptchaSiteKey?: string;
+  hcaptchaSecretKeyConfigured?: boolean;
 }
 
 export interface LoginResponse {

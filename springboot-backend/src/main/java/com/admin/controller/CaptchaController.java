@@ -52,8 +52,11 @@ public class CaptchaController extends BaseController {
         runtime.put("provider", provider);
         runtime.put("nativeType", getConfigValueOrDefault("captcha_type", "RANDOM"));
         runtime.put("geetestCaptchaId", getConfigValueOrDefault("captcha_geetest_id", ""));
+        runtime.put("geetestKeyConfigured", hasConfigValue("captcha_geetest_key"));
         runtime.put("recaptchaSiteKey", getConfigValueOrDefault("captcha_recaptcha_site_key", ""));
+        runtime.put("recaptchaSecretKeyConfigured", hasConfigValue("captcha_recaptcha_secret_key"));
         runtime.put("hcaptchaSiteKey", getConfigValueOrDefault("captcha_hcaptcha_site_key", ""));
+        runtime.put("hcaptchaSecretKeyConfigured", hasConfigValue("captcha_hcaptcha_secret_key"));
         return R.ok(runtime);
     }
 
@@ -110,5 +113,9 @@ public class CaptchaController extends BaseController {
             return null;
         }
         return value.trim();
+    }
+
+    private boolean hasConfigValue(String key) {
+        return getConfigValue(key) != null;
     }
 }
