@@ -1,6 +1,6 @@
 services:
   backend:
-    image: cloudlink2/fps-backend:3.0.17-beta
+    image: cloudlink2/fps-backend:3.0.18-beta
     container_name: springboot-backend
     restart: unless-stopped
     environment:
@@ -25,7 +25,7 @@ services:
       start_period: 60s
 
   frontend:
-    image: cloudlink2/fp-frontend:3.0.17-beta
+    image: cloudlink2/fp-frontend:3.0.18-beta
     container_name: vite-frontend
     restart: unless-stopped
     ports:
