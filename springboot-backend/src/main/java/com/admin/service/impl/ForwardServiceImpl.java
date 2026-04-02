@@ -174,19 +174,21 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         this.save(forward);
 
         for (ChainTunnel chainTunnel : chainTunnels) {
+            String serviceName = buildServiceName(forward.getId(), forward.getUserId(), permissionResult.getUserTunnel());
+            Integer limiter = permissionResult.getLimiter();
+
+            Node node = nodeService.getById(chainTunnel.getNodeId());
+            if (node == null) {
+                rollbackCreatedForward(forward.getId(), success);
+                return R.err("部分节点不存在");
+            }
 
             ForwardPort forwardPort = new ForwardPort();
             forwardPort.setForwardId(forward.getId());
             forwardPort.setNodeId(chainTunnel.getNodeId());
             forwardPort.setPort(chainTunnel.getPort());
             forwardPortService.save(forwardPort);
-            String serviceName = buildServiceName(forward.getId(), forward.getUserId(), permissionResult.getUserTunnel());
-            Integer limiter = permissionResult.getLimiter();
 
-            Node node = nodeService.getById(chainTunnel.getNodeId());
-            if (node == null) {
-                return R.err("部分节点不存在");
-            }
             GostDto gostDto = GostUtil.AddAndUpdateService(serviceName, limiter, node, forward, forwardPort, tunnel, "AddService", entryChainNames[0], entryChainNames[1]);
             if (Objects.equals(gostDto.getMsg(), "OK")) {
                 JSONObject data = new JSONObject();
@@ -194,15 +196,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 data.put("name", serviceName);
                 success.add(data);
             } else {
-                this.removeById(forward.getId());
-                forwardPortService.remove(new QueryWrapper<ForwardPort>().eq("forward_id", forward.getId()));
-                for (JSONObject jsonObject : success) {
-                    JSONArray se = new JSONArray();
-                    se.add(jsonObject.getString("name") + "_tcp");
-                    se.add(jsonObject.getString("name") + "_udp");
-                    GostUtil.DeleteService(jsonObject.getLong("node_id"), se);
-                    return R.err(gostDto.getMsg());
-                }
+                rollbackCreatedForward(forward.getId(), success);
+                return R.err(gostDto.getMsg());
             }
 
         }
@@ -1072,6 +1067,18 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     private String buildServiceName(Long forwardId, Integer userId, UserTunnel userTunnel) {
         int userTunnelId = (userTunnel != null) ? userTunnel.getId() : 0;
         return forwardId + "_" + userId + "_" + userTunnelId;
+    }
+
+    private void rollbackCreatedForward(Long forwardId, List<JSONObject> successServices) {
+        this.removeById(forwardId);
+        forwardPortService.remove(new QueryWrapper<ForwardPort>().eq("forward_id", forwardId));
+
+        for (JSONObject jsonObject : successServices) {
+            JSONArray services = new JSONArray();
+            services.add(jsonObject.getString("name") + "_tcp");
+            services.add(jsonObject.getString("name") + "_udp");
+            GostUtil.DeleteService(jsonObject.getLong("node_id"), services);
+        }
     }
 
     private String[] resolveEntryChainNames(Long tunnelId) {
