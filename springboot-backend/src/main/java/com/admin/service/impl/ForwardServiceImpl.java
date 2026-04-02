@@ -23,6 +23,8 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.annotation.Resource;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 /**
@@ -146,6 +148,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
     @Override
     public R createForward(ForwardDto forwardDto) {
+        long startTime = System.currentTimeMillis();
         UserInfo currentUser = getCurrentUserInfo();
 
         Tunnel tunnel = validateTunnel(forwardDto.getTunnelId());
@@ -194,23 +197,35 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
 
         Integer limiter = permissionResult.getLimiter();
-        List<CompletableFuture<CreateServiceResult>> futures = createServiceTasks.stream()
-                .map(task -> CompletableFuture.supplyAsync(() -> {
-                    GostDto gostDto = GostUtil.AddAndUpdateService(
-                            task.getServiceName(),
-                            limiter,
-                            task.getNode(),
-                            forward,
-                            task.getForwardPort(),
-                            tunnel,
-                            "AddService",
-                            entryChainNames[0],
-                            entryChainNames[1]
-                    );
-                    String msg = gostDto == null ? "节点无响应" : gostDto.getMsg();
-                    return new CreateServiceResult(task.getNode().getId(), task.getServiceName(), msg);
-                }))
-                .toList();
+        int parallelism = Math.min(Math.max(createServiceTasks.size(), 1), 16);
+        ExecutorService executor = Executors.newFixedThreadPool(parallelism);
+
+        List<CompletableFuture<CreateServiceResult>> futures;
+        try {
+            futures = createServiceTasks.stream()
+                    .map(task -> CompletableFuture.supplyAsync(() -> {
+                        try {
+                            GostDto gostDto = GostUtil.AddAndUpdateService(
+                                    task.getServiceName(),
+                                    limiter,
+                                    task.getNode(),
+                                    forward,
+                                    task.getForwardPort(),
+                                    tunnel,
+                                    "AddService",
+                                    entryChainNames[0],
+                                    entryChainNames[1]
+                            );
+                            String msg = gostDto == null ? "节点无响应" : gostDto.getMsg();
+                            return new CreateServiceResult(task.getNode().getId(), task.getServiceName(), msg);
+                        } catch (Exception e) {
+                            return new CreateServiceResult(task.getNode().getId(), task.getServiceName(), "创建服务异常: " + e.getMessage());
+                        }
+                    }, executor))
+                    .toList();
+        } finally {
+            executor.shutdown();
+        }
 
         String failureMessage = null;
         for (CompletableFuture<CreateServiceResult> future : futures) {
@@ -227,8 +242,20 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
         if (failureMessage != null) {
             rollbackCreatedForward(forward.getId(), success);
+            log.warn("createForward failed: tunnelId={}, userId={}, nodeCount={}, elapsed={}ms, reason={}",
+                    tunnel.getId(),
+                    currentUser.getUserId(),
+                    createServiceTasks.size(),
+                    System.currentTimeMillis() - startTime,
+                    failureMessage);
             return R.err(failureMessage);
         }
+
+        log.info("createForward success: tunnelId={}, userId={}, nodeCount={}, elapsed={}ms",
+                tunnel.getId(),
+                currentUser.getUserId(),
+                createServiceTasks.size(),
+                System.currentTimeMillis() - startTime);
         return R.ok();
     }
 
