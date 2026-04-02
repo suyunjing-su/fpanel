@@ -81,7 +81,7 @@ export const updateUserTunnel = (data: any) => Network.post("/tunnel/user/update
 export const userTunnel = () => Network.post("/tunnel/user/tunnel");
 
 // 转发CRUD操作 - 全部使用POST请求
-export const createForward = (data: any) => Network.post("/forward/create", data);
+export const createForward = (data: any) => Network.post("/forward/create", data, { timeout: 120000 });
 export const getForwardList = () => Network.post("/forward/list");
 export const updateForward = (data: any) => Network.post("/forward/update", data);
 export const deleteForward = (id: number) => Network.post("/forward/delete", { id });

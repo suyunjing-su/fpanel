@@ -106,7 +106,7 @@ const Network = {
     });
   },
 
-  post: function<T = any>(path: string = '', data: any = {}): Promise<ApiResponse<T>> {
+  post: function<T = any>(path: string = '', data: any = {}, options: { timeout?: number } = {}): Promise<ApiResponse<T>> {
     return new Promise(function(resolve) {
       // 如果baseURL是默认值且是WebView环境，说明没有设置面板地址
       if (baseURL === '') {
@@ -114,8 +114,10 @@ const Network = {
         return;
       }
 
+      const requestTimeout = options.timeout ?? 30000;
+
       axios.post(path, data, {
-        timeout: 30000,
+        timeout: requestTimeout,
         headers: {
           "Authorization": window.localStorage.getItem('token'),
           "Content-Type": "application/json"
