@@ -22,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
@@ -168,6 +169,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         forward.setCreatedTime(System.currentTimeMillis());
         forward.setUpdatedTime(System.currentTimeMillis());
         List<JSONObject> success = new ArrayList<>();
+        List<CreateServiceTask> createServiceTasks = new ArrayList<>();
         String[] entryChainNames = resolveEntryChainNames(tunnel.getId());
         List<ChainTunnel> chainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", tunnel.getId()).eq("chain_type", 1));
         chainTunnels = get_port(chainTunnels, forwardDto.getInPort(), 0L);
@@ -175,7 +177,6 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
         for (ChainTunnel chainTunnel : chainTunnels) {
             String serviceName = buildServiceName(forward.getId(), forward.getUserId(), permissionResult.getUserTunnel());
-            Integer limiter = permissionResult.getLimiter();
 
             Node node = nodeService.getById(chainTunnel.getNodeId());
             if (node == null) {
@@ -189,17 +190,44 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             forwardPort.setPort(chainTunnel.getPort());
             forwardPortService.save(forwardPort);
 
-            GostDto gostDto = GostUtil.AddAndUpdateService(serviceName, limiter, node, forward, forwardPort, tunnel, "AddService", entryChainNames[0], entryChainNames[1]);
-            if (Objects.equals(gostDto.getMsg(), "OK")) {
+            createServiceTasks.add(new CreateServiceTask(node, forwardPort, serviceName));
+        }
+
+        Integer limiter = permissionResult.getLimiter();
+        List<CompletableFuture<CreateServiceResult>> futures = createServiceTasks.stream()
+                .map(task -> CompletableFuture.supplyAsync(() -> {
+                    GostDto gostDto = GostUtil.AddAndUpdateService(
+                            task.getServiceName(),
+                            limiter,
+                            task.getNode(),
+                            forward,
+                            task.getForwardPort(),
+                            tunnel,
+                            "AddService",
+                            entryChainNames[0],
+                            entryChainNames[1]
+                    );
+                    String msg = gostDto == null ? "节点无响应" : gostDto.getMsg();
+                    return new CreateServiceResult(task.getNode().getId(), task.getServiceName(), msg);
+                }))
+                .toList();
+
+        String failureMessage = null;
+        for (CompletableFuture<CreateServiceResult> future : futures) {
+            CreateServiceResult result = future.join();
+            if (Objects.equals(result.getMsg(), "OK")) {
                 JSONObject data = new JSONObject();
-                data.put("node_id", node.getId());
-                data.put("name", serviceName);
+                data.put("node_id", result.getNodeId());
+                data.put("name", result.getServiceName());
                 success.add(data);
             } else {
-                rollbackCreatedForward(forward.getId(), success);
-                return R.err(gostDto.getMsg());
+                failureMessage = result.getMsg();
             }
+        }
 
+        if (failureMessage != null) {
+            rollbackCreatedForward(forward.getId(), success);
+            return R.err(failureMessage);
         }
         return R.ok();
     }
@@ -1225,6 +1253,32 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
         public static UserPermissionResult error(String errorMessage) {
             return new UserPermissionResult(true, errorMessage, null, null);
+        }
+    }
+
+    @Data
+    private static class CreateServiceTask {
+        private final Node node;
+        private final ForwardPort forwardPort;
+        private final String serviceName;
+
+        private CreateServiceTask(Node node, ForwardPort forwardPort, String serviceName) {
+            this.node = node;
+            this.forwardPort = forwardPort;
+            this.serviceName = serviceName;
+        }
+    }
+
+    @Data
+    private static class CreateServiceResult {
+        private final Long nodeId;
+        private final String serviceName;
+        private final String msg;
+
+        private CreateServiceResult(Long nodeId, String serviceName, String msg) {
+            this.nodeId = nodeId;
+            this.serviceName = serviceName;
+            this.msg = msg;
         }
     }
 
