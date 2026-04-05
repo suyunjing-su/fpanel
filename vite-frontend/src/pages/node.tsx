@@ -101,7 +101,7 @@ export default function NodePage() {
   const [currentNodeName, setCurrentNodeName] = useState('');
   
   const websocketRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 5;
 
