@@ -1052,6 +1052,9 @@ public class FlowController extends BaseController {
         if (isChainNodeQuotaReached(chainTunnel)) {
             return false;
         }
+        if (Objects.equals(chainTunnel.getBandwidthOverloaded(), 1)) {
+            return false;
+        }
         if (chainTunnel.getHealthStatus() != null && chainTunnel.getHealthStatus() != 1) {
             return false;
         }

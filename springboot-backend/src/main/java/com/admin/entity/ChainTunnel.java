@@ -51,6 +51,9 @@ public class ChainTunnel implements Serializable {
     // 1: healthy, 0: unhealthy.
     private Integer healthStatus;
 
+    // 1: overloaded by external traffic, 0: available.
+    private Integer bandwidthOverloaded;
+
     private Long lastLatencyMs;
 
     private Long healthCheckedTime;

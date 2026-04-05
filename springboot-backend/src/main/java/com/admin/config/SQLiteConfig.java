@@ -93,6 +93,7 @@ public class SQLiteConfig implements ApplicationRunner {
             addColumnIfMissing(connection, statement, "chain_tunnel", "in_flow", "INTEGER NOT NULL DEFAULT 0");
             addColumnIfMissing(connection, statement, "chain_tunnel", "out_flow", "INTEGER NOT NULL DEFAULT 0");
             addColumnIfMissing(connection, statement, "chain_tunnel", "health_status", "INTEGER NOT NULL DEFAULT 1");
+            addColumnIfMissing(connection, statement, "chain_tunnel", "bandwidth_overloaded", "INTEGER NOT NULL DEFAULT 0");
             addColumnIfMissing(connection, statement, "chain_tunnel", "last_latency_ms", "INTEGER");
             addColumnIfMissing(connection, statement, "chain_tunnel", "health_checked_time", "INTEGER");
         } catch (Exception e) {

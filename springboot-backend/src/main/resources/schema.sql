@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS chain_tunnel (
   in_flow INTEGER NOT NULL DEFAULT 0,
   out_flow INTEGER NOT NULL DEFAULT 0,
   health_status INTEGER NOT NULL DEFAULT 1,
+  bandwidth_overloaded INTEGER NOT NULL DEFAULT 0,
   last_latency_ms INTEGER,
   health_checked_time INTEGER
 );
