@@ -31,6 +31,7 @@ interface Node {
   ip: string;
   serverIp: string;
   port: string;
+  maxBandwidthMbps?: number | null;
   tcpListenAddr?: string;
   udpListenAddr?: string;
   version?: string;
@@ -56,6 +57,7 @@ interface NodeForm {
   name: string;
   serverIp: string;
   port: string;
+  maxBandwidthMbps: string;
   tcpListenAddr: string;
   udpListenAddr: string;
   interfaceName: string;
@@ -81,6 +83,7 @@ export default function NodePage() {
     name: '',
     serverIp: '',
     port: '1000-65535',
+    maxBandwidthMbps: '',
     tcpListenAddr: '[::]',
     udpListenAddr: '[::]',
     interfaceName: '',
@@ -473,6 +476,20 @@ export default function NodePage() {
     if (!portValidation.valid) {
       newErrors.port = portValidation.error || '端口格式错误';
     }
+
+    const trimmedBandwidth = form.maxBandwidthMbps.trim();
+    if (trimmedBandwidth) {
+      if (!/^\d+$/.test(trimmedBandwidth)) {
+        newErrors.maxBandwidthMbps = '最大带宽必须为正整数';
+      } else {
+        const parsedBandwidth = parseInt(trimmedBandwidth, 10);
+        if (parsedBandwidth <= 0) {
+          newErrors.maxBandwidthMbps = '最大带宽必须大于0';
+        } else if (parsedBandwidth > 1000000) {
+          newErrors.maxBandwidthMbps = '最大带宽不能超过1000000 Mbps';
+        }
+      }
+    }
     
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -497,6 +514,7 @@ export default function NodePage() {
       name: node.name,
       serverIp: node.serverIp || '',
       port: node.port || '1000-65535',
+      maxBandwidthMbps: node.maxBandwidthMbps != null ? String(node.maxBandwidthMbps) : '',
       tcpListenAddr: node.tcpListenAddr || '[::]',
       udpListenAddr: node.udpListenAddr || '[::]',
       interfaceName: (node as any).interfaceName || '',
@@ -586,8 +604,10 @@ export default function NodePage() {
     
     try {
       const apiCall = isEdit ? updateNode : createNode;
+      const trimmedBandwidth = form.maxBandwidthMbps.trim();
       const data = { 
-        ...form
+        ...form,
+        maxBandwidthMbps: trimmedBandwidth ? parseInt(trimmedBandwidth, 10) : null
       };
       
       const res = await apiCall(data);
@@ -602,6 +622,7 @@ export default function NodePage() {
               name: form.name,
               serverIp: form.serverIp,
               port: form.port,
+              maxBandwidthMbps: data.maxBandwidthMbps,
               tcpListenAddr: form.tcpListenAddr,
               udpListenAddr: form.udpListenAddr,
               interfaceName: form.interfaceName,
@@ -630,6 +651,7 @@ export default function NodePage() {
       name: '',
       serverIp: '',
       port: '1000-65535',
+      maxBandwidthMbps: '',
       tcpListenAddr: '[::]',
       udpListenAddr: '[::]',
       interfaceName: '',
@@ -1009,6 +1031,19 @@ export default function NodePage() {
                   classNames={{
                     input: "font-mono"
                   }}
+                />
+
+                <Input
+                  label="节点最大带宽 (Mbps)"
+                  placeholder="留空表示不限制，例如: 1000"
+                  type="number"
+                  min={1}
+                  value={form.maxBandwidthMbps}
+                  onChange={(e) => setForm(prev => ({ ...prev, maxBandwidthMbps: e.target.value }))}
+                  isInvalid={!!errors.maxBandwidthMbps}
+                  errorMessage={errors.maxBandwidthMbps}
+                  variant="bordered"
+                  description="用于主备出口带宽判定，填写该节点允许使用的总带宽上限"
                 />
 
                 {/* 高级配置 */}

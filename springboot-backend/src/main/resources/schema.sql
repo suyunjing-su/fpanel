@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS node (
   created_time INTEGER NOT NULL,
   updated_time INTEGER,
   status INTEGER NOT NULL,
+  max_bandwidth_mbps INTEGER,
   tcp_listen_addr VARCHAR(100) NOT NULL DEFAULT '[::]',
   udp_listen_addr VARCHAR(100) NOT NULL DEFAULT '[::]'
 );

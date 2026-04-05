@@ -4,6 +4,7 @@ import lombok.Data;
 
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
+import javax.validation.constraints.Min;
 
 @Data
 public class NodeUpdateDto {
@@ -28,4 +29,7 @@ public class NodeUpdateDto {
     private String tcpListenAddr = "0.0.0.0";
 
     private String udpListenAddr = "0.0.0.0";
+
+    @Min(value = 1, message = "最大带宽必须大于0")
+    private Integer maxBandwidthMbps;
 } 

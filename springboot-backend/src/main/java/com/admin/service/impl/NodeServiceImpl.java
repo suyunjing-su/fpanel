@@ -57,6 +57,7 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         node.setCreatedTime(currentTime);
         node.setUpdatedTime(currentTime);
         node.setInterfaceName(nodeDto.getInterfaceName());
+        node.setMaxBandwidthMbps(normalizeNullableInteger(nodeDto.getMaxBandwidthMbps()));
         this.save(node);
         return R.ok();
     }
@@ -169,6 +170,7 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         node.setInterfaceName(nodeUpdateDto.getInterfaceName());
         node.setTcpListenAddr(nodeUpdateDto.getTcpListenAddr());
         node.setUdpListenAddr(nodeUpdateDto.getUdpListenAddr());
+        node.setMaxBandwidthMbps(normalizeNullableInteger(nodeUpdateDto.getMaxBandwidthMbps()));
         return node;
     }
 

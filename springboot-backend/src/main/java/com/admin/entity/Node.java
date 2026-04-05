@@ -40,4 +40,6 @@ public class Node extends BaseEntity {
 
     private String udpListenAddr;
 
+    private Integer maxBandwidthMbps;
+
 }

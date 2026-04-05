@@ -41,6 +41,7 @@ public class SQLiteConfig implements ApplicationRunner {
             statement.execute("PRAGMA busy_timeout=5000;"); // 5秒超时
             statement.execute("PRAGMA wal_autocheckpoint=1000;"); // 每1000页自动checkpoint
 
+            ensureNodeColumns(connection, statement);
             ensureChainTunnelColumns(connection, statement);
             ensureUserTunnelExitPolicyTable(statement);
             ensureUserTunnelEntryPolicyTable(statement);
@@ -96,6 +97,14 @@ public class SQLiteConfig implements ApplicationRunner {
             addColumnIfMissing(connection, statement, "chain_tunnel", "health_checked_time", "INTEGER");
         } catch (Exception e) {
             throw new RuntimeException("Failed to ensure chain_tunnel columns", e);
+        }
+    }
+
+    private void ensureNodeColumns(Connection connection, Statement statement) {
+        try {
+            addColumnIfMissing(connection, statement, "node", "max_bandwidth_mbps", "INTEGER");
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to ensure node columns", e);
         }
     }
 
