@@ -2,7 +2,7 @@ name: Build and Push Images Based on Version
 
 # 在这里定义统一版本号
 env:
-  VERSION: "3.0.19-beta"
+  VERSION: "3.0.20-beta"
 
 on:
   push:

@@ -30,7 +30,7 @@ import org.springframework.beans.factory.annotation.Value;
 @Service
 public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements NodeService {
 
-    private static final String RELEASE_VERSION = "3.0.19-beta";
+    private static final String RELEASE_VERSION = "3.0.20-beta";
 
 
     @Resource
@@ -200,6 +200,16 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
                 }
             }
         }
+    }
+
+    private Integer normalizeNullableInteger(Integer value) {
+        if (value == null) {
+            return null;
+        }
+        if (value <= 0) {
+            return null;
+        }
+        return value;
     }
 
 
