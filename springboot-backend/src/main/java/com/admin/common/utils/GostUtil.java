@@ -10,6 +10,9 @@ import org.apache.commons.lang3.StringUtils;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 public class GostUtil {
 
@@ -18,6 +21,8 @@ public class GostUtil {
     public static final String PROTOCOL_UDP_QUIC = "udp+quic";
     public static final String PROTOCOL_UDP_KCP = "udp+kcp";
     public static final String PROTOCOL_MPTCP = "mptcp";
+    private static final long FORCE_PULL_WAIT_SECONDS = 12L;
+    private static final ConcurrentHashMap<Long, CompletableFuture<GostDto>> FORCE_PULL_IN_FLIGHT = new ConcurrentHashMap<>();
 
 
     public static GostDto AddLimiters(Long node_id, Long name, String speed) {
@@ -231,7 +236,43 @@ public class GostUtil {
     }
 
     public static GostDto ForcePullFullConfig(Long node_id) {
-        return WebSocketServer.send_msg(node_id, new JSONObject(), "ForcePullFullConfig");
+        CompletableFuture<GostDto> pending = FORCE_PULL_IN_FLIGHT.get(node_id);
+        if (pending != null) {
+            return waitForcePullResult(pending);
+        }
+
+        CompletableFuture<GostDto> future = new CompletableFuture<>();
+        CompletableFuture<GostDto> existing = FORCE_PULL_IN_FLIGHT.putIfAbsent(node_id, future);
+        if (existing != null) {
+            return waitForcePullResult(existing);
+        }
+
+        try {
+            GostDto result = WebSocketServer.send_msg(node_id, new JSONObject(), "ForcePullFullConfig");
+            future.complete(result);
+            return result;
+        } catch (Exception ex) {
+            GostDto failed = new GostDto();
+            failed.setMsg("ForcePullFullConfig failed: " + ex.getMessage());
+            future.complete(failed);
+            return failed;
+        } finally {
+            FORCE_PULL_IN_FLIGHT.remove(node_id, future);
+        }
+    }
+
+    private static GostDto waitForcePullResult(CompletableFuture<GostDto> pending) {
+        try {
+            GostDto result = pending.get(FORCE_PULL_WAIT_SECONDS, TimeUnit.SECONDS);
+            if (result != null) {
+                return result;
+            }
+        } catch (Exception ignored) {
+        }
+
+        GostDto timeout = new GostDto();
+        timeout.setMsg("等待已下发的全量配置同步结果超时");
+        return timeout;
     }
 
 
