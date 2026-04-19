@@ -802,6 +802,8 @@ func (w *WebSocketReporter) shouldReloadRuntimeAfterForcePull() bool {
 }
 
 func (w *WebSocketReporter) reloadRuntimeConfig() error {
+	previousCfg := config.Global()
+
 	cfg, err := config_parser.Parse()
 	if err != nil {
 		return fmt.Errorf("解析运行配置失败: %v", err)
@@ -809,17 +811,40 @@ func (w *WebSocketReporter) reloadRuntimeConfig() error {
 
 	config.Set(cfg)
 	if err := loader.Load(cfg); err != nil {
-		return fmt.Errorf("加载运行配置失败: %v", err)
+		if rollbackErr := w.rollbackRuntimeConfig(previousCfg); rollbackErr != nil {
+			return fmt.Errorf("加载运行配置失败: %v; 回滚失败: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("加载运行配置失败: %v，已回滚到上一份运行配置", err)
 	}
 
+	w.startAllRuntimeServices()
+
+	return nil
+}
+
+
+// Keep runtime listeners alive by restoring previous config when a full reload fails.
+func (w *WebSocketReporter) rollbackRuntimeConfig(previousCfg *config.Config) error {
+	if previousCfg == nil {
+		return fmt.Errorf("上一份运行配置为空")
+	}
+
+	config.Set(previousCfg)
+	if err := loader.Load(previousCfg); err != nil {
+		return err
+	}
+
+	w.startAllRuntimeServices()
+	return nil
+}
+
+func (w *WebSocketReporter) startAllRuntimeServices() {
 	for _, svc := range registry.ServiceRegistry().GetAll() {
 		if svc == nil {
 			continue
 		}
 		go svc.Serve()
 	}
-
-	return nil
 }
 
 func (w *WebSocketReporter) fetchAndOverwriteFullConfig() error {
