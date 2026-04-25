@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -775,22 +776,43 @@ func (w *WebSocketReporter) handleForcePullFullConfig() error {
 	w.reloadMutex.Lock()
 	defer w.reloadMutex.Unlock()
 
-	if err := w.fetchAndOverwriteFullConfig(); err != nil {
+	previousServiceCount := len(config.Global().Services)
+	if runtimeServiceCount := len(registry.ServiceRegistry().GetAll()); runtimeServiceCount > previousServiceCount {
+		previousServiceCount = runtimeServiceCount
+	}
+
+	fileBackup, err := backupGostConfigFile()
+	if err != nil {
+		return fmt.Errorf("创建gost.json回滚快照失败: %v", err)
+	}
+
+	fetchedServiceCount, err := w.fetchAndOverwriteFullConfig(previousServiceCount)
+	if err != nil {
 		return err
 	}
 
-	if !w.shouldReloadRuntimeAfterForcePull() {
+	if !w.shouldReloadRuntimeAfterForcePull(fetchedServiceCount) {
 		return nil
 	}
 
 	if err := w.reloadRuntimeConfig(); err != nil {
-		return fmt.Errorf("全量配置已覆写但运行态重载失败: %v", err)
+		if restoreErr := restoreGostConfigFile(fileBackup); restoreErr != nil {
+			return fmt.Errorf("全量配置已覆写但运行态重载失败: %v; 文件回滚失败: %v", err, restoreErr)
+		}
+		return fmt.Errorf("全量配置已覆写但运行态重载失败: %v，已恢复gost.json", err)
 	}
 
 	return nil
 }
 
-func (w *WebSocketReporter) shouldReloadRuntimeAfterForcePull() bool {
+func (w *WebSocketReporter) shouldReloadRuntimeAfterForcePull(fetchedServiceCount int) bool {
+	if fetchedServiceCount > 0 {
+		return true
+	}
+	if len(config.Global().Services) > 0 {
+		return true
+	}
+
 	// Only reload when runtime registries are initialized to avoid startup race.
 	if len(registry.ServiceRegistry().GetAll()) > 0 {
 		return true
@@ -822,7 +844,6 @@ func (w *WebSocketReporter) reloadRuntimeConfig() error {
 	return nil
 }
 
-
 // Keep runtime listeners alive by restoring previous config when a full reload fails.
 func (w *WebSocketReporter) rollbackRuntimeConfig(previousCfg *config.Config) error {
 	if previousCfg == nil {
@@ -847,16 +868,47 @@ func (w *WebSocketReporter) startAllRuntimeServices() {
 	}
 }
 
-func (w *WebSocketReporter) fetchAndOverwriteFullConfig() error {
+type gostConfigFileBackup struct {
+	content []byte
+	exists  bool
+}
+
+func backupGostConfigFile() (gostConfigFileBackup, error) {
+	content, err := os.ReadFile("gost.json")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return gostConfigFileBackup{exists: false}, nil
+		}
+		return gostConfigFileBackup{}, err
+	}
+
+	return gostConfigFileBackup{
+		content: content,
+		exists:  true,
+	}, nil
+}
+
+func restoreGostConfigFile(backup gostConfigFileBackup) error {
+	if !backup.exists {
+		if err := os.Remove("gost.json"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+
+	return os.WriteFile("gost.json", backup.content, 0600)
+}
+
+func (w *WebSocketReporter) fetchAndOverwriteFullConfig(previousServiceCount int) (int, error) {
 	baseURL, err := buildSecureControlBaseURL(w.addr)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	endpoint := baseURL + "/flow/config/all"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("创建全量配置请求失败: %v", err)
+		return 0, fmt.Errorf("创建全量配置请求失败: %v", err)
 	}
 
 	req.Header.Set("User-Agent", "Flux-Agent-Recovery/1.0")
@@ -867,17 +919,17 @@ func (w *WebSocketReporter) fetchAndOverwriteFullConfig() error {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("请求全量配置失败: %v", err)
+		return 0, fmt.Errorf("请求全量配置失败: %v", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("读取全量配置响应失败: %v", err)
+		return 0, fmt.Errorf("读取全量配置响应失败: %v", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("全量配置接口状态异常 %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return 0, fmt.Errorf("全量配置接口状态异常 %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	payload := strings.TrimSpace(string(body))
@@ -885,21 +937,26 @@ func (w *WebSocketReporter) fetchAndOverwriteFullConfig() error {
 		payload = "{}"
 	}
 
-	var configDoc map[string]interface{}
-	if err := json.Unmarshal([]byte(payload), &configDoc); err != nil {
-		return fmt.Errorf("全量配置格式非法: %v", err)
+	var fetchedCfg config.Config
+	if err := json.Unmarshal([]byte(payload), &fetchedCfg); err != nil {
+		return 0, fmt.Errorf("全量配置格式非法: %v", err)
 	}
 
-	serialized, err := json.MarshalIndent(configDoc, "", "  ")
-	if err != nil {
-		return fmt.Errorf("序列化全量配置失败: %v", err)
+	// Guard against transient responses that would wipe all listeners unexpectedly.
+	if previousServiceCount > 0 && len(fetchedCfg.Services) == 0 {
+		return 0, fmt.Errorf("拒绝应用空服务全量配置，当前仍有%d个运行监听", previousServiceCount)
 	}
 
-	if err := os.WriteFile("gost.json", serialized, 0600); err != nil {
-		return fmt.Errorf("覆写gost.json失败: %v", err)
+	var serialized bytes.Buffer
+	if err := json.Indent(&serialized, []byte(payload), "", "  "); err != nil {
+		return 0, fmt.Errorf("格式化全量配置失败: %v", err)
 	}
 
-	return nil
+	if err := os.WriteFile("gost.json", serialized.Bytes(), 0600); err != nil {
+		return 0, fmt.Errorf("覆写gost.json失败: %v", err)
+	}
+
+	return len(fetchedCfg.Services), nil
 }
 
 // Service 命令处理函数

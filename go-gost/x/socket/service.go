@@ -73,7 +73,8 @@ func createServices(req createServicesRequest) error {
 	// 第四阶段：更新配置
 	config.OnUpdate(func(c *config.Config) error {
 		for _, ps := range parsedServices {
-			c.Services = append(c.Services, &ps.config)
+			cfgCopy := ps.config
+			c.Services = append(c.Services, &cfgCopy)
 		}
 		return nil
 	})
@@ -136,7 +137,8 @@ func updateServices(req updateServicesRequest) error {
 		for _, serviceConfig := range req.Data {
 			for i := range c.Services {
 				if c.Services[i].Name == serviceConfig.Name {
-					c.Services[i] = &serviceConfig
+					cfgCopy := serviceConfig
+					c.Services[i] = &cfgCopy
 					break
 				}
 			}
