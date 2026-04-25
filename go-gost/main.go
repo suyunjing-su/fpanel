@@ -125,7 +125,7 @@ func main() {
 	log := xlogger.NewLogger()
 	logger.SetDefault(log)
 
-	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, "2.0.2")
+	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, "3.0.1")
 	if wsReporter == nil {
 		fmt.Println("❌ WebSocket报告器启动失败，请检查配置地址是否包含协议(http/https/ws/wss)")
 		os.Exit(1)
