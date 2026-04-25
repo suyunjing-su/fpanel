@@ -937,8 +937,13 @@ func (w *WebSocketReporter) fetchAndOverwriteFullConfig(previousServiceCount int
 		payload = "{}"
 	}
 
+	processedPayload, err := w.preprocessDurationFields([]byte(payload))
+	if err != nil {
+		return 0, fmt.Errorf("全量配置格式非法: %v", err)
+	}
+
 	var fetchedCfg config.Config
-	if err := json.Unmarshal([]byte(payload), &fetchedCfg); err != nil {
+	if err := json.Unmarshal(processedPayload, &fetchedCfg); err != nil {
 		return 0, fmt.Errorf("全量配置格式非法: %v", err)
 	}
 
@@ -948,7 +953,7 @@ func (w *WebSocketReporter) fetchAndOverwriteFullConfig(previousServiceCount int
 	}
 
 	var serialized bytes.Buffer
-	if err := json.Indent(&serialized, []byte(payload), "", "  "); err != nil {
+	if err := json.Indent(&serialized, processedPayload, "", "  "); err != nil {
 		return 0, fmt.Errorf("格式化全量配置失败: %v", err)
 	}
 
