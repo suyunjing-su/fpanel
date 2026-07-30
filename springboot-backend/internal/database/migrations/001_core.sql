@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS site_config (
     updated_at INTEGER NOT NULL
 );
 
+INSERT OR IGNORE INTO site_config(key, value, secret, updated_at) VALUES
+    ('app_name', 'flux', 0, 0),
+    ('captcha_enabled', '0', 0, 0),
+    ('captcha_type', 'RANDOM', 0, 0);
+
 CREATE TABLE IF NOT EXISTS audit_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_id INTEGER,

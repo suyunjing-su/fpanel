@@ -18,6 +18,7 @@ import (
 	"github.com/bqlpfy/flux-panel/backend/internal/nodehub"
 	"github.com/bqlpfy/flux-panel/backend/internal/nodes"
 	"github.com/bqlpfy/flux-panel/backend/internal/observability"
+	"github.com/bqlpfy/flux-panel/backend/internal/siteconfig"
 )
 
 func main() {
@@ -47,6 +48,7 @@ func run() error {
 	authRepo := auth.NewRepository(db)
 	nodeRepo := nodes.NewRepository(db)
 	hub := nodehub.New(log, nodeRepo)
+	configRepo := siteconfig.NewRepository(db)
 	metrics := observability.NewMetrics()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
@@ -65,14 +67,70 @@ func run() error {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("test"))
 	})
-	mux.HandleFunc("GET /api/v1/config/get", func(w http.ResponseWriter, _ *http.Request) {
-		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(map[string]string{"value": ""}))
+	mux.HandleFunc("GET /api/v1/config/get", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("name")
+		if key == "" {
+			var request struct {
+				Name string `json:"name"`
+			}
+			if !httpapi.DecodeJSON(w, r, &request) {
+				return
+			}
+			key = request.Name
+		}
+		value, err := configRepo.Get(r.Context(), key)
+		if err != nil {
+			httpapi.WriteJSON(w, http.StatusBadRequest, httpapi.Failure(http.StatusBadRequest, err.Error()))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(map[string]string{"value": value}))
 	})
-
+	mux.HandleFunc("POST /api/v1/config/list", func(w http.ResponseWriter, r *http.Request) {
+		values, err := configRepo.List(r.Context())
+		if err != nil {
+			httpapi.WriteJSON(w, http.StatusInternalServerError, httpapi.Failure(http.StatusInternalServerError, "配置查询失败"))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(values))
+	})
 	admin := func(r *http.Request) bool {
 		identity, ok := httpapi.IdentityFromContext(r.Context())
 		return ok && identity.RoleID == 0
 	}
+	mux.HandleFunc("POST /api/v1/config/update", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(r) {
+			httpapi.WriteJSON(w, http.StatusForbidden, httpapi.Failure(http.StatusForbidden, "无权限"))
+			return
+		}
+		var values map[string]string
+		if !httpapi.DecodeJSON(w, r, &values) {
+			return
+		}
+		if err := configRepo.Update(r.Context(), values); err != nil {
+			httpapi.WriteJSON(w, http.StatusBadRequest, httpapi.Failure(http.StatusBadRequest, err.Error()))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(nil))
+	})
+	mux.HandleFunc("POST /api/v1/config/update-single", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(r) {
+			httpapi.WriteJSON(w, http.StatusForbidden, httpapi.Failure(http.StatusForbidden, "无权限"))
+			return
+		}
+		var request struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		if err := configRepo.Update(r.Context(), map[string]string{request.Name: request.Value}); err != nil {
+			httpapi.WriteJSON(w, http.StatusBadRequest, httpapi.Failure(http.StatusBadRequest, err.Error()))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(nil))
+	})
+
 	mux.HandleFunc("POST /api/v1/user/login", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Username string `json:"username"`
