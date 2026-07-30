@@ -409,6 +409,12 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 .ne("id", tunnelUpdateDto.getId()));
         if (duplicateCount > 0) return R.err("隧道名称重复");
 
+        List<ChainTunnel> oldChainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", existingTunnel.getId()));
+        Set<String> existingNodeAssignments = oldChainTunnels.stream()
+                .filter(item -> item.getChainType() != null && item.getNodeId() != null)
+                .map(item -> item.getChainType() + ":" + item.getNodeId())
+                .collect(Collectors.toSet());
+
         List<ChainTunnel> updatedChainTunnels = new ArrayList<>();
         List<Long> allNodeIds = new ArrayList<>();
         Map<Long, Node> nodes = new HashMap<>();
@@ -501,11 +507,16 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         List<Node> nodeList = nodeService.list(new QueryWrapper<Node>().in("id", uniqueNodeIds));
         if (nodeList.size() != uniqueNodeIds.size()) return R.err("部分节点不存在");
         for (Node node : nodeList) {
-            if (node.getStatus() != 1) return R.err("部分节点不在线");
             nodes.put(node.getId(), node);
         }
+        for (ChainTunnel chainTunnel : updatedChainTunnels) {
+            Node node = nodes.get(chainTunnel.getNodeId());
+            String assignment = chainTunnel.getChainType() + ":" + chainTunnel.getNodeId();
+            if (node.getStatus() != 1 && !existingNodeAssignments.contains(assignment)) {
+                return R.err("不允许新增离线节点");
+            }
+        }
 
-        List<ChainTunnel> oldChainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", existingTunnel.getId()));
         Set<Long> affectedNodeIds = oldChainTunnels.stream()
                 .map(ChainTunnel::getNodeId)
                 .filter(Objects::nonNull)

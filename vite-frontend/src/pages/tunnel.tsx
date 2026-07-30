@@ -227,15 +227,6 @@ export default function TunnelPage() {
     
     if (!form.inNodeId || form.inNodeId.length === 0) {
       newErrors.inNodeId = '请至少选择一个入口节点';
-    } else {
-      // 验证所有选择的节点都在线
-      const offlineNodes = form.inNodeId.filter(item => {
-        const node = nodes.find(n => n.id === item.nodeId);
-        return node && node.status !== 1;
-      });
-      if (offlineNodes.length > 0) {
-        newErrors.inNodeId = '所有入口节点必须在线';
-      }
     }
     
     if (form.trafficRatio < 0.0 || form.trafficRatio > 100.0) {
@@ -247,15 +238,6 @@ export default function TunnelPage() {
       if (!form.outNodeId || form.outNodeId.length === 0) {
         newErrors.outNodeId = '请至少选择一个出口节点';
       } else {
-        // 验证所有选择的节点都在线
-        const offlineNodes = form.outNodeId.filter(item => {
-          const node = nodes.find(n => n.id === item.nodeId);
-          return node && node.status !== 1;
-        });
-        if (offlineNodes.length > 0) {
-          newErrors.outNodeId = '所有出口节点必须在线';
-        }
-        
         // 检查是否有重复节点
         const inNodeIds = form.inNodeId.map(item => item.nodeId);
         const outNodeIds = form.outNodeId.map(item => item.nodeId);
@@ -413,6 +395,13 @@ export default function TunnelPage() {
   // 获取所有转发链中已选择的节点ID列表
   const getSelectedChainNodeIds = (): number[] => {
     return (form.chainNodes || []).flatMap(group => group.map(node => node.nodeId));
+  };
+
+  const getDisabledOfflineNodeIds = (selectedNodeIds: number[]): string[] => {
+    const selected = new Set(selectedNodeIds);
+    return nodes
+      .filter(node => node.status !== 1 && !selected.has(node.id))
+      .map(node => node.id.toString());
   };
 
   // 获取转发链分组（已经是二维数组）
@@ -982,7 +971,7 @@ export default function TunnelPage() {
                          selectionMode="multiple"
                          selectedKeys={form.inNodeId.map(ct => ct.nodeId.toString())}
                          disabledKeys={[
-                           ...nodes.filter(node => node.status !== 1).map(node => node.id.toString()),
+                           ...getDisabledOfflineNodeIds(form.inNodeId.map(ct => ct.nodeId)),
                            ...(form.outNodeId || []).map(ct => ct.nodeId.toString()),
                            ...getSelectedChainNodeIds().map(id => id.toString())
                          ]}
@@ -1095,7 +1084,7 @@ export default function TunnelPage() {
                                         selectionMode="multiple"
                                         selectedKeys={groupNodes.filter(ct => ct.nodeId !== -1).map(ct => ct.nodeId.toString())}
                                         disabledKeys={[
-                                          ...nodes.filter(node => node.status !== 1).map(node => node.id.toString()),
+                                          ...getDisabledOfflineNodeIds(groupNodes.filter(ct => ct.nodeId !== -1).map(ct => ct.nodeId)),
                                           ...form.inNodeId.map(ct => ct.nodeId.toString()),
                                           ...(form.outNodeId || []).map(ct => ct.nodeId.toString()),
                                           // 排除其他跳数已选的节点
@@ -1241,7 +1230,7 @@ export default function TunnelPage() {
                               selectionMode="multiple"
                               selectedKeys={form.outNodeId ? form.outNodeId.filter(ct => ct.nodeId !== -1).map(ct => ct.nodeId.toString()) : []}
                               disabledKeys={[
-                                ...nodes.filter(node => node.status !== 1).map(node => node.id.toString()),
+                                ...getDisabledOfflineNodeIds((form.outNodeId || []).filter(ct => ct.nodeId !== -1).map(ct => ct.nodeId)),
                                 ...form.inNodeId.map(ct => ct.nodeId.toString()),
                                 ...getSelectedChainNodeIds().map(id => id.toString())
                               ]}

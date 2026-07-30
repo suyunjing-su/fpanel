@@ -445,6 +445,12 @@ export default function ForwardPage() {
     return result;
   };
 
+  const getUserForwardIds = (userId: number | null): number[] => {
+    return forwards
+      .filter(forward => (forward.userId ?? null) === userId)
+      .map(forward => forward.id);
+  };
+
   // 表单验证
   const validateForm = (): boolean => {
     const newErrors: {[key: string]: string} = {};
@@ -1644,6 +1650,19 @@ export default function ForwardPage() {
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between w-full min-w-0">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
+                        {(() => {
+                          const userForwardIds = getUserForwardIds(userGroup.userId);
+                          const allSelected = batchSelection.areAllItemsSelected(userForwardIds);
+                          return (
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-default-300 text-danger focus:ring-danger flex-shrink-0"
+                              checked={allSelected}
+                              onChange={() => batchSelection.setItemsSelected(userForwardIds, !allSelected)}
+                              aria-label={`选择用户 ${userGroup.userName} 的全部转发`}
+                            />
+                          );
+                        })()}
                         <div className="w-10 h-10 bg-primary-100 dark:bg-primary-900/30 rounded-full flex items-center justify-center flex-shrink-0">
                           <svg className="w-5 h-5 text-primary" fill="currentColor" viewBox="0 0 20 20">
                             <path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" />

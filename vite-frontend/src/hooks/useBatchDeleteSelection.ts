@@ -41,6 +41,20 @@ export function useBatchDeleteSelection<T extends { id: number }>(options: UseBa
     ));
   };
 
+  const setItemsSelected = (ids: number[], selected: boolean) => {
+    const targetIds = new Set(ids);
+    setSelectedIds(prev => {
+      if (!selected) {
+        return prev.filter(id => !targetIds.has(id));
+      }
+      return Array.from(new Set([...prev, ...ids]));
+    });
+  };
+
+  const areAllItemsSelected = (ids: number[]) => {
+    return ids.length > 0 && ids.every(id => selectedIds.includes(id));
+  };
+
   const toggleSelectAll = () => {
     if (isAllSelected) {
       setSelectedIds([]);
@@ -139,6 +153,8 @@ export function useBatchDeleteSelection<T extends { id: number }>(options: UseBa
     failures,
     lastResult,
     toggleItemSelection,
+    setItemsSelected,
+    areAllItemsSelected,
     toggleSelectAll,
     clearSelection,
     openBatchDeleteModal,
