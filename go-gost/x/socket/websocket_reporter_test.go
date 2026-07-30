@@ -1,7 +1,10 @@
 package socket
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -73,5 +76,71 @@ func TestPreprocessDurationFields(t *testing.T) {
 	}
 	if numericForwarder.ProbeTimeout != 2*time.Second {
 		t.Errorf("numeric probe timeout = %v, want %v", numericForwarder.ProbeTimeout, 2*time.Second)
+	}
+}
+
+func TestTcpPingHostUsesOverallTimeoutAndNextEndpointGetsFreshContext(t *testing.T) {
+	lookup := func(context.Context, string) ([]string, error) {
+		return nil, errors.New("lookup should not be called for IP addresses")
+	}
+
+	var failedAttempts int
+	blockingDial := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		failedAttempts++
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	start := time.Now()
+	_, loss, err := tcpPingHostWithDialer(
+		"192.0.2.1",
+		443,
+		4,
+		100*time.Millisecond,
+		lookup,
+		blockingDial,
+	)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("failed endpoint error is nil")
+	}
+	if loss != 100 {
+		t.Errorf("failed endpoint loss = %v, want 100", loss)
+	}
+	if failedAttempts != 1 {
+		t.Errorf("failed endpoint attempts = %d, want 1", failedAttempts)
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Errorf("failed endpoint took %v, want one overall timeout budget", elapsed)
+	}
+
+	var healthyContextErr error
+	healthyDial := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		healthyContextErr = ctx.Err()
+		client, server := net.Pipe()
+		go server.Close()
+		return client, nil
+	}
+
+	avg, loss, err := tcpPingHostWithDialer(
+		"192.0.2.2",
+		443,
+		1,
+		100*time.Millisecond,
+		lookup,
+		healthyDial,
+	)
+	if err != nil {
+		t.Fatalf("healthy endpoint failed after timed-out endpoint: %v", err)
+	}
+	if healthyContextErr != nil {
+		t.Fatalf("healthy endpoint received expired context: %v", healthyContextErr)
+	}
+	if loss != 0 {
+		t.Errorf("healthy endpoint loss = %v, want 0", loss)
+	}
+	if avg < 0 {
+		t.Errorf("healthy endpoint average = %v, want non-negative", avg)
 	}
 }

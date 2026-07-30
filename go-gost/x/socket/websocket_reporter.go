@@ -1665,16 +1665,38 @@ func probeTransport(transport, target string, timeout time.Duration) error {
 
 // tcpPingHost 执行TCP连接测试，返回平均连接时间和失败率
 func tcpPingHost(ip string, port int, count int, timeoutMs int) (float64, float64, error) {
+	return tcpPingHostWithDialer(
+		ip,
+		port,
+		count,
+		time.Duration(timeoutMs)*time.Millisecond,
+		net.DefaultResolver.LookupHost,
+		(&net.Dialer{}).DialContext,
+	)
+}
+
+type lookupHostFunc func(context.Context, string) ([]string, error)
+type dialContextFunc func(context.Context, string, string) (net.Conn, error)
+
+func tcpPingHostWithDialer(
+	ip string,
+	port int,
+	count int,
+	timeout time.Duration,
+	lookupHost lookupHostFunc,
+	dialContext dialContextFunc,
+) (float64, float64, error) {
 	var totalTime float64
 	var successCount int
 
-	timeout := time.Duration(timeoutMs) * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	// 使用net.JoinHostPort来正确处理IPv4、IPv6和域名
 	// 它会自动为IPv6地址添加方括号
 	target := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
 
-	fmt.Printf("🔍 开始TCP ping测试: %s，次数: %d，超时: %dms\n", target, count, timeoutMs)
+	fmt.Printf("🔍 开始TCP ping测试: %s，次数: %d，总超时: %v\n", target, count, timeout)
 
 	// 如果是域名，先解析一次DNS，避免每次连接都重新解析导致延迟累加
 	if net.ParseIP(ip) == nil {
@@ -1682,7 +1704,7 @@ func tcpPingHost(ip string, port int, count int, timeoutMs int) (float64, float6
 		fmt.Printf("🔍 检测到域名，正在解析DNS...\n")
 		dnsStart := time.Now()
 
-		addrs, err := net.LookupHost(ip)
+		addrs, err := lookupHost(ctx, ip)
 		dnsDuration := time.Since(dnsStart)
 
 		if err != nil {
@@ -1702,30 +1724,40 @@ func tcpPingHost(ip string, port int, count int, timeoutMs int) (float64, float6
 		fmt.Printf("🎯 使用IP地址进行测试: %s\n", target)
 	}
 
+probeLoop:
 	for i := 0; i < count; i++ {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+
 		start := time.Now()
-
-		// 创建带超时的TCP连接
-		conn, err := net.DialTimeout("tcp", target, timeout)
-
+		conn, err := dialContext(ctx, "tcp", target)
 		elapsed := time.Since(start)
 
 		if err != nil {
 			fmt.Printf("  第%d次连接失败: %v (%.2fms)\n", i+1, err, elapsed.Seconds()*1000)
 		} else {
 			fmt.Printf("  第%d次连接成功: %.2fms\n", i+1, elapsed.Seconds()*1000)
-			conn.Close()
+			_ = conn.Close()
 			totalTime += elapsed.Seconds() * 1000 // 转换为毫秒
 			successCount++
 		}
 
-		// 如果不是最后一次，等待一下再进行下次测试
 		if i < count-1 {
-			time.Sleep(100 * time.Millisecond)
+			timer := time.NewTimer(100 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				break probeLoop
+			case <-timer.C:
+			}
 		}
 	}
 
 	if successCount == 0 {
+		if err := ctx.Err(); err != nil {
+			return 0, 100.0, fmt.Errorf("TCP连接测试超时: %w", err)
+		}
 		return 0, 100.0, fmt.Errorf("所有TCP连接尝试都失败")
 	}
 
