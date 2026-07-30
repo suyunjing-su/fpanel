@@ -992,8 +992,8 @@ public class FlowController extends BaseController {
             num++;
         }
         forwarder.put("nodes", nodes);
-        forwarder.put("probePeriod", "10s");
-        forwarder.put("probeTimeout", "3s");
+        forwarder.put("probePeriod", 10_000_000_000L);
+        forwarder.put("probeTimeout", 3_000_000_000L);
 
         JSONObject selector = new JSONObject();
         selector.put("strategy", StringUtils.hasText(forward.getStrategy()) ? forward.getStrategy() : "fifo");

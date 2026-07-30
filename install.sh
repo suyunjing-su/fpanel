@@ -1,6 +1,6 @@
 #!/bin/bash
 
-RELEASE_VERSION="3.0.25-beta"
+RELEASE_VERSION="3.0.26-beta"
 
 # 获取系统架构
 get_architecture() {

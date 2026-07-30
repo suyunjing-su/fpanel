@@ -1777,18 +1777,13 @@ func (w *WebSocketReporter) processDurationInData(data interface{}) interface{} 
 		}
 		return v
 	case map[string]interface{}:
-		// 处理对象
 		for key, value := range v {
-			if key == "selector" {
-				// 处理 selector 对象中的 failTimeout
-				if selectorObj, ok := value.(map[string]interface{}); ok {
-					if failTimeoutVal, exists := selectorObj["failTimeout"]; exists {
-						if failTimeoutStr, ok := failTimeoutVal.(string); ok {
-							// 将字符串格式的 duration 转换为纳秒数
-							if duration, err := time.ParseDuration(failTimeoutStr); err == nil {
-								selectorObj["failTimeout"] = int64(duration)
-							}
-						}
+			switch key {
+			case "failTimeout", "probePeriod", "probeTimeout":
+				if durationValue, ok := value.(string); ok {
+					if duration, err := time.ParseDuration(durationValue); err == nil {
+						v[key] = int64(duration)
+						continue
 					}
 				}
 			}
