@@ -13,17 +13,22 @@ import (
 )
 
 type Node struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	IP        string `json:"ip"`
-	ServerIP  string `json:"serverIp"`
-	PortStart int    `json:"portSta"`
-	PortEnd   int    `json:"portEnd"`
-	Version   string `json:"version"`
-	HTTP      int    `json:"http"`
-	TLS       int    `json:"tls"`
-	Socks     int    `json:"socks"`
-	Status    int    `json:"status"`
+	ID               int64   `json:"id"`
+	Name             string  `json:"name"`
+	IP               string  `json:"ip"`
+	ServerIP         string  `json:"serverIp"`
+	PortStart        int     `json:"portSta"`
+	PortEnd          int     `json:"portEnd"`
+	Version          string  `json:"version"`
+	HTTP             int     `json:"http"`
+	TLS              int     `json:"tls"`
+	Socks            int     `json:"socks"`
+	Status           int     `json:"status"`
+	Uptime           uint64  `json:"uptime,omitempty"`
+	BytesReceived    uint64  `json:"bytes_received,omitempty"`
+	BytesTransmitted uint64  `json:"bytes_transmitted,omitempty"`
+	CPUUsage         float64 `json:"cpu_usage,omitempty"`
+	MemoryUsage      float64 `json:"memory_usage,omitempty"`
 }
 
 type CreateRequest struct {
@@ -41,18 +46,12 @@ type UpdateRequest struct {
 	CreateRequest
 	ID int64 `json:"id"`
 }
+type Repository struct{ db *sql.DB }
 
-type Repository struct {
-	db *sql.DB
-}
-
-func NewRepository(db *sql.DB) *Repository {
-	return &Repository{db: db}
-}
+func NewRepository(db *sql.DB) *Repository { return &Repository{db: db} }
 
 func (r *Repository) List(ctx context.Context) ([]Node, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, name, ip, server_ip, port_start, port_end, version, http, tls, socks, status
-		FROM nodes ORDER BY id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, name, ip, server_ip, port_start, port_end, version, http, tls, socks, status, uptime, bytes_received, bytes_transmitted, cpu_usage, memory_usage FROM nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -60,8 +59,7 @@ func (r *Repository) List(ctx context.Context) ([]Node, error) {
 	result := make([]Node, 0)
 	for rows.Next() {
 		var node Node
-		if err := rows.Scan(&node.ID, &node.Name, &node.IP, &node.ServerIP, &node.PortStart, &node.PortEnd,
-			&node.Version, &node.HTTP, &node.TLS, &node.Socks, &node.Status); err != nil {
+		if err := rows.Scan(&node.ID, &node.Name, &node.IP, &node.ServerIP, &node.PortStart, &node.PortEnd, &node.Version, &node.HTTP, &node.TLS, &node.Socks, &node.Status, &node.Uptime, &node.BytesReceived, &node.BytesTransmitted, &node.CPUUsage, &node.MemoryUsage); err != nil {
 			return nil, fmt.Errorf("scan node: %w", err)
 		}
 		result = append(result, node)
@@ -81,9 +79,7 @@ func (r *Repository) Create(ctx context.Context, request CreateRequest) (int64, 
 		return 0, err
 	}
 	now := time.Now().UnixMilli()
-	result, err := r.db.ExecContext(ctx, `INSERT INTO nodes(name, ip, server_ip, port_start, port_end, secret, http, tls, socks, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, request.Name, request.IP, request.ServerIP,
-		request.PortStart, request.PortEnd, secret, request.HTTP, request.TLS, request.Socks, now, now)
+	result, err := r.db.ExecContext(ctx, `INSERT INTO nodes(name, ip, server_ip, port_start, port_end, secret, http, tls, socks, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, request.Name, request.IP, request.ServerIP, request.PortStart, request.PortEnd, secret, request.HTTP, request.TLS, request.Socks, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("create node: %w", err)
 	}
@@ -97,14 +93,44 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest) error {
 	if err := validate(request.CreateRequest); err != nil {
 		return err
 	}
-	result, err := r.db.ExecContext(ctx, `UPDATE nodes SET name = ?, ip = ?, server_ip = ?, port_start = ?, port_end = ?,
-		http = ?, tls = ?, socks = ?, updated_at = ? WHERE id = ?`, request.Name, request.IP, request.ServerIP,
-		request.PortStart, request.PortEnd, request.HTTP, request.TLS, request.Socks, time.Now().UnixMilli(), request.ID)
+	result, err := r.db.ExecContext(ctx, `UPDATE nodes SET name = ?, ip = ?, server_ip = ?, port_start = ?, port_end = ?, http = ?, tls = ?, socks = ?, updated_at = ? WHERE id = ?`, request.Name, request.IP, request.ServerIP, request.PortStart, request.PortEnd, request.HTTP, request.TLS, request.Socks, time.Now().UnixMilli(), request.ID)
 	if err != nil {
 		return fmt.Errorf("update node: %w", err)
 	}
 	if count, _ := result.RowsAffected(); count == 0 {
 		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repository) LookupSecret(ctx context.Context, secret string, id *int64) error {
+	if strings.TrimSpace(secret) == "" {
+		return errors.New("node secret is required")
+	}
+	if err := r.db.QueryRowContext(ctx, "SELECT id FROM nodes WHERE secret = ?", secret).Scan(id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("invalid node secret")
+		}
+		return fmt.Errorf("lookup node secret: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) SetStatus(ctx context.Context, id int64, status int, version string) error {
+	if status != 0 && status != 1 {
+		return errors.New("invalid node status")
+	}
+	_, err := r.db.ExecContext(ctx, "UPDATE nodes SET status = ?, version = ?, updated_at = ? WHERE id = ?", status, version, time.Now().UnixMilli(), id)
+	if err != nil {
+		return fmt.Errorf("update node status: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) SetTelemetry(ctx context.Context, id int64, uptime, received, transmitted uint64, cpu, memory float64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE nodes SET uptime = ?, bytes_received = ?, bytes_transmitted = ?, cpu_usage = ?, memory_usage = ?, updated_at = ? WHERE id = ?`, uptime, received, transmitted, cpu, memory, time.Now().UnixMilli(), id)
+	if err != nil {
+		return fmt.Errorf("update node telemetry: %w", err)
 	}
 	return nil
 }

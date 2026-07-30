@@ -15,6 +15,7 @@ import (
 	"github.com/bqlpfy/flux-panel/backend/internal/config"
 	"github.com/bqlpfy/flux-panel/backend/internal/database"
 	"github.com/bqlpfy/flux-panel/backend/internal/httpapi"
+	"github.com/bqlpfy/flux-panel/backend/internal/nodehub"
 	"github.com/bqlpfy/flux-panel/backend/internal/nodes"
 	"github.com/bqlpfy/flux-panel/backend/internal/observability"
 )
@@ -45,6 +46,7 @@ func run() error {
 	jwtManager := auth.New(cfg.JWTSecret, cfg.TokenTTL)
 	authRepo := auth.NewRepository(db)
 	nodeRepo := nodes.NewRepository(db)
+	hub := nodehub.New(log, nodeRepo)
 	metrics := observability.NewMetrics()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
@@ -58,6 +60,7 @@ func run() error {
 		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(map[string]string{"status": "ready"}))
 	})
 	mux.Handle("GET /metrics", metrics)
+	mux.Handle("GET /system-info", hub)
 	mux.HandleFunc("GET /flow/test", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("test"))
