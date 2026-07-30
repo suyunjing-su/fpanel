@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -123,7 +124,12 @@ func (h *Hub) remove(id int64, current *session) {
 
 func (h *Hub) markOnline(ctx context.Context, id int64, query url.Values) {
 	version := query.Get("version")
-	_ = h.nodes.SetStatus(ctx, id, 1, version)
+	httpFlag, _ := strconv.Atoi(query.Get("http"))
+	tlsFlag, _ := strconv.Atoi(query.Get("tls"))
+	socksFlag, _ := strconv.Atoi(query.Get("socks"))
+	if err := h.nodes.SetConnectionState(ctx, id, 1, version, httpFlag, tlsFlag, socksFlag); err != nil {
+		h.log.Warn("failed to mark node online", "node_id", id, "error", err)
+	}
 }
 
 func (s *session) readLoop(log *slog.Logger) {

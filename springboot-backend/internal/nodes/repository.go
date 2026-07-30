@@ -127,6 +127,22 @@ func (r *Repository) SetStatus(ctx context.Context, id int64, status int, versio
 	return nil
 }
 
+func (r *Repository) SetConnectionState(ctx context.Context, id int64, status int, version string, httpFlag, tlsFlag, socksFlag int) error {
+	if status != 0 && status != 1 {
+		return errors.New("invalid node status")
+	}
+	for _, value := range []int{httpFlag, tlsFlag, socksFlag} {
+		if value != 0 && value != 1 {
+			return errors.New("invalid node protocol flag")
+		}
+	}
+	_, err := r.db.ExecContext(ctx, `UPDATE nodes SET status = ?, version = ?, http = ?, tls = ?, socks = ?, updated_at = ? WHERE id = ?`, status, version, httpFlag, tlsFlag, socksFlag, time.Now().UnixMilli(), id)
+	if err != nil {
+		return fmt.Errorf("update node connection state: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) SetTelemetry(ctx context.Context, id int64, uptime, received, transmitted uint64, cpu, memory float64) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE nodes SET uptime = ?, bytes_received = ?, bytes_transmitted = ?, cpu_usage = ?, memory_usage = ?, updated_at = ? WHERE id = ?`, uptime, received, transmitted, cpu, memory, time.Now().UnixMilli(), id)
 	if err != nil {
