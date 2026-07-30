@@ -144,6 +144,7 @@ public class GostUtil {
         JSONObject handler = new JSONObject();
         handler.put("type", "relay");
         if (chainTunnel.getChainType() == 2){
+            handler.put("retries", 1);
             handler.put("chain", buildChainName(chainTunnel.getTunnelId(), normalizedProtocol, trafficProtocol));
         }
         service_item.put("handler", handler);
@@ -192,6 +193,7 @@ public class GostUtil {
             JSONObject handler = new JSONObject();
             handler.put("type", protocol);
             if (tunnel.getType() == 2){
+                handler.put("retries", 1);
                 String chainName = Objects.equals(protocol, PROTOCOL_UDP) ? udpChainName : tcpChainName;
                 if (StrUtil.isBlank(chainName)) {
                     chainName = "chains_" + forward.getTunnelId();
@@ -494,6 +496,8 @@ public class GostUtil {
         }
 
         forwarder.put("nodes", nodes);
+        forwarder.put("probePeriod", "10s");
+        forwarder.put("probeTimeout", "3s");
 
         JSONObject selector = new JSONObject();
         selector.put("strategy", strategy);

@@ -23,7 +23,6 @@ import (
 	"github.com/go-gost/x/internal/util/sniffing"
 	tls_util "github.com/go-gost/x/internal/util/tls"
 	rate_limiter "github.com/go-gost/x/limiter/rate"
-	mdutil "github.com/go-gost/x/metadata/util"
 	xstats "github.com/go-gost/x/observer/stats"
 	stats_wrapper "github.com/go-gost/x/observer/stats/wrapper"
 	xrecorder "github.com/go-gost/x/recorder"
@@ -142,13 +141,6 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 		return rate_limiter.ErrRateLimit
 	}
 
-	var host string
-	if md, ok := conn.(mdata.Metadatable); ok {
-		if v := mdutil.GetString(md.Metadata(), "host"); v != "" {
-			host = v
-		}
-	}
-
 	var proto string
 	if network == "tcp" && h.md.sniffing {
 		if h.md.sniffingTimeout > 0 {
@@ -204,57 +196,61 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 		}
 	}
 
-	var target *chain.Node
-	if host != "" {
-		target = &chain.Node{
-			Addr: host,
-		}
-	}
-	if h.hop != nil {
-		target = h.hop.Select(ctx,
-			hop.ProtocolSelectOption(proto),
-		)
-	}
-	if target == nil {
+	if h.hop == nil {
 		err := errors.New("node not available")
 		log.Error(err)
 		return err
 	}
 
-	if opts := target.Options(); opts != nil {
-		switch opts.Network {
-		case "unix":
-			network = opts.Network
-		default:
+	var target *chain.Node
+	var cc net.Conn
+	attempted := make(map[*chain.Node]struct{})
+	for {
+		target = h.hop.Select(ctx, hop.ProtocolSelectOption(proto))
+		if target == nil {
+			err := errors.New("node not available")
+			log.Error(err)
+			return err
 		}
-	}
+		if _, ok := attempted[target]; ok {
+			return err
+		}
+		attempted[target] = struct{}{}
 
-	ro.Network = network
-	ro.Host = target.Addr
+		if opts := target.Options(); opts != nil {
+			switch opts.Network {
+			case "unix":
+				network = opts.Network
+			default:
+			}
+		}
 
-	log = log.WithFields(map[string]any{
-		"node": target.Name,
-		"dst":  fmt.Sprintf("%s/%s", target.Addr, network),
-	})
+		ro.Network = network
+		ro.Host = target.Addr
 
-	log.Debugf("%s >> %s", conn.RemoteAddr(), target.Addr)
+		attemptLog := log.WithFields(map[string]any{
+			"node": target.Name,
+			"dst":  fmt.Sprintf("%s/%s", target.Addr, network),
+		})
+		attemptLog.Debugf("%s >> %s", conn.RemoteAddr(), target.Addr)
 
-	var buf bytes.Buffer
-	cc, err := h.options.Router.Dial(ctxvalue.ContextWithBuffer(ctx, &buf), network, target.Addr)
-	ro.Route = buf.String()
-	if err != nil {
-		log.Error(err)
-		// TODO: the router itself may be failed due to the failed node in the router,
-		// the dead marker may be a wrong operation.
+		var buf bytes.Buffer
+		cc, err = h.options.Router.Dial(ctxvalue.ContextWithBuffer(ctx, &buf), network, target.Addr)
+		ro.Route = buf.String()
+		if err == nil {
+			if marker := target.Marker(); marker != nil {
+				marker.Reset()
+			}
+			log = attemptLog
+			break
+		}
+
+		attemptLog.Error(err)
 		if marker := target.Marker(); marker != nil {
 			marker.Mark()
 		}
-		return err
 	}
 	defer cc.Close()
-	if marker := target.Marker(); marker != nil {
-		marker.Reset()
-	}
 
 	cc = proxyproto.WrapClientConn(h.md.proxyProtocol, conn.RemoteAddr(), convertAddr(conn.LocalAddr()), cc)
 
@@ -265,6 +261,13 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 		"duration": time.Since(t),
 	}).Infof("%s >-< %s", conn.RemoteAddr(), target.Addr)
 
+	return nil
+}
+
+func (h *forwardHandler) Close() error {
+	if closer, ok := h.hop.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
 	return nil
 }
 

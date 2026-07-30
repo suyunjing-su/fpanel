@@ -89,21 +89,21 @@ func (r *Router) dial(ctx context.Context, network, address string, log logger.L
 	log.Debugf("dial %s/%s", address, network)
 
 	for i := 0; i < count; i++ {
-		ctx := ctx
+		attemptCtx := ctx
+		cancel := func() {}
 		if r.options.Timeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, r.options.Timeout)
-			defer cancel()
+			attemptCtx, cancel = context.WithTimeout(ctx, r.options.Timeout)
 		}
 
-		buf := ctxvalue.BufferFromContext(ctx)
+		buf := ctxvalue.BufferFromContext(attemptCtx)
 		if buf != nil {
 			buf.Reset()
 		}
 
 		var ipAddr string
-		ipAddr, err = xnet.Resolve(ctx, "ip", address, r.options.Resolver, r.options.HostMapper, log)
+		ipAddr, err = xnet.Resolve(attemptCtx, "ip", address, r.options.Resolver, r.options.HostMapper, log)
 		if err != nil {
+			cancel()
 			log.Error(err)
 			break
 		}
@@ -114,7 +114,7 @@ func (r *Router) dial(ctx context.Context, network, address string, log logger.L
 
 		var route chain.Route
 		if r.options.Chain != nil {
-			route = r.options.Chain.Route(ctx, network, ipAddr, chain.WithHostRouteOption(address))
+			route = r.options.Chain.Route(attemptCtx, network, ipAddr, chain.WithHostRouteOption(address))
 		}
 
 		if buf == nil {
@@ -129,12 +129,13 @@ func (r *Router) dial(ctx context.Context, network, address string, log logger.L
 		if route == nil {
 			route = DefaultRoute
 		}
-		conn, err = route.Dial(ctx, network, ipAddr,
+		conn, err = route.Dial(attemptCtx, network, ipAddr,
 			chain.InterfaceDialOption(r.options.IfceName),
 			chain.NetnsDialOption(r.options.Netns),
 			chain.SockOptsDialOption(r.options.SockOpts),
 			chain.LoggerDialOption(log),
 		)
+		cancel()
 		if err == nil {
 			break
 		}

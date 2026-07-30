@@ -147,6 +147,7 @@ func (r *chainRoute) Dial(ctx context.Context, network, address string, opts ...
 		if conn != nil {
 			conn.Close()
 		}
+		r.markFailure()
 		return nil, err
 	}
 	return cc, nil
@@ -179,6 +180,7 @@ func (r *chainRoute) Bind(ctx context.Context, network, address string, opts ...
 	)
 	if err != nil {
 		conn.Close()
+		r.markFailure()
 		return nil, err
 	}
 
@@ -295,6 +297,24 @@ func (r *chainRoute) connect(ctx context.Context, logger logger.Logger) (conn ne
 
 	conn = cn
 	return
+}
+
+func (r *chainRoute) markFailure() {
+	if r == nil {
+		return
+	}
+	if r.options.Chain != nil {
+		if markable, ok := r.options.Chain.(selector.Markable); ok && markable != nil {
+			if marker := markable.Marker(); marker != nil {
+				marker.Mark()
+			}
+		}
+	}
+	if node := r.getNode(len(r.Nodes()) - 1); node != nil {
+		if marker := node.Marker(); marker != nil {
+			marker.Mark()
+		}
+	}
 }
 
 func (r *chainRoute) getNode(index int) *chain.Node {

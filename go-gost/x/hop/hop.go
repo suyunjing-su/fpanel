@@ -22,15 +22,17 @@ import (
 )
 
 type options struct {
-	name        string
-	nodes       []*chain.Node
-	bypass      bypass.Bypass
-	selector    selector.Selector[*chain.Node]
-	fileLoader  loader.Loader
-	redisLoader loader.Loader
-	httpLoader  loader.Loader
-	period      time.Duration
-	logger      logger.Logger
+	name         string
+	nodes        []*chain.Node
+	bypass       bypass.Bypass
+	selector     selector.Selector[*chain.Node]
+	fileLoader   loader.Loader
+	redisLoader  loader.Loader
+	httpLoader   loader.Loader
+	period       time.Duration
+	probePeriod  time.Duration
+	probeTimeout time.Duration
+	logger       logger.Logger
 }
 
 type Option func(*options)
@@ -61,6 +63,13 @@ func SelectorOption(s selector.Selector[*chain.Node]) Option {
 func ReloadPeriodOption(period time.Duration) Option {
 	return func(opts *options) {
 		opts.period = period
+	}
+}
+
+func ProbeOption(period, timeout time.Duration) Option {
+	return func(opts *options) {
+		opts.probePeriod = period
+		opts.probeTimeout = timeout
 	}
 }
 
@@ -113,6 +122,9 @@ func NewHop(opts ...Option) hop.Hop {
 	}
 	if p.options.period > 0 {
 		go p.periodReload(ctx)
+	}
+	if p.options.probePeriod > 0 {
+		go p.periodProbe(ctx)
 	}
 
 	return p
@@ -255,6 +267,56 @@ func (p *chainHop) checkPath(path string, node *chain.Node) bool {
 	}
 
 	return strings.HasPrefix(path, pathFilter)
+}
+
+func (p *chainHop) periodProbe(ctx context.Context) error {
+	period := p.options.probePeriod
+	if period < time.Second {
+		period = time.Second
+	}
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			p.probe(ctx)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (p *chainHop) probe(ctx context.Context) {
+	timeout := p.options.probeTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+
+	for _, node := range p.Nodes() {
+		if node == nil || node.Addr == "" {
+			continue
+		}
+
+		probeCtx, cancel := context.WithTimeout(ctx, timeout)
+		conn, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", node.Addr)
+		cancel()
+		if conn != nil {
+			conn.Close()
+		}
+
+		marker := node.Marker()
+		if marker == nil {
+			continue
+		}
+		if err != nil {
+			marker.Mark()
+			p.options.logger.Debugf("node %s probe failed: %v", node.Name, err)
+			continue
+		}
+		marker.Reset()
+		p.options.logger.Debugf("node %s probe succeeded", node.Name)
+	}
 }
 
 func (p *chainHop) periodReload(ctx context.Context) error {

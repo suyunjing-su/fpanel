@@ -176,50 +176,62 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 		}
 	}
 
-	target := &chain.Node{}
-	if h.hop != nil {
-		target = h.hop.Select(ctx,
-			hop.ProtocolSelectOption(proto),
-		)
-	}
-	if target == nil {
-		err := errors.New("node not available")
-		return err
+	if h.hop == nil {
+		return errors.New("node not available")
 	}
 
-	addr := target.Addr
-	if opts := target.Options(); opts != nil {
-		switch opts.Network {
-		case "unix":
-			network = opts.Network
-		default:
-			if _, _, err := net.SplitHostPort(addr); err != nil {
-				addr += ":0"
+	var target *chain.Node
+	var cc net.Conn
+	attempted := make(map[*chain.Node]struct{})
+	for {
+		target = h.hop.Select(ctx, hop.ProtocolSelectOption(proto))
+		if target == nil {
+			return errors.New("node not available")
+		}
+		if _, ok := attempted[target]; ok {
+			return err
+		}
+		attempted[target] = struct{}{}
+
+		addr := target.Addr
+		if opts := target.Options(); opts != nil {
+			switch opts.Network {
+			case "unix":
+				network = opts.Network
+			default:
+				if _, _, splitErr := net.SplitHostPort(addr); splitErr != nil {
+					addr += ":0"
+				}
 			}
 		}
-	}
 
-	ro.Network = network
-	ro.Host = addr
+		ro.Network = network
+		ro.Host = addr
 
-	var buf bytes.Buffer
-	cc, err := h.options.Router.Dial(ctxvalue.ContextWithBuffer(ctx, &buf), network, addr)
-	ro.Route = buf.String()
-	if err != nil {
-		// TODO: the router itself may be failed due to the failed node in the router,
-		// the dead marker may be a wrong operation.
+		var buf bytes.Buffer
+		cc, err = h.options.Router.Dial(ctxvalue.ContextWithBuffer(ctx, &buf), network, addr)
+		ro.Route = buf.String()
+		if err == nil {
+			if marker := target.Marker(); marker != nil {
+				marker.Reset()
+			}
+			break
+		}
 		if marker := target.Marker(); marker != nil {
 			marker.Mark()
 		}
-		return err
-	}
-	if marker := target.Marker(); marker != nil {
-		marker.Reset()
 	}
 	defer cc.Close()
 
 	xnet.Transport(conn, cc)
 
+	return nil
+}
+
+func (h *forwardHandler) Close() error {
+	if closer, ok := h.hop.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
 	return nil
 }
 

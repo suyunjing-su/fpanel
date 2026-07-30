@@ -353,9 +353,11 @@ type ForwarderConfig struct {
 	// Deprecated: use hop instead
 	Name string `yaml:",omitempty" json:"name,omitempty"`
 	// the referenced hop name
-	Hop      string               `yaml:",omitempty" json:"hop,omitempty"`
-	Selector *SelectorConfig      `yaml:",omitempty" json:"selector,omitempty"`
-	Nodes    []*ForwardNodeConfig `json:"nodes"`
+	Hop          string               `yaml:",omitempty" json:"hop,omitempty"`
+	Selector     *SelectorConfig      `yaml:",omitempty" json:"selector,omitempty"`
+	Nodes        []*ForwardNodeConfig `json:"nodes"`
+	ProbePeriod  time.Duration        `yaml:"probePeriod,omitempty" json:"probePeriod,omitempty"`
+	ProbeTimeout time.Duration        `yaml:"probeTimeout,omitempty" json:"probeTimeout,omitempty"`
 }
 
 type ForwardNodeConfig struct {
@@ -506,21 +508,23 @@ type ChainGroupConfig struct {
 }
 
 type HopConfig struct {
-	Name      string          `json:"name"`
-	Interface string          `yaml:",omitempty" json:"interface,omitempty"`
-	SockOpts  *SockOptsConfig `yaml:"sockopts,omitempty" json:"sockopts,omitempty"`
-	Selector  *SelectorConfig `yaml:",omitempty" json:"selector,omitempty"`
-	Bypass    string          `yaml:",omitempty" json:"bypass,omitempty"`
-	Bypasses  []string        `yaml:",omitempty" json:"bypasses,omitempty"`
-	Resolver  string          `yaml:",omitempty" json:"resolver,omitempty"`
-	Hosts     string          `yaml:",omitempty" json:"hosts,omitempty"`
-	Nodes     []*NodeConfig   `yaml:",omitempty" json:"nodes,omitempty"`
-	Reload    time.Duration   `yaml:",omitempty" json:"reload,omitempty"`
-	File      *FileLoader     `yaml:",omitempty" json:"file,omitempty"`
-	Redis     *RedisLoader    `yaml:",omitempty" json:"redis,omitempty"`
-	HTTP      *HTTPLoader     `yaml:"http,omitempty" json:"http,omitempty"`
-	Plugin    *PluginConfig   `yaml:",omitempty" json:"plugin,omitempty"`
-	Metadata  map[string]any  `yaml:",omitempty" json:"metadata,omitempty"`
+	Name         string          `json:"name"`
+	Interface    string          `yaml:",omitempty" json:"interface,omitempty"`
+	SockOpts     *SockOptsConfig `yaml:"sockopts,omitempty" json:"sockopts,omitempty"`
+	Selector     *SelectorConfig `yaml:",omitempty" json:"selector,omitempty"`
+	ProbePeriod  time.Duration   `yaml:"probePeriod,omitempty" json:"probePeriod,omitempty"`
+	ProbeTimeout time.Duration   `yaml:"probeTimeout,omitempty" json:"probeTimeout,omitempty"`
+	Bypass       string          `yaml:",omitempty" json:"bypass,omitempty"`
+	Bypasses     []string        `yaml:",omitempty" json:"bypasses,omitempty"`
+	Resolver     string          `yaml:",omitempty" json:"resolver,omitempty"`
+	Hosts        string          `yaml:",omitempty" json:"hosts,omitempty"`
+	Nodes        []*NodeConfig   `yaml:",omitempty" json:"nodes,omitempty"`
+	Reload       time.Duration   `yaml:",omitempty" json:"reload,omitempty"`
+	File         *FileLoader     `yaml:",omitempty" json:"file,omitempty"`
+	Redis        *RedisLoader    `yaml:",omitempty" json:"redis,omitempty"`
+	HTTP         *HTTPLoader     `yaml:"http,omitempty" json:"http,omitempty"`
+	Plugin       *PluginConfig   `yaml:",omitempty" json:"plugin,omitempty"`
+	Metadata     map[string]any  `yaml:",omitempty" json:"metadata,omitempty"`
 }
 
 type NodeConfig struct {

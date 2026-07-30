@@ -793,6 +793,7 @@ public class FlowController extends BaseController {
                 JSONObject handler = new JSONObject();
                 handler.put("type", "relay");
                 if (Objects.equals(chainTunnel.getChainType(), 2)) {
+                    handler.put("retries", 1);
                     handler.put("chain", GostUtil.buildChainName(chainTunnel.getTunnelId(), chainTunnel.getProtocol(), trafficProtocol));
                 }
                 service.put("handler", handler);
@@ -957,6 +958,7 @@ public class FlowController extends BaseController {
         JSONObject handler = new JSONObject();
         handler.put("type", protocol);
         if (tunnel.getType() == 2) {
+            handler.put("retries", 1);
             String entryChainName = resolveForwardEntryChainName(forward.getTunnelId().longValue(), protocol, allowedExitNodeIds);
             if (!StringUtils.hasText(entryChainName)) {
                 return null;
@@ -990,6 +992,8 @@ public class FlowController extends BaseController {
             num++;
         }
         forwarder.put("nodes", nodes);
+        forwarder.put("probePeriod", "10s");
+        forwarder.put("probeTimeout", "3s");
 
         JSONObject selector = new JSONObject();
         selector.put("strategy", StringUtils.hasText(forward.getStrategy()) ? forward.getStrategy() : "fifo");

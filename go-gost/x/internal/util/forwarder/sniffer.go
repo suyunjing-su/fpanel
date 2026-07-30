@@ -247,11 +247,9 @@ func (h *Sniffer) dial(ctx context.Context, conn net.Conn, req *http.Request, ho
 		}
 	}
 
-	node = &chain.Node{
-		Addr: host,
-	}
+	var selectOpts []hop.SelectOption
 	if ho.Hop != nil {
-		node = ho.Hop.Select(ctx,
+		selectOpts = []hop.SelectOption{
 			hop.ClientIPSelectOption(net.ParseIP(ro.ClientIP)),
 			hop.ProtocolSelectOption(sniffing.ProtoHTTP),
 			hop.HostSelectOption(host),
@@ -259,37 +257,46 @@ func (h *Sniffer) dial(ctx context.Context, conn net.Conn, req *http.Request, ho
 			hop.PathSelectOption(req.URL.Path),
 			hop.QuerySelectOption(req.URL.Query()),
 			hop.HeaderSelectOption(req.Header),
-		)
+		}
 	}
-	if node == nil {
-		ho.Log.Warnf("node for %s not found", host)
-		res.StatusCode = http.StatusBadGateway
-		ro.HTTP.StatusCode = res.StatusCode
-		res.Write(conn)
-		return nil, nil, errors.New("node not available")
-	}
+	attempted := make(map[*chain.Node]struct{})
+	for {
+		node = &chain.Node{Addr: host}
+		if ho.Hop != nil {
+			node = ho.Hop.Select(ctx, selectOpts...)
+		}
+		if node == nil {
+			ho.Log.Warnf("node for %s not found", host)
+			res.StatusCode = http.StatusBadGateway
+			ro.HTTP.StatusCode = res.StatusCode
+			res.Write(conn)
+			return nil, nil, errors.New("node not available")
+		}
+		if _, ok := attempted[node]; ok {
+			res.Write(conn)
+			return nil, nil, err
+		}
+		attempted[node] = struct{}{}
 
-	ro.Host = node.Addr
-	ho.Log = ho.Log.WithFields(map[string]any{
-		"node": node.Name,
-		"dst":  node.Addr,
-	})
-	ho.Log.Debugf("find node for host %s -> %s(%s)", host, node.Name, node.Addr)
-
-	cc, err = dial(ctx, "tcp", node.Addr)
-	if err != nil {
-		// TODO: the router itself may be failed due to the failed node in the router,
-		// the dead marker may be a wrong operation.
+		ro.Host = node.Addr
+		ho.Log.Debugf("find node for host %s -> %s(%s)", host, node.Name, node.Addr)
+		cc, err = dial(ctx, "tcp", node.Addr)
+		if err == nil {
+			if marker := node.Marker(); marker != nil {
+				marker.Reset()
+			}
+			break
+		}
 		if marker := node.Marker(); marker != nil {
 			marker.Mark()
 		}
 		ho.Log.Warnf("connect to node %s(%s) failed: %v", node.Name, node.Addr, err)
-		res.Write(conn)
-		return
 	}
-	if marker := node.Marker(); marker != nil {
-		marker.Reset()
-	}
+
+	ho.Log = ho.Log.WithFields(map[string]any{
+		"node": node.Name,
+		"dst":  node.Addr,
+	})
 
 	if tlsSettings := node.Options().TLS; tlsSettings != nil {
 		cfg := &tls.Config{
@@ -847,59 +854,59 @@ func (h *Sniffer) dialTLS(ctx context.Context, host string, ho *HandleOptions) (
 		return
 	}
 
-	if host != "" {
-		node = &chain.Node{
-			Addr: host,
-		}
-	}
-
 	ro := ho.RecorderObject
-	if ho.Hop != nil {
-		node = ho.Hop.Select(ctx,
-			hop.ClientIPSelectOption(net.ParseIP(ro.ClientIP)),
-			hop.HostSelectOption(host),
-			hop.ProtocolSelectOption(sniffing.ProtoTLS),
-		)
+	selectOpts := []hop.SelectOption{
+		hop.ClientIPSelectOption(net.ParseIP(ro.ClientIP)),
+		hop.HostSelectOption(host),
+		hop.ProtocolSelectOption(sniffing.ProtoTLS),
 	}
-	if node == nil {
-		err = errors.New("node not available")
-		return
-	}
+	attempted := make(map[*chain.Node]struct{})
+	for {
+		node = &chain.Node{Addr: host}
+		if ho.Hop != nil {
+			node = ho.Hop.Select(ctx, selectOpts...)
+		}
+		if node == nil {
+			err = errors.New("node not available")
+			return
+		}
+		if _, ok := attempted[node]; ok {
+			return
+		}
+		attempted[node] = struct{}{}
 
-	addr := node.Addr
-	if opts := node.Options(); opts != nil {
-		switch opts.Network {
-		case "unix":
-			ro.Network = opts.Network
-		default:
-			if _, _, err := net.SplitHostPort(addr); err != nil {
-				addr += ":443"
+		addr := node.Addr
+		if opts := node.Options(); opts != nil {
+			switch opts.Network {
+			case "unix":
+				ro.Network = opts.Network
+			default:
+				if _, _, splitErr := net.SplitHostPort(addr); splitErr != nil {
+					addr += ":443"
+				}
 			}
 		}
-	}
-	ro.Host = addr
+		ro.Host = addr
+		ho.Log.Debugf("find node for host %s -> %s(%s)", host, node.Name, addr)
 
-	ho.Log = ho.Log.WithFields(map[string]any{
-		"host": host,
-		"node": node.Name,
-		"dst":  fmt.Sprintf("%s/%s", addr, ro.Network),
-	})
-	ho.Log.Debugf("find node for host %s -> %s(%s)", host, node.Name, addr)
-
-	cc, err = dial(ctx, ro.Network, addr)
-	if err != nil {
-		// TODO: the router itself may be failed due to the failed node in the router,
-		// the dead marker may be a wrong operation.
+		cc, err = dial(ctx, ro.Network, addr)
+		if err == nil {
+			if marker := node.Marker(); marker != nil {
+				marker.Reset()
+			}
+			break
+		}
 		if marker := node.Marker(); marker != nil {
 			marker.Mark()
 		}
 		ho.Log.Warnf("connect to node %s(%s) failed: %v", node.Name, node.Addr, err)
-		return
 	}
 
-	if marker := node.Marker(); marker != nil {
-		marker.Reset()
-	}
+	ho.Log = ho.Log.WithFields(map[string]any{
+		"host": host,
+		"node": node.Name,
+		"dst":  fmt.Sprintf("%s/%s", ro.Host, ro.Network),
+	})
 
 	if tlsSettings := node.Options().TLS; tlsSettings != nil {
 		cfg := &tls.Config{

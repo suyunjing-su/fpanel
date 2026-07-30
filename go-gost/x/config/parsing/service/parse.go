@@ -388,8 +388,10 @@ func parseForwarder(cfg *config.ForwarderConfig, log logger.Logger) (hop.Hop, er
 	}
 
 	hc := config.HopConfig{
-		Name:     cfg.Name,
-		Selector: cfg.Selector,
+		Name:         cfg.Name,
+		Selector:     cfg.Selector,
+		ProbePeriod:  cfg.ProbePeriod,
+		ProbeTimeout: cfg.ProbeTimeout,
 	}
 	for _, node := range cfg.Nodes {
 		if node == nil {

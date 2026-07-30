@@ -115,6 +115,7 @@ func ParseHop(cfg *config.HopConfig, log logger.Logger) (hop.Hop, error) {
 		xhop.NameOption(cfg.Name),
 		xhop.NodeOption(nodes...),
 		xhop.SelectorOption(sel),
+		xhop.ProbeOption(cfg.ProbePeriod, cfg.ProbeTimeout),
 		xhop.BypassOption(xbypass.BypassGroup(bypass_parser.List(cfg.Bypass, cfg.Bypasses...)...)),
 		xhop.ReloadPeriodOption(cfg.Reload),
 		xhop.LoggerOption(log.WithFields(map[string]any{
