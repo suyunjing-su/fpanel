@@ -108,11 +108,17 @@ func (h *Hub) replace(id int64, current *session) {
 
 func (h *Hub) remove(id int64, current *session) {
 	h.mu.Lock()
-	if h.sessions[id] == current {
+	isCurrent := h.sessions[id] == current
+	if isCurrent {
 		delete(h.sessions, id)
 	}
 	h.mu.Unlock()
 	current.close()
+	if isCurrent {
+		if err := h.nodes.SetStatus(context.Background(), id, 0, ""); err != nil {
+			h.log.Warn("failed to mark node offline", "node_id", id, "error", err)
+		}
+	}
 }
 
 func (h *Hub) markOnline(ctx context.Context, id int64, query url.Values) {
