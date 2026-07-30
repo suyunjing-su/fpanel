@@ -1,0 +1,169 @@
+package httpapi
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"runtime/debug"
+	"strings"
+	"time"
+
+	"github.com/bqlpfy/flux-panel/backend/internal/auth"
+	"github.com/bqlpfy/flux-panel/backend/internal/observability"
+)
+
+type contextKey string
+
+const identityKey contextKey = "identity"
+
+func IdentityFromContext(ctx context.Context) (auth.Identity, bool) {
+	identity, ok := ctx.Value(identityKey).(auth.Identity)
+	return identity, ok
+}
+
+type APIResponse struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	TS   int64  `json:"ts"`
+	Data any    `json:"data"`
+}
+
+func WriteJSON(w http.ResponseWriter, status int, response APIResponse) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func Success(data any) APIResponse {
+	return APIResponse{Code: 0, Msg: "操作成功", TS: time.Now().UnixMilli(), Data: data}
+}
+
+func Failure(code int, message string) APIResponse {
+	return APIResponse{Code: code, Msg: message, TS: time.Now().UnixMilli(), Data: nil}
+}
+
+func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.Manager, allowedOrigins []string, handler http.Handler) http.Handler {
+	return requestID(log, metrics, cors(allowedOrigins, securityHeaders(recoverPanic(log, handler))))
+}
+
+func requestID(log *slog.Logger, metrics *observability.Metrics, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if requestID == "" {
+			requestID = randomRequestID()
+		}
+		w.Header().Set("X-Request-ID", requestID)
+		metrics.TrackActive(1)
+		defer metrics.TrackActive(-1)
+		rw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r.WithContext(context.WithValue(r.Context(), contextKey("request_id"), requestID)))
+		metrics.Observe(r.Method, rw.status, time.Since(started))
+		log.Info("http request", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "status", rw.status, "duration_ms", time.Since(started).Milliseconds())
+	})
+}
+
+func Authenticate(manager *auth.Manager, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(raw), "bearer ") {
+			raw = strings.TrimSpace(raw[7:])
+		}
+		identity, err := manager.Parse(raw)
+		if err != nil {
+			WriteJSON(w, http.StatusUnauthorized, Failure(http.StatusUnauthorized, "未登录或token已过期"))
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey, identity)))
+	})
+}
+
+func RequireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := IdentityFromContext(r.Context())
+		if !ok {
+			WriteJSON(w, http.StatusUnauthorized, Failure(http.StatusUnauthorized, "未登录或token已过期"))
+			return
+		}
+		if identity.RoleID != 0 && identity.Role != "admin" {
+			WriteJSON(w, http.StatusForbidden, Failure(http.StatusForbidden, "无权限"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(contextKey("request_id")).(string)
+	return value
+}
+
+func randomRequestID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(value[:])
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusWriter) Write(body []byte) (int, error) {
+	return w.ResponseWriter.Write(body)
+}
+
+func recoverPanic(log *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Error("panic recovered", "error", recovered, "stack", string(debug.Stack()))
+				WriteJSON(w, http.StatusInternalServerError, Failure(http.StatusInternalServerError, "服务器内部错误"))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func cors(allowedOrigins []string, next http.Handler) http.Handler {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		allowed[origin] = struct{}{}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if _, ok := allowed[origin]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Add("Vary", "Origin")
+			}
+		}
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
