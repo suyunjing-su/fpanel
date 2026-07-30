@@ -47,7 +47,20 @@ func Failure(code int, message string) APIResponse {
 }
 
 func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.Manager, allowedOrigins []string, handler http.Handler) http.Handler {
+	handler = authenticatePublicRoutes(manager, handler)
 	return requestID(log, metrics, cors(allowedOrigins, securityHeaders(recoverPanic(log, handler))))
+}
+
+func authenticatePublicRoutes(manager *auth.Manager, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" || r.URL.Path == "/metrics" ||
+			r.URL.Path == "/flow/test" || r.URL.Path == "/api/v1/user/login" || r.URL.Path == "/api/v1/config/get" ||
+			strings.HasPrefix(r.URL.Path, "/api/v1/captcha/") || strings.HasPrefix(r.URL.Path, "/api/v1/open_api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		Authenticate(manager, next).ServeHTTP(w, r)
+	})
 }
 
 func requestID(log *slog.Logger, metrics *observability.Metrics, next http.Handler) http.Handler {
