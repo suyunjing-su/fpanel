@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/bqlpfy/flux-panel/backend/internal/config"
 	"github.com/bqlpfy/flux-panel/backend/internal/database"
 	"github.com/bqlpfy/flux-panel/backend/internal/httpapi"
+	"github.com/bqlpfy/flux-panel/backend/internal/nodes"
 	"github.com/bqlpfy/flux-panel/backend/internal/observability"
 )
 
@@ -42,6 +44,7 @@ func run() error {
 
 	jwtManager := auth.New(cfg.JWTSecret, cfg.TokenTTL)
 	authRepo := auth.NewRepository(db)
+	nodeRepo := nodes.NewRepository(db)
 	metrics := observability.NewMetrics()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
@@ -62,6 +65,11 @@ func run() error {
 	mux.HandleFunc("GET /api/v1/config/get", func(w http.ResponseWriter, _ *http.Request) {
 		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(map[string]string{"value": ""}))
 	})
+
+	admin := func(r *http.Request) bool {
+		identity, ok := httpapi.IdentityFromContext(r.Context())
+		return ok && identity.RoleID == 0
+	}
 	mux.HandleFunc("POST /api/v1/user/login", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Username string `json:"username"`
@@ -89,15 +97,76 @@ func run() error {
 			"token": token, "role_id": identity.RoleID, "name": identity.Username,
 		}))
 	})
-	server := &http.Server{
-		Addr:              cfg.Address,
-		Handler:           httpapi.Middleware(log, metrics, jwtManager, cfg.AllowedOrigins, mux),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	mux.HandleFunc("POST /api/v1/node/list", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(r) {
+			httpapi.WriteJSON(w, http.StatusForbidden, httpapi.Failure(http.StatusForbidden, "无权限"))
+			return
+		}
+		result, err := nodeRepo.List(r.Context())
+		if err != nil {
+			httpapi.WriteJSON(w, http.StatusInternalServerError, httpapi.Failure(http.StatusInternalServerError, "节点查询失败"))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(result))
+	})
+	mux.HandleFunc("POST /api/v1/node/create", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(r) {
+			httpapi.WriteJSON(w, http.StatusForbidden, httpapi.Failure(http.StatusForbidden, "无权限"))
+			return
+		}
+		var request nodes.CreateRequest
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		id, err := nodeRepo.Create(r.Context(), request)
+		if err != nil {
+			httpapi.WriteJSON(w, http.StatusBadRequest, httpapi.Failure(http.StatusBadRequest, err.Error()))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(map[string]any{"id": id}))
+	})
+	mux.HandleFunc("POST /api/v1/node/update", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(r) {
+			httpapi.WriteJSON(w, http.StatusForbidden, httpapi.Failure(http.StatusForbidden, "无权限"))
+			return
+		}
+		var request nodes.UpdateRequest
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		if err := nodeRepo.Update(r.Context(), request); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, sql.ErrNoRows) {
+				status = http.StatusNotFound
+			}
+			httpapi.WriteJSON(w, status, httpapi.Failure(status, err.Error()))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(nil))
+	})
+	mux.HandleFunc("POST /api/v1/node/delete", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(r) {
+			httpapi.WriteJSON(w, http.StatusForbidden, httpapi.Failure(http.StatusForbidden, "无权限"))
+			return
+		}
+		var request struct {
+			ID int64 `json:"id"`
+		}
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		if err := nodeRepo.Delete(r.Context(), request.ID); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, sql.ErrNoRows) {
+				status = http.StatusNotFound
+			}
+			httpapi.WriteJSON(w, status, httpapi.Failure(status, "节点删除失败"))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(nil))
+	})
 
+	server := &http.Server{Addr: cfg.Address, Handler: httpapi.Middleware(log, metrics, jwtManager, cfg.AllowedOrigins, mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Info("flux control plane started", "address", cfg.Address)
