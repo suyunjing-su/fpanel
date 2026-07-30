@@ -41,6 +41,7 @@ func run() error {
 	}
 
 	jwtManager := auth.New(cfg.JWTSecret, cfg.TokenTTL)
+	authRepo := auth.NewRepository(db)
 	metrics := observability.NewMetrics()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
@@ -61,8 +62,32 @@ func run() error {
 	mux.HandleFunc("GET /api/v1/config/get", func(w http.ResponseWriter, _ *http.Request) {
 		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(map[string]string{"value": ""}))
 	})
-	mux.HandleFunc("POST /api/v1/user/login", func(w http.ResponseWriter, _ *http.Request) {
-		httpapi.WriteJSON(w, http.StatusNotImplemented, httpapi.Failure(http.StatusNotImplemented, "接口正在迁移"))
+	mux.HandleFunc("POST /api/v1/user/login", func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Username string `json:"username"`
+			User     string `json:"user"`
+			Password string `json:"password"`
+		}
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		username := request.Username
+		if username == "" {
+			username = request.User
+		}
+		identity, err := authRepo.Authenticate(r.Context(), auth.NormalizeUsername(username), request.Password)
+		if err != nil {
+			httpapi.WriteJSON(w, http.StatusUnauthorized, httpapi.Failure(http.StatusUnauthorized, "用户名或密码错误"))
+			return
+		}
+		token, err := jwtManager.Issue(identity)
+		if err != nil {
+			httpapi.WriteJSON(w, http.StatusInternalServerError, httpapi.Failure(http.StatusInternalServerError, "登录失败"))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(map[string]any{
+			"token": token, "role_id": identity.RoleID, "name": identity.Username,
+		}))
 	})
 	server := &http.Server{
 		Addr:              cfg.Address,
