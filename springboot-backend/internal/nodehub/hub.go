@@ -84,7 +84,16 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.log.Warn("failed to encode controller diagnostics", "node_id", identity.id, "error", err)
 			return
 		}
-		if err := h.nodes.SetTelemetry(r.Context(), identity.id, info.Uptime, info.BytesReceived, info.BytesTransmitted, info.CPUUsage, info.MemoryUsage, string(statuses)); err != nil {
+		if err := h.nodes.SetTelemetry(r.Context(), identity.id, info.Uptime, info.BytesReceived, info.BytesTransmitted, info.CPUUsage, info.MemoryUsage, string(statuses), nodes.TOTTelemetry{
+			Sessions:        info.TOT.Sessions,
+			ActivePaths:     info.TOT.ActivePaths,
+			PendingFrames:   info.TOT.PendingFrames,
+			SentFrames:      info.TOT.SentFrames,
+			ReceivedFrames:  info.TOT.ReceivedFrames,
+			Retransmits:     info.TOT.Retransmits,
+			DuplicateFrames: info.TOT.DuplicateFrames,
+			PathFailures:    info.TOT.PathFailures,
+		}); err != nil {
 			h.log.Warn("failed to persist node telemetry", "node_id", identity.id, "error", err)
 		}
 	}}

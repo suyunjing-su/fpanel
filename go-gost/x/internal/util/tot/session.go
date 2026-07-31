@@ -16,6 +16,45 @@ var (
 	ErrRetransmitLimit = errors.New("TOT retransmission limit reached")
 )
 
+var sessionRegistry = struct {
+	sync.Mutex
+	items map[*Session]struct{}
+}{items: make(map[*Session]struct{})}
+
+type AggregateStats struct {
+	Sessions        int    `json:"sessions"`
+	ActivePaths     int    `json:"activePaths"`
+	PendingFrames   int    `json:"pendingFrames"`
+	SentFrames      uint64 `json:"sentFrames"`
+	ReceivedFrames  uint64 `json:"receivedFrames"`
+	Retransmits     uint64 `json:"retransmits"`
+	DuplicateFrames uint64 `json:"duplicateFrames"`
+	PathFailures    uint64 `json:"pathFailures"`
+}
+
+func Snapshot() AggregateStats {
+	sessionRegistry.Lock()
+	sessions := make([]*Session, 0, len(sessionRegistry.items))
+	for session := range sessionRegistry.items {
+		sessions = append(sessions, session)
+	}
+	sessionRegistry.Unlock()
+
+	var aggregate AggregateStats
+	for _, session := range sessions {
+		stats := session.Stats()
+		aggregate.Sessions++
+		aggregate.ActivePaths += stats.ActivePaths
+		aggregate.PendingFrames += stats.PendingFrames
+		aggregate.SentFrames += stats.SentFrames
+		aggregate.ReceivedFrames += stats.ReceivedFrames
+		aggregate.Retransmits += stats.Retransmits
+		aggregate.DuplicateFrames += stats.DuplicateFrames
+		aggregate.PathFailures += stats.PathFailures
+	}
+	return aggregate
+}
+
 type Options struct {
 	Key                []byte
 	MaxPayload         int
@@ -107,6 +146,9 @@ func NewSession(id uint64, options Options) *Session {
 		notify:   make(chan struct{}, 1),
 		closed:   make(chan struct{}),
 	}
+	sessionRegistry.Lock()
+	sessionRegistry.items[s] = struct{}{}
+	sessionRegistry.Unlock()
 	go s.retransmitLoop()
 	return s
 }
@@ -531,6 +573,9 @@ func (s *Session) closeWithError(err error) {
 			_ = p.conn.Close()
 		}
 		close(s.closed)
+		sessionRegistry.Lock()
+		delete(sessionRegistry.items, s)
+		sessionRegistry.Unlock()
 		s.signal()
 	})
 }

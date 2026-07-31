@@ -21,6 +21,7 @@ import (
 	config_parser "github.com/go-gost/x/config/parsing/parser"
 	"github.com/go-gost/x/controller"
 	"github.com/go-gost/x/internal/util/crypto"
+	coretot "github.com/go-gost/x/internal/util/tot"
 	"github.com/go-gost/x/registry"
 	"github.com/go-gost/x/service"
 	"github.com/gorilla/websocket"
@@ -126,12 +127,13 @@ func buildSecureControlBaseURL(addr string) (string, error) {
 
 // SystemInfo 系统信息结构体
 type SystemInfo struct {
-	Uptime             uint64              `json:"uptime"`
-	BytesReceived      uint64              `json:"bytes_received"`
-	BytesTransmitted   uint64              `json:"bytes_transmitted"`
-	CPUUsage           float64             `json:"cpu_usage"`
-	MemoryUsage        float64             `json:"memory_usage"`
-	ControllerStatuses []controller.Status `json:"controllers"`
+	Uptime             uint64                 `json:"uptime"`
+	BytesReceived      uint64                 `json:"bytes_received"`
+	BytesTransmitted   uint64                 `json:"bytes_transmitted"`
+	CPUUsage           float64                `json:"cpu_usage"`
+	MemoryUsage        float64                `json:"memory_usage"`
+	ControllerStatuses []controller.Status    `json:"controllers"`
+	TOT                coretot.AggregateStats `json:"tot,omitempty"`
 }
 
 // NetworkStats 网络统计信息
@@ -435,6 +437,7 @@ func (w *WebSocketReporter) collectSystemInfo() SystemInfo {
 			}
 			return w.controllers.Status()
 		}(),
+		TOT: coretot.Snapshot(),
 	}
 }
 

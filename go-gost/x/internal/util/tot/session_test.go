@@ -9,6 +9,21 @@ import (
 	"time"
 )
 
+func TestSnapshotTracksSessionLifecycle(t *testing.T) {
+	before := Snapshot()
+	session := NewSession(777, Options{})
+	current := Snapshot()
+	if current.Sessions != before.Sessions+1 {
+		t.Fatalf("session snapshot count = %d, want %d", current.Sessions, before.Sessions+1)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after := Snapshot()
+	if after.Sessions != before.Sessions {
+		t.Fatalf("closed session remained in snapshot: before=%d after=%d", before.Sessions, after.Sessions)
+	}
+}
 func TestFrameRoundTripAndIntegrity(t *testing.T) {
 	secret := []byte("0123456789abcdef0123456789abcdef")
 	original := Frame{Type: FrameData, Flags: 3, SessionID: 7, Sequence: 11, Ack: 9, Payload: []byte("payload")}

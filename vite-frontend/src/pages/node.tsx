@@ -34,6 +34,17 @@ interface ControllerStatus {
   lastError: string;
 }
 
+interface TOTTelemetry {
+  sessions: number;
+  activePaths: number;
+  pendingFrames: number;
+  sentFrames: number;
+  receivedFrames: number;
+  retransmits: number;
+  duplicateFrames: number;
+  pathFailures: number;
+}
+
 interface Node {
   id: number;
   name: string;
@@ -50,6 +61,7 @@ interface Node {
   socks?: number; // 0 关 1 开
   status: number; // 1: 在线, 0: 离线
   controllers: ControllerStatus[];
+  tot: TOTTelemetry;
   connectionStatus: 'online' | 'offline';
   systemInfo?: {
     cpuUsage: number;
@@ -132,6 +144,16 @@ export default function NodePage() {
           ...node,
           connectionStatus: node.status === 1 ? 'online' : 'offline',
           controllers: Array.isArray(node.controllers) ? node.controllers : [],
+          tot: {
+            sessions: Number(node.tot?.sessions) || 0,
+            activePaths: Number(node.tot?.activePaths) || 0,
+            pendingFrames: Number(node.tot?.pendingFrames) || 0,
+            sentFrames: Number(node.tot?.sentFrames) || 0,
+            receivedFrames: Number(node.tot?.receivedFrames) || 0,
+            retransmits: Number(node.tot?.retransmits) || 0,
+            duplicateFrames: Number(node.tot?.duplicateFrames) || 0,
+            pathFailures: Number(node.tot?.pathFailures) || 0
+          },
           systemInfo: node.status === 1 ? {
             cpuUsage: Number(node.cpu_usage) || 0,
             memoryUsage: Number(node.memory_usage) || 0,
@@ -287,6 +309,16 @@ export default function NodePage() {
               ...node,
               connectionStatus: 'online',
               controllers: Array.isArray(systemInfo.controllers) ? systemInfo.controllers : node.controllers,
+              tot: {
+                sessions: Number(systemInfo.tot?.sessions) || 0,
+                activePaths: Number(systemInfo.tot?.activePaths) || 0,
+                pendingFrames: Number(systemInfo.tot?.pendingFrames) || 0,
+                sentFrames: Number(systemInfo.tot?.sentFrames) || 0,
+                receivedFrames: Number(systemInfo.tot?.receivedFrames) || 0,
+                retransmits: Number(systemInfo.tot?.retransmits) || 0,
+                duplicateFrames: Number(systemInfo.tot?.duplicateFrames) || 0,
+                pathFailures: Number(systemInfo.tot?.pathFailures) || 0
+              },
               systemInfo: {
                 cpuUsage: parseFloat(systemInfo.cpu_usage) || 0,
                 memoryUsage: parseFloat(systemInfo.memory_usage) || 0,
@@ -966,7 +998,29 @@ export default function NodePage() {
                       </div>
                     </div>
 
-                    {/* 流量统计 */}
+                    {/* TOT 运行监控 */}
+                    {node.tot.sessions > 0 && (
+                      <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                        <div className="rounded bg-default-50 dark:bg-default-100 p-2">
+                          <div className="text-default-600">TOT 会话 / 路径</div>
+                          <div className="font-mono">{node.tot.sessions} / {node.tot.activePaths}</div>
+                        </div>
+                        <div className="rounded bg-default-50 dark:bg-default-100 p-2">
+                          <div className="text-default-600">待确认帧</div>
+                          <div className="font-mono">{node.tot.pendingFrames}</div>
+                        </div>
+                        <div className="rounded bg-warning-50 dark:bg-warning-100/20 p-2">
+                          <div className="text-warning-600">重传 / 路径故障</div>
+                          <div className="font-mono">{node.tot.retransmits} / {node.tot.pathFailures}</div>
+                        </div>
+                        <div className="rounded bg-default-50 dark:bg-default-100 p-2">
+                          <div className="text-default-600">收发帧</div>
+                          <div className="font-mono">{node.tot.receivedFrames} / {node.tot.sentFrames}</div>
+                        </div>
+                      </div>
+                    )}
+
+
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div className="text-center p-2 bg-primary-50 dark:bg-primary-100/20 rounded border border-primary-200 dark:border-primary-300/20">
                         <div className="text-primary-600 dark:text-primary-400 mb-0.5">↑ 上行流量</div>

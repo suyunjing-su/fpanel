@@ -24,6 +24,18 @@ type SystemInfo struct {
 	CPUUsage           float64            `json:"cpu_usage"`
 	MemoryUsage        float64            `json:"memory_usage"`
 	ControllerStatuses []ControllerStatus `json:"controllers"`
+	TOT                TOTTelemetry       `json:"tot"`
+}
+
+type TOTTelemetry struct {
+	Sessions        int    `json:"sessions"`
+	ActivePaths     int    `json:"activePaths"`
+	PendingFrames   int    `json:"pendingFrames"`
+	SentFrames      uint64 `json:"sentFrames"`
+	ReceivedFrames  uint64 `json:"receivedFrames"`
+	Retransmits     uint64 `json:"retransmits"`
+	DuplicateFrames uint64 `json:"duplicateFrames"`
+	PathFailures    uint64 `json:"pathFailures"`
 }
 
 type CommandMessage struct {

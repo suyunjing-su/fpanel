@@ -83,7 +83,16 @@ func TestControllerDiagnosticsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	statuses := `[{"address":"https://primary.example.com","active":true,"consecutiveFailures":2,"lastFailureAt":123,"lastError":"unavailable"}]`
-	if err := repository.SetTelemetry(context.Background(), id, 10, 20, 30, 4.5, 6.7, statuses); err != nil {
+	if err := repository.SetTelemetry(context.Background(), id, 10, 20, 30, 4.5, 6.7, statuses, TOTTelemetry{
+		Sessions:        2,
+		ActivePaths:     4,
+		PendingFrames:   3,
+		SentFrames:      100,
+		ReceivedFrames:  90,
+		Retransmits:     7,
+		DuplicateFrames: 2,
+		PathFailures:    1,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	node, err := repository.Get(context.Background(), id)
@@ -92,6 +101,9 @@ func TestControllerDiagnosticsRoundTrip(t *testing.T) {
 	}
 	if node.Uptime != 10 || len(node.Controllers) != 1 || node.Controllers[0].ConsecutiveFailures != 2 || node.Controllers[0].LastError != "unavailable" {
 		t.Fatalf("controller diagnostics did not round trip: %#v", node)
+	}
+	if node.TOT.Sessions != 2 || node.TOT.ActivePaths != 4 || node.TOT.Retransmits != 7 || node.TOT.PathFailures != 1 {
+		t.Fatalf("TOT telemetry did not round trip: %#v", node.TOT)
 	}
 	if err := repository.SetTelemetry(context.Background(), id, 0, 0, 0, 0, 0, "invalid"); err == nil {
 		t.Fatal("invalid controller diagnostics were accepted")
