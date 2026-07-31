@@ -3,6 +3,7 @@ package tot
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -27,7 +28,7 @@ func TestDialerCreatesIndependentSessions(t *testing.T) {
 	if err := dialer.Init(xmetadata.NewMetadata(map[string]any{"secret": secret, "pathCount": 1})); err != nil {
 		t.Fatal(err)
 	}
-	options := coredialer.NetDialerDialOption(testNetDialer{})
+	options := coredialer.NetDialerDialOption(&testNetDialer{})
 	first, err := dialer.Dial(context.Background(), listener.Addr().String(), options)
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +72,7 @@ func TestDialerAndListenerExchangeData(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	client, err := dialer.Dial(context.Background(), listener.Addr().String(), coredialer.NetDialerDialOption(testNetDialer{}))
+	client, err := dialer.Dial(context.Background(), listener.Addr().String(), coredialer.NetDialerDialOption(&testNetDialer{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +113,65 @@ func TestDialerAndListenerExchangeData(t *testing.T) {
 	}
 }
 
-type testNetDialer struct{}
+func TestDialerRequiresMultipathTCPCapability(t *testing.T) {
+	dialer := NewDialer()
+	if err := dialer.Init(xmetadata.NewMetadata(map[string]any{
+		"secret": "0123456789abcdef0123456789abcdef",
+		"mptcp":  true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	_, err := dialer.Dial(context.Background(), "127.0.0.1:1", coredialer.NetDialerDialOption(plainTestNetDialer{}))
+	if err == nil || err.Error() != "TOT multipath TCP requires a capable network dialer" {
+		t.Fatalf("multipath capability error = %v", err)
+	}
+}
 
-func (testNetDialer) Dial(ctx context.Context, network, address string) (net.Conn, error) {
+func TestDialerUsesMultipathTCPCapability(t *testing.T) {
+	secret := "0123456789abcdef0123456789abcdef"
+	listener := listenerTot.NewListener(corelistener.AddrOption("127.0.0.1:0"))
+	if err := listener.Init(xmetadata.NewMetadata(map[string]any{"secret": secret})); err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	netDialer := &testNetDialer{}
+	dialer := NewDialer()
+	if err := dialer.Init(xmetadata.NewMetadata(map[string]any{"secret": secret, "pathCount": 1, "mptcp": true})); err != nil {
+		t.Fatal(err)
+	}
+	client, err := dialer.Dial(context.Background(), listener.Addr().String(), coredialer.NetDialerDialOption(netDialer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if netDialer.multipathCalls != 1 || netDialer.plainCalls != 0 {
+		t.Fatalf("dial calls: multipath=%d plain=%d", netDialer.multipathCalls, netDialer.plainCalls)
+	}
+}
+
+type plainTestNetDialer struct{}
+
+func (plainTestNetDialer) Dial(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("plain dial should not run")
+}
+
+type testNetDialer struct {
+	plainCalls     int
+	multipathCalls int
+}
+
+func (d *testNetDialer) Dial(ctx context.Context, network, address string) (net.Conn, error) {
+	d.plainCalls++
+	return (&net.Dialer{}).DialContext(ctx, network, address)
+}
+
+func (d *testNetDialer) DialMultipathTCP(ctx context.Context, network, address string) (net.Conn, error) {
+	d.multipathCalls++
 	return (&net.Dialer{}).DialContext(ctx, network, address)
 }

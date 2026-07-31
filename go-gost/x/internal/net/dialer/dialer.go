@@ -2,6 +2,7 @@ package dialer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"runtime"
@@ -20,7 +21,8 @@ const (
 )
 
 var (
-	DefaultNetDialer = &Dialer{}
+	DefaultNetDialer           = &Dialer{}
+	ErrMultipathTCPUnsupported = errors.New("multipath TCP is unavailable through a custom route")
 )
 
 type Dialer struct {
@@ -32,6 +34,14 @@ type Dialer struct {
 }
 
 func (d *Dialer) Dial(ctx context.Context, network, addr string) (conn net.Conn, err error) {
+	return d.dial(ctx, network, addr, false)
+}
+
+func (d *Dialer) DialMultipathTCP(ctx context.Context, network, addr string) (conn net.Conn, err error) {
+	return d.dial(ctx, network, addr, true)
+}
+
+func (d *Dialer) dial(ctx context.Context, network, addr string, multipathTCP bool) (conn net.Conn, err error) {
 	if d == nil {
 		d = DefaultNetDialer
 	}
@@ -43,6 +53,10 @@ func (d *Dialer) Dial(ctx context.Context, network, addr string) (conn net.Conn,
 	log = log.WithFields(map[string]any{
 		"sid": ctxvalue.SidFromContext(ctx),
 	})
+
+	if multipathTCP && d.DialFunc != nil {
+		return nil, ErrMultipathTCPUnsupported
+	}
 
 	if d.Netns != "" {
 		runtime.LockOSThread()
@@ -93,7 +107,7 @@ func (d *Dialer) Dial(ctx context.Context, network, addr string) (conn net.Conn,
 		}
 
 		for _, ifAddr := range ifAddrs {
-			conn, err = d.dialOnce(ctx, network, addr, ifceName, ifAddr, log)
+			conn, err = d.dialOnce(ctx, network, addr, ifceName, ifAddr, multipathTCP, log)
 			if err == nil {
 				return
 			}
@@ -111,7 +125,7 @@ func (d *Dialer) Dial(ctx context.Context, network, addr string) (conn net.Conn,
 	return
 }
 
-func (d *Dialer) dialOnce(ctx context.Context, network, addr, ifceName string, ifAddr net.Addr, log logger.Logger) (net.Conn, error) {
+func (d *Dialer) dialOnce(ctx context.Context, network, addr, ifceName string, ifAddr net.Addr, multipathTCP bool, log logger.Logger) (net.Conn, error) {
 	if ifceName != "" {
 		log.Debugf("interface: %s %v/%s", ifceName, ifAddr, network)
 	}
@@ -154,6 +168,11 @@ func (d *Dialer) dialOnce(ctx context.Context, network, addr, ifceName string, i
 	default:
 		return nil, fmt.Errorf("dial: unsupported network %s", network)
 	}
+	netd := d.newNetDialer(ifAddr, ifceName, multipathTCP, log)
+	return netd.DialContext(ctx, network, addr)
+}
+
+func (d *Dialer) newNetDialer(ifAddr net.Addr, ifceName string, multipathTCP bool, log logger.Logger) net.Dialer {
 	netd := net.Dialer{
 		LocalAddr: ifAddr,
 		Control: func(network, address string, c syscall.RawConn) error {
@@ -171,10 +190,12 @@ func (d *Dialer) dialOnce(ctx context.Context, network, addr, ifceName string, i
 			})
 		},
 	}
+	if multipathTCP {
+		netd.SetMultipathTCP(true)
+	}
 	if d.Netns != "" {
-		// https://github.com/golang/go/issues/44922#issuecomment-796645858
 		netd.FallbackDelay = -1
 	}
 
-	return netd.DialContext(ctx, network, addr)
+	return netd
 }

@@ -5,8 +5,11 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,24 +62,26 @@ type Tunnel struct {
 }
 
 type TOTConfig struct {
-	Enabled              bool `json:"enabled"`
-	SecretConfigured     bool `json:"secretConfigured"`
-	PathCount            int  `json:"pathCount"`
-	MaxPayload           int  `json:"maxPayload"`
-	Window               int  `json:"window"`
-	RetransmitIntervalMS int  `json:"retransmitIntervalMs"`
-	MaxRetries           int  `json:"maxRetries"`
-	RecoveryPeriodMS     int  `json:"recoveryPeriodMs"`
-	HandshakeTimeoutMS   int  `json:"handshakeTimeoutMs"`
-	MaxClockSkewMS       int  `json:"maxClockSkewMs"`
-	IdleTTLMS            int  `json:"idleTtlMs"`
-	MPTCP                bool `json:"mptcp"`
+	Enabled              bool     `json:"enabled"`
+	SecretConfigured     bool     `json:"secretConfigured"`
+	PathCount            int      `json:"pathCount"`
+	Paths                []string `json:"paths"`
+	MaxPayload           int      `json:"maxPayload"`
+	Window               int      `json:"window"`
+	RetransmitIntervalMS int      `json:"retransmitIntervalMs"`
+	MaxRetries           int      `json:"maxRetries"`
+	RecoveryPeriodMS     int      `json:"recoveryPeriodMs"`
+	HandshakeTimeoutMS   int      `json:"handshakeTimeoutMs"`
+	MaxClockSkewMS       int      `json:"maxClockSkewMs"`
+	IdleTTLMS            int      `json:"idleTtlMs"`
+	MPTCP                bool     `json:"mptcp"`
 }
 
 type totRuntimeConfig struct {
 	Enabled              bool
 	Secret               string
 	PathCount            int
+	PathsJSON            string
 	MaxPayload           int
 	Window               int
 	RetransmitIntervalMS int
@@ -153,7 +158,7 @@ func NewRepository(db *sql.DB, nodeRepo *nodes.Repository) *Repository {
 }
 
 func (r *Repository) List(ctx context.Context) ([]Tunnel, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,name,type,flow,traffic_ratio,in_ip,status,created_at,tot_enabled,tot_secret,tot_path_count,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp FROM tunnels ORDER BY id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,name,type,flow,traffic_ratio,in_ip,status,created_at,tot_enabled,tot_secret,tot_path_count,tot_paths,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp FROM tunnels ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list tunnels: %w", err)
 	}
@@ -163,10 +168,13 @@ func (r *Repository) List(ctx context.Context) ([]Tunnel, error) {
 		var tunnel Tunnel
 		var raw totRuntimeConfig
 		if err := rows.Scan(&tunnel.ID, &tunnel.Name, &tunnel.Type, &tunnel.Flow, &tunnel.TrafficRatio, &tunnel.InIP, &tunnel.Status, &tunnel.CreatedTime,
-			&raw.Enabled, &raw.Secret, &raw.PathCount, &raw.MaxPayload, &raw.Window, &raw.RetransmitIntervalMS, &raw.MaxRetries, &raw.RecoveryPeriodMS, &raw.HandshakeTimeoutMS, &raw.MaxClockSkewMS, &raw.IdleTTLMS, &raw.MPTCP); err != nil {
+			&raw.Enabled, &raw.Secret, &raw.PathCount, &raw.PathsJSON, &raw.MaxPayload, &raw.Window, &raw.RetransmitIntervalMS, &raw.MaxRetries, &raw.RecoveryPeriodMS, &raw.HandshakeTimeoutMS, &raw.MaxClockSkewMS, &raw.IdleTTLMS, &raw.MPTCP); err != nil {
 			return nil, fmt.Errorf("scan tunnel: %w", err)
 		}
-		tunnel.TOT = raw.public()
+		tunnel.TOT, err = raw.public()
+		if err != nil {
+			return nil, fmt.Errorf("decode tunnel %d TOT paths: %w", tunnel.ID, err)
+		}
 		if err := r.loadNodes(ctx, &tunnel); err != nil {
 			return nil, err
 		}
@@ -178,14 +186,17 @@ func (r *Repository) List(ctx context.Context) ([]Tunnel, error) {
 func (r *Repository) Get(ctx context.Context, id int64) (Tunnel, error) {
 	var tunnel Tunnel
 	var raw totRuntimeConfig
-	err := r.db.QueryRowContext(ctx, `SELECT id,name,type,flow,traffic_ratio,in_ip,status,created_at,tot_enabled,tot_secret,tot_path_count,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp FROM tunnels WHERE id=?`, id).Scan(
+	err := r.db.QueryRowContext(ctx, `SELECT id,name,type,flow,traffic_ratio,in_ip,status,created_at,tot_enabled,tot_secret,tot_path_count,tot_paths,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp FROM tunnels WHERE id=?`, id).Scan(
 		&tunnel.ID, &tunnel.Name, &tunnel.Type, &tunnel.Flow, &tunnel.TrafficRatio, &tunnel.InIP, &tunnel.Status, &tunnel.CreatedTime,
-		&raw.Enabled, &raw.Secret, &raw.PathCount, &raw.MaxPayload, &raw.Window, &raw.RetransmitIntervalMS, &raw.MaxRetries, &raw.RecoveryPeriodMS, &raw.HandshakeTimeoutMS, &raw.MaxClockSkewMS, &raw.IdleTTLMS, &raw.MPTCP,
+		&raw.Enabled, &raw.Secret, &raw.PathCount, &raw.PathsJSON, &raw.MaxPayload, &raw.Window, &raw.RetransmitIntervalMS, &raw.MaxRetries, &raw.RecoveryPeriodMS, &raw.HandshakeTimeoutMS, &raw.MaxClockSkewMS, &raw.IdleTTLMS, &raw.MPTCP,
 	)
 	if err != nil {
 		return tunnel, err
 	}
-	tunnel.TOT = raw.public()
+	tunnel.TOT, err = raw.public()
+	if err != nil {
+		return tunnel, fmt.Errorf("decode tunnel %d TOT paths: %w", tunnel.ID, err)
+	}
 	return tunnel, r.loadNodes(ctx, &tunnel)
 }
 
@@ -209,13 +220,17 @@ func (r *Repository) Create(ctx context.Context, request CreateRequest) (int64, 
 		}
 	}
 	tot := normalizeTOT(request.TOT)
+	pathsJSON, err := json.Marshal(tot.Paths)
+	if err != nil {
+		return 0, fmt.Errorf("encode TOT paths: %w", err)
+	}
 	secret, err := newTOTSecret()
 	if err != nil {
 		return 0, err
 	}
 	now := time.Now().UnixMilli()
-	result, err := transaction.ExecContext(ctx, `INSERT INTO tunnels(name,type,flow,traffic_ratio,in_ip,status,tot_enabled,tot_secret,tot_path_count,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		strings.TrimSpace(request.Name), request.Type, request.Flow, request.TrafficRatio, inIP, normalizeStatus(request.Status), boolInt(tot.Enabled), secret, tot.PathCount, tot.MaxPayload, tot.Window, tot.RetransmitIntervalMS, tot.MaxRetries, tot.RecoveryPeriodMS, tot.HandshakeTimeoutMS, tot.MaxClockSkewMS, tot.IdleTTLMS, boolInt(tot.MPTCP), now, now)
+	result, err := transaction.ExecContext(ctx, `INSERT INTO tunnels(name,type,flow,traffic_ratio,in_ip,status,tot_enabled,tot_secret,tot_path_count,tot_paths,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		strings.TrimSpace(request.Name), request.Type, request.Flow, request.TrafficRatio, inIP, normalizeStatus(request.Status), boolInt(tot.Enabled), secret, tot.PathCount, string(pathsJSON), tot.MaxPayload, tot.Window, tot.RetransmitIntervalMS, tot.MaxRetries, tot.RecoveryPeriodMS, tot.HandshakeTimeoutMS, tot.MaxClockSkewMS, tot.IdleTTLMS, boolInt(tot.MPTCP), now, now)
 	if err != nil {
 		return 0, fmt.Errorf("create tunnel: %w", err)
 	}
@@ -255,8 +270,12 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest) error {
 		}
 	}
 	tot := normalizeTOT(request.TOT)
-	result, err := transaction.ExecContext(ctx, `UPDATE tunnels SET name=?,type=?,flow=?,traffic_ratio=?,in_ip=?,status=?,tot_enabled=?,tot_path_count=?,tot_max_payload=?,tot_window=?,tot_retransmit_interval_ms=?,tot_max_retries=?,tot_recovery_period_ms=?,tot_handshake_timeout_ms=?,tot_max_clock_skew_ms=?,tot_idle_ttl_ms=?,tot_mptcp=?,updated_at=? WHERE id=?`,
-		strings.TrimSpace(request.Name), request.Type, request.Flow, request.TrafficRatio, inIP, normalizeStatus(request.Status), boolInt(tot.Enabled), tot.PathCount, tot.MaxPayload, tot.Window, tot.RetransmitIntervalMS, tot.MaxRetries, tot.RecoveryPeriodMS, tot.HandshakeTimeoutMS, tot.MaxClockSkewMS, tot.IdleTTLMS, boolInt(tot.MPTCP), time.Now().UnixMilli(), request.ID)
+	pathsJSON, err := json.Marshal(tot.Paths)
+	if err != nil {
+		return fmt.Errorf("encode TOT paths: %w", err)
+	}
+	result, err := transaction.ExecContext(ctx, `UPDATE tunnels SET name=?,type=?,flow=?,traffic_ratio=?,in_ip=?,status=?,tot_enabled=?,tot_path_count=?,tot_paths=?,tot_max_payload=?,tot_window=?,tot_retransmit_interval_ms=?,tot_max_retries=?,tot_recovery_period_ms=?,tot_handshake_timeout_ms=?,tot_max_clock_skew_ms=?,tot_idle_ttl_ms=?,tot_mptcp=?,updated_at=? WHERE id=?`,
+		strings.TrimSpace(request.Name), request.Type, request.Flow, request.TrafficRatio, inIP, normalizeStatus(request.Status), boolInt(tot.Enabled), tot.PathCount, string(pathsJSON), tot.MaxPayload, tot.Window, tot.RetransmitIntervalMS, tot.MaxRetries, tot.RecoveryPeriodMS, tot.HandshakeTimeoutMS, tot.MaxClockSkewMS, tot.IdleTTLMS, boolInt(tot.MPTCP), time.Now().UnixMilli(), request.ID)
 	if err != nil {
 		return fmt.Errorf("update tunnel: %w", err)
 	}
@@ -464,9 +483,31 @@ func validate(request CreateRequest) error {
 		return errors.New("at least one exit node is required")
 	}
 	if request.TOT.Enabled {
+		if request.Type != 2 {
+			return errors.New("TOT is only supported by chained tunnels")
+		}
+		if len(request.TOT.Paths) > 16 {
+			return errors.New("TOT supports at most 16 explicit paths")
+		}
 		tot := normalizeTOT(request.TOT)
 		if tot.PathCount < 1 || tot.PathCount > 16 {
 			return errors.New("TOT path count must be between 1 and 16")
+		}
+		if len(tot.Paths) > 16 {
+			return errors.New("TOT supports at most 16 explicit paths")
+		}
+		if (len(tot.Paths) > 0 || tot.MPTCP) && (len(request.ChainNodes) > 0 || len(request.OutNodeID) != 1) {
+			return errors.New("explicit TOT paths and MPTCP require one exit node and no relay hops")
+		}
+		for _, address := range tot.Paths {
+			host, portValue, err := net.SplitHostPort(address)
+			if err != nil || strings.TrimSpace(host) == "" {
+				return fmt.Errorf("invalid TOT path %q: expected host:port", address)
+			}
+			port, err := strconv.Atoi(portValue)
+			if err != nil || port < 1 || port > 65535 {
+				return fmt.Errorf("invalid TOT path %q: port must be between 1 and 65535", address)
+			}
 		}
 		if tot.MaxPayload < 1024 || tot.MaxPayload > 1024*1024 {
 			return errors.New("TOT maximum payload must be between 1024 and 1048576 bytes")
@@ -648,11 +689,18 @@ func (r *Repository) loadNodes(ctx context.Context, tunnel *Tunnel) error {
 	return rows.Err()
 }
 
-func (raw totRuntimeConfig) public() TOTConfig {
+func (raw totRuntimeConfig) public() (TOTConfig, error) {
+	paths := make([]string, 0)
+	if strings.TrimSpace(raw.PathsJSON) != "" {
+		if err := json.Unmarshal([]byte(raw.PathsJSON), &paths); err != nil {
+			return TOTConfig{}, err
+		}
+	}
 	return TOTConfig{
 		Enabled:              raw.Enabled,
 		SecretConfigured:     strings.TrimSpace(raw.Secret) != "",
 		PathCount:            raw.PathCount,
+		Paths:                paths,
 		MaxPayload:           raw.MaxPayload,
 		Window:               raw.Window,
 		RetransmitIntervalMS: raw.RetransmitIntervalMS,
@@ -662,11 +710,30 @@ func (raw totRuntimeConfig) public() TOTConfig {
 		MaxClockSkewMS:       raw.MaxClockSkewMS,
 		IdleTTLMS:            raw.IdleTTLMS,
 		MPTCP:                raw.MPTCP,
-	}
+	}, nil
 }
 
 func normalizeTOT(value TOTConfig) TOTConfig {
-	if value.PathCount == 0 {
+	paths := make([]string, 0, len(value.Paths))
+	seen := make(map[string]struct{}, len(value.Paths))
+	for _, raw := range value.Paths {
+		address := strings.TrimSpace(raw)
+		if address == "" {
+			continue
+		}
+		if host, port, err := net.SplitHostPort(address); err == nil {
+			address = net.JoinHostPort(strings.TrimSpace(host), port)
+		}
+		if _, exists := seen[address]; exists {
+			continue
+		}
+		seen[address] = struct{}{}
+		paths = append(paths, address)
+	}
+	value.Paths = paths
+	if len(paths) > 0 {
+		value.PathCount = len(paths)
+	} else if value.PathCount == 0 {
 		value.PathCount = defaultTOTPathCount
 	}
 	if value.MaxPayload == 0 {

@@ -14,6 +14,7 @@ type metadata struct {
 	secret         string
 	paths          []string
 	pathCount      int
+	mptcp          bool
 	recoveryPeriod time.Duration
 	session        coretot.Options
 	handshake      coretot.HandshakeOptions
@@ -29,6 +30,7 @@ func (d *totDialer) parseMetadata(md md.Metadata) error {
 	if d.md.pathCount <= 0 {
 		d.md.pathCount = 2
 	}
+	d.md.mptcp = mdutil.GetBool(md, "mptcp")
 	d.md.recoveryPeriod = mdutil.GetDuration(md, "recoveryPeriod", "recovery.period")
 	if d.md.recoveryPeriod <= 0 {
 		d.md.recoveryPeriod = time.Second

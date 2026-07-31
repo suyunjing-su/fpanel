@@ -42,6 +42,7 @@ const CHAIN_PROTOCOL_OPTIONS = [
 const DEFAULT_TOT_CONFIG: TOTConfig = {
   enabled: false,
   pathCount: 2,
+  paths: [],
   maxPayload: 32768,
   window: 256,
   retransmitIntervalMs: 300,
@@ -84,6 +85,7 @@ interface TOTConfig {
   enabled: boolean;
   secretConfigured?: boolean;
   pathCount: number;
+  paths: string[];
   maxPayload: number;
   window: number;
   retransmitIntervalMs: number;
@@ -266,6 +268,28 @@ export default function TunnelPage() {
       newErrors.trafficRatio = '流量倍率必须在0.0-100.0之间';
     }
     
+    if (form.tot.enabled) {
+      if (form.type !== 2) {
+        newErrors.tot = 'TOT 仅支持隧道转发模式';
+      }
+      if (form.tot.pathCount < 1 || form.tot.pathCount > 16) {
+        newErrors.totPathCount = '线路数必须在 1-16 之间';
+      }
+      const paths = form.tot.paths.map(path => path.trim()).filter(Boolean);
+      if ((paths.length > 0 || form.tot.mptcp) && ((form.chainNodes || []).some(group => group.some(node => node.nodeId !== -1)) || (form.outNodeId || []).filter(node => node.nodeId !== -1).length !== 1)) {
+        newErrors.totPaths = '独立线路地址和 MPTCP 仅适用于无中继、单一出口节点的拓扑';
+      } else if (paths.length > 16) {
+        newErrors.totPaths = '独立线路地址最多 16 条';
+      } else if (paths.some(path => {
+        const match = path.match(/^(\[[^\]]+\]|[^:]+):(\d+)$/);
+        if (!match) return true;
+        const port = Number(match[2]);
+        return port < 1 || port > 65535;
+      })) {
+        newErrors.totPaths = '每行必须是有效的 host:port，IPv6 请使用 [address]:port';
+      }
+    }
+
     // 隧道转发时的验证
     if (form.type === 2) {
       if (!form.outNodeId || form.outNodeId.length === 0) {
@@ -383,7 +407,8 @@ export default function TunnelPage() {
       ...prev,
       type,
       outNodeId: type === 1 ? [] : prev.outNodeId,
-      chainNodes: type === 1 ? [] : prev.chainNodes
+      chainNodes: type === 1 ? [] : prev.chainNodes,
+      tot: type === 1 ? { ...prev.tot, enabled: false, mptcp: false } : prev.tot
     }));
   };
 
@@ -480,11 +505,15 @@ export default function TunnelPage() {
         .filter(ip => ip)
         .join(',');
       
-      const data = { 
+      const normalizedPaths = Array.from(new Set(form.tot.paths.map(path => path.trim()).filter(Boolean)));
+      const data = {
         ...form,
         inIp: inIpString,
         outNodeId: cleanedOutNodeId,
-        chainNodes: cleanedChainNodes
+        chainNodes: cleanedChainNodes,
+        tot: form.type === 2
+          ? { ...form.tot, pathCount: normalizedPaths.length || form.tot.pathCount, paths: normalizedPaths }
+          : { ...form.tot, enabled: false, mptcp: false, paths: [] }
       };
       
       const response = isEdit 
@@ -1277,35 +1306,51 @@ export default function TunnelPage() {
                     )}
 
                     <Divider />
-                    <div className="space-y-3 rounded-lg border border-default-200 p-3">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="font-semibold">TOT 多线路传输</h3>
-                          <p className="text-xs text-default-500">为该隧道启用可靠多路径传输；密钥不会在管理 API 中返回。</p>
+                    {form.type === 2 && (
+                      <div className="space-y-3 rounded-lg border border-default-200 p-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="font-semibold">TOT 多线路传输</h3>
+                            <p className="text-xs text-default-500">通过多个物理地址聚合带宽并在路径失效时自动恢复；密钥不会在管理 API 中返回。</p>
+                          </div>
+                          <Button size="sm" variant={form.tot.enabled ? "solid" : "bordered"} color={form.tot.enabled ? "success" : "default"} onPress={() => setForm(prev => ({ ...prev, tot: { ...prev.tot, enabled: !prev.tot.enabled } }))}>
+                            {form.tot.enabled ? "已启用" : "未启用"}
+                          </Button>
                         </div>
-                        <Button size="sm" variant={form.tot.enabled ? "solid" : "bordered"} color={form.tot.enabled ? "success" : "default"} onPress={() => setForm(prev => ({ ...prev, tot: { ...prev.tot, enabled: !prev.tot.enabled } }))}>
-                          {form.tot.enabled ? "已启用" : "未启用"}
-                        </Button>
+                        {errors.tot && <p className="text-xs text-danger">{errors.tot}</p>}
+                        {form.tot.enabled && (
+                          <>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                              <Input label="线路数" type="number" value={String(form.tot.pathCount)} isInvalid={!!errors.totPathCount} errorMessage={errors.totPathCount} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, pathCount: Number(e.target.value) || 0 } }))} />
+                              <Input label="分片字节" type="number" value={String(form.tot.maxPayload)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, maxPayload: Number(e.target.value) || 0 } }))} />
+                              <Input label="发送窗口" type="number" value={String(form.tot.window)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, window: Number(e.target.value) || 0 } }))} />
+                              <Input label="最大重试" type="number" value={String(form.tot.maxRetries)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, maxRetries: Number(e.target.value) || 0 } }))} />
+                            </div>
+                            <Textarea
+                              label="独立线路地址"
+                              placeholder={'198.51.100.10:7200\n[2001:db8::10]:7200'}
+                              description="每行一个 host:port，最多 16 条，仅适用于无中继、单出口拓扑；填写后线路数自动等于去重后的地址数。留空时线路数仅表示到拓扑目标的并行连接，不提供独立故障域。"
+                              minRows={2}
+                              maxRows={8}
+                              variant="bordered"
+                              value={form.tot.paths.join('\n')}
+                              isInvalid={!!errors.totPaths}
+                              errorMessage={errors.totPaths}
+                              onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, paths: e.target.value.split(/\r?\n/) } }))}
+                            />
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                              <Input label="重传间隔(ms)" type="number" value={String(form.tot.retransmitIntervalMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, retransmitIntervalMs: Number(e.target.value) || 0 } }))} />
+                              <Input label="恢复间隔(ms)" type="number" value={String(form.tot.recoveryPeriodMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, recoveryPeriodMs: Number(e.target.value) || 0 } }))} />
+                              <Input label="握手超时(ms)" type="number" value={String(form.tot.handshakeTimeoutMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, handshakeTimeoutMs: Number(e.target.value) || 0 } }))} />
+                              <Input label="空闲回收(ms)" type="number" value={String(form.tot.idleTtlMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, idleTtlMs: Number(e.target.value) || 0 } }))} />
+                            </div>
+                            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.tot.mptcp} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, mptcp: e.target.checked } }))} />启用端到端内核 MPTCP（发起端与监听端）</label>
+                            <p className="text-xs text-default-500">MPTCP 由两端内核协商；通过其他代理链拨号时会拒绝启动，避免静默降级为普通 TCP。</p>
+                            {isEdit && <p className="text-xs text-default-500">密钥状态：{form.tot.secretConfigured ? "已配置" : "未配置"}；如需轮换请使用隧道卡片上的轮换按钮。</p>}
+                          </>
+                        )}
                       </div>
-                      {form.tot.enabled && (
-                        <>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                            <Input label="线路数" type="number" value={String(form.tot.pathCount)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, pathCount: Number(e.target.value) || 0 } }))} />
-                            <Input label="分片字节" type="number" value={String(form.tot.maxPayload)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, maxPayload: Number(e.target.value) || 0 } }))} />
-                            <Input label="发送窗口" type="number" value={String(form.tot.window)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, window: Number(e.target.value) || 0 } }))} />
-                            <Input label="最大重试" type="number" value={String(form.tot.maxRetries)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, maxRetries: Number(e.target.value) || 0 } }))} />
-                          </div>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                            <Input label="重传间隔(ms)" type="number" value={String(form.tot.retransmitIntervalMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, retransmitIntervalMs: Number(e.target.value) || 0 } }))} />
-                            <Input label="恢复间隔(ms)" type="number" value={String(form.tot.recoveryPeriodMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, recoveryPeriodMs: Number(e.target.value) || 0 } }))} />
-                            <Input label="握手超时(ms)" type="number" value={String(form.tot.handshakeTimeoutMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, handshakeTimeoutMs: Number(e.target.value) || 0 } }))} />
-                            <Input label="空闲回收(ms)" type="number" value={String(form.tot.idleTtlMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, idleTtlMs: Number(e.target.value) || 0 } }))} />
-                          </div>
-                          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.tot.mptcp} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, mptcp: e.target.checked } }))} />启用内核 MPTCP 监听</label>
-                          {isEdit && <p className="text-xs text-default-500">密钥状态：{form.tot.secretConfigured ? "已配置" : "未配置"}；如需轮换请使用隧道卡片上的轮换按钮。</p>}
-                        </>
-                      )}
-                    </div>
+                    )}
 
                     {form.type === 2 && (
                       <>

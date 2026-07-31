@@ -19,7 +19,7 @@ func TestBuildTOTTransportMetadata(t *testing.T) {
 		(1,'entry','10.0.0.1','203.0.113.1',10000,20000,'entry-secret',1,'0.0.0.0','[::]',1,1),
 		(2,'relay','10.0.0.2','203.0.113.2',10000,20000,'relay-secret',1,'0.0.0.0','[::]',1,1),
 		(3,'exit','10.0.0.3','203.0.113.3',10000,20000,'exit-secret',1,'0.0.0.0','[::]',1,1)`)
-	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,tot_enabled,tot_secret,tot_path_count,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp,created_at,updated_at) VALUES(1,'tot',2,1,1,1,1,'tot-secret-0123456789',3,4096,64,50,8,500,2000,5000,60000,1,1,1)`)
+	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,tot_enabled,tot_secret,tot_path_count,tot_paths,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp,created_at,updated_at) VALUES(1,'tot',2,1,1,1,1,'tot-secret-0123456789',3,'["198.51.100.10:7200","[2001:db8::20]:7200"]',4096,64,50,8,500,2000,5000,60000,1,1,1)`)
 	execFixture(t, db, `INSERT INTO tunnel_nodes(id,tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol) VALUES
 		(1,1,1,1,7000,'fifo',0,'tcp'),
 		(2,1,2,2,7100,'fifo',1,'tcp'),
@@ -41,7 +41,8 @@ func TestBuildTOTTransportMetadata(t *testing.T) {
 		t.Fatalf("unexpected TOT dialer: %#v", dialer)
 	}
 	dialerMetadata := dialer["metadata"].(map[string]any)
-	if dialerMetadata["secret"] != "tot-secret-0123456789" || dialerMetadata["pathCount"] != 3 || dialerMetadata["window"] != 64 {
+	paths, ok := dialerMetadata["paths"].([]string)
+	if dialerMetadata["secret"] != "tot-secret-0123456789" || dialerMetadata["pathCount"] != 2 || dialerMetadata["window"] != 64 || dialerMetadata["mptcp"] != true || !ok || len(paths) != 2 || paths[0] != "198.51.100.10:7200" {
 		t.Fatalf("incomplete TOT dialer metadata: %#v", dialerMetadata)
 	}
 

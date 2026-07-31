@@ -44,6 +44,8 @@ type tunnelRecord struct {
 	TOTEnabled      bool
 	TOTSecret       string
 	TOTPathCount    int
+	TOTPathsJSON    string
+	TOTPaths        []string
 	TOTMaxPayload   int
 	TOTWindow       int
 	TOTRetransmitMS int
@@ -347,7 +349,7 @@ func (r *Repository) loadNode(ctx context.Context, nodeID int64) (nodeRecord, er
 
 func (r *Repository) loadTopology(ctx context.Context, nodeID int64) (map[int64]tunnelRecord, map[int64][]*tunnelNode, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id,t.type,t.status,t.tot_enabled,t.tot_secret,t.tot_path_count,t.tot_max_payload,t.tot_window,t.tot_retransmit_interval_ms,t.tot_max_retries,t.tot_recovery_period_ms,t.tot_handshake_timeout_ms,t.tot_max_clock_skew_ms,t.tot_idle_ttl_ms,t.tot_mptcp,tn.id,tn.chain_type,tn.node_id,COALESCE(tn.port,0),COALESCE(tn.strategy,'fifo'),COALESCE(tn.hop_index,0),COALESCE(tn.protocol,'tcp'),COALESCE(tn.flow_quota_bytes,0),COALESCE(tn.speed_limit_mbps,0),tn.ingress_bytes,tn.egress_bytes,tn.health_status,tn.bandwidth_overloaded,tn.last_latency_ms,tn.group_priority,tn.group_backup,tn.group_max_fails,tn.group_fail_timeout_ms,n.server_ip,n.status,n.interface_name,n.tcp_listen_addr,n.udp_listen_addr
+		SELECT t.id,t.type,t.status,t.tot_enabled,t.tot_secret,t.tot_path_count,t.tot_paths,t.tot_max_payload,t.tot_window,t.tot_retransmit_interval_ms,t.tot_max_retries,t.tot_recovery_period_ms,t.tot_handshake_timeout_ms,t.tot_max_clock_skew_ms,t.tot_idle_ttl_ms,t.tot_mptcp,tn.id,tn.chain_type,tn.node_id,COALESCE(tn.port,0),COALESCE(tn.strategy,'fifo'),COALESCE(tn.hop_index,0),COALESCE(tn.protocol,'tcp'),COALESCE(tn.flow_quota_bytes,0),COALESCE(tn.speed_limit_mbps,0),tn.ingress_bytes,tn.egress_bytes,tn.health_status,tn.bandwidth_overloaded,tn.last_latency_ms,tn.group_priority,tn.group_backup,tn.group_max_fails,tn.group_fail_timeout_ms,n.server_ip,n.status,n.interface_name,n.tcp_listen_addr,n.udp_listen_addr
 		FROM tunnels t
 		JOIN tunnel_nodes tn ON tn.tunnel_id=t.id
 		JOIN nodes n ON n.id=tn.node_id
@@ -363,11 +365,19 @@ func (r *Repository) loadTopology(ctx context.Context, nodeID int64) (map[int64]
 		var tunnel tunnelRecord
 		var item tunnelNode
 		var latency sql.NullInt64
-		if err := rows.Scan(&tunnel.ID, &tunnel.Type, &tunnel.Status, &tunnel.TOTEnabled, &tunnel.TOTSecret, &tunnel.TOTPathCount, &tunnel.TOTMaxPayload, &tunnel.TOTWindow, &tunnel.TOTRetransmitMS, &tunnel.TOTMaxRetries, &tunnel.TOTRecoveryMS, &tunnel.TOTHandshakeMS, &tunnel.TOTClockSkewMS, &tunnel.TOTIdleTTLMS, &tunnel.TOTMPTCP, &item.ID, &item.ChainType, &item.NodeID, &item.Port, &item.Strategy, &item.HopIndex, &item.Protocol, &item.FlowQuotaBytes, &item.SpeedLimitMbps, &item.IngressBytes, &item.EgressBytes, &item.HealthStatus, &item.BandwidthOverloaded, &latency, &item.GroupPriority, &item.GroupBackup, &item.GroupMaxFails, &item.GroupFailTimeoutMS, &item.Node.ServerIP, &item.Node.Status, &item.Node.InterfaceName, &item.Node.TCPListenAddr, &item.Node.UDPListenAddr); err != nil {
+		if err := rows.Scan(&tunnel.ID, &tunnel.Type, &tunnel.Status, &tunnel.TOTEnabled, &tunnel.TOTSecret, &tunnel.TOTPathCount, &tunnel.TOTPathsJSON, &tunnel.TOTMaxPayload, &tunnel.TOTWindow, &tunnel.TOTRetransmitMS, &tunnel.TOTMaxRetries, &tunnel.TOTRecoveryMS, &tunnel.TOTHandshakeMS, &tunnel.TOTClockSkewMS, &tunnel.TOTIdleTTLMS, &tunnel.TOTMPTCP, &item.ID, &item.ChainType, &item.NodeID, &item.Port, &item.Strategy, &item.HopIndex, &item.Protocol, &item.FlowQuotaBytes, &item.SpeedLimitMbps, &item.IngressBytes, &item.EgressBytes, &item.HealthStatus, &item.BandwidthOverloaded, &latency, &item.GroupPriority, &item.GroupBackup, &item.GroupMaxFails, &item.GroupFailTimeoutMS, &item.Node.ServerIP, &item.Node.Status, &item.Node.InterfaceName, &item.Node.TCPListenAddr, &item.Node.UDPListenAddr); err != nil {
 			return nil, nil, fmt.Errorf("scan node topology: %w", err)
 		}
 		item.TunnelID = tunnel.ID
 		item.Node.ID = item.NodeID
+		if strings.TrimSpace(tunnel.TOTPathsJSON) != "" {
+			if err := json.Unmarshal([]byte(tunnel.TOTPathsJSON), &tunnel.TOTPaths); err != nil {
+				return nil, nil, fmt.Errorf("decode tunnel %d TOT paths: %w", tunnel.ID, err)
+			}
+			if len(tunnel.TOTPaths) > 0 {
+				tunnel.TOTPathCount = len(tunnel.TOTPaths)
+			}
+		}
 		if latency.Valid {
 			item.LastLatencyMS = &latency.Int64
 		}
@@ -906,13 +916,14 @@ func transportConfig(protocol, trafficProtocol string, listener bool, tunnel tun
 			"maxRetries":         tunnel.TOTMaxRetries,
 			"handshakeTimeout":   time.Duration(tunnel.TOTHandshakeMS) * time.Millisecond,
 			"maxClockSkew":       time.Duration(tunnel.TOTClockSkewMS) * time.Millisecond,
+			"mptcp":              tunnel.TOTMPTCP,
 		}
 		if listener {
 			metadata["backlog"] = 128
 			metadata["idleTTL"] = time.Duration(tunnel.TOTIdleTTLMS) * time.Millisecond
-			metadata["mptcp"] = tunnel.TOTMPTCP
 		} else {
 			metadata["pathCount"] = tunnel.TOTPathCount
+			metadata["paths"] = tunnel.TOTPaths
 			metadata["recoveryPeriod"] = time.Duration(tunnel.TOTRecoveryMS) * time.Millisecond
 		}
 		return map[string]any{"type": "tot", "metadata": metadata}

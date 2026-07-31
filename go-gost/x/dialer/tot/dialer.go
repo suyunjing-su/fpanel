@@ -22,6 +22,10 @@ type networkDialer interface {
 	Dial(context.Context, string, string) (net.Conn, error)
 }
 
+type multipathTCPDialer interface {
+	DialMultipathTCP(context.Context, string, string) (net.Conn, error)
+}
+
 type pathTarget struct {
 	key     string
 	address string
@@ -127,7 +131,17 @@ func (d *totDialer) reconcilePaths(ctx context.Context, session *coretot.Session
 }
 
 func (d *totDialer) addPath(ctx context.Context, session *coretot.Session, target pathTarget, netDialer networkDialer) error {
-	conn, err := netDialer.Dial(ctx, "tcp", target.address)
+	var conn net.Conn
+	var err error
+	if d.md.mptcp {
+		dialer, ok := netDialer.(multipathTCPDialer)
+		if !ok {
+			return errors.New("TOT multipath TCP requires a capable network dialer")
+		}
+		conn, err = dialer.DialMultipathTCP(ctx, "tcp", target.address)
+	} else {
+		conn, err = netDialer.Dial(ctx, "tcp", target.address)
+	}
 	if err != nil {
 		return err
 	}

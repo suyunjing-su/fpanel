@@ -18,20 +18,24 @@ func TestTOTTunnelPersistenceAndSecretRotation(t *testing.T) {
 	}
 	defer db.Close()
 
-	if _, err := db.Exec(`INSERT INTO nodes(id,name,ip,server_ip,port_start,port_end,secret,status,created_at,updated_at) VALUES(1,'entry','10.0.0.1','203.0.113.1',10000,20000,'node-secret',1,1,1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO nodes(id,name,ip,server_ip,port_start,port_end,secret,status,created_at,updated_at) VALUES
+		(1,'entry','10.0.0.1','203.0.113.1',10000,20000,'entry-secret',1,1,1),
+		(2,'exit','10.0.0.2','203.0.113.2',10000,20000,'exit-secret',1,1,1)`); err != nil {
 		t.Fatal(err)
 	}
 	repository := NewRepository(db, nodes.NewRepository(db))
 	request := CreateRequest{
 		Name:         "tot-tunnel",
-		Type:         1,
+		Type:         2,
 		InNodeID:     []NodeSpec{{NodeID: 1, Port: 7000}},
+		OutNodeID:    []NodeSpec{{NodeID: 2, Port: 7100}},
 		Flow:         1,
 		TrafficRatio: 1,
 		Status:       1,
 		TOT: TOTConfig{
 			Enabled:              true,
 			PathCount:            3,
+			Paths:                []string{" 203.0.113.10:7000 ", "[2001:db8::10]:7001", "203.0.113.10:7000"},
 			MaxPayload:           4096,
 			Window:               64,
 			RetransmitIntervalMS: 50,
@@ -61,6 +65,12 @@ func TestTOTTunnelPersistenceAndSecretRotation(t *testing.T) {
 	}
 	if len(items) != 1 || !items[0].TOT.Enabled || !items[0].TOT.SecretConfigured {
 		t.Fatalf("unexpected public TOT configuration: %#v", items)
+	}
+	if got := items[0].TOT.Paths; len(got) != 2 || got[0] != "203.0.113.10:7000" || got[1] != "[2001:db8::10]:7001" {
+		t.Fatalf("unexpected normalized TOT paths: %#v", got)
+	}
+	if items[0].TOT.PathCount != len(items[0].TOT.Paths) {
+		t.Fatalf("path count %d does not match explicit paths %#v", items[0].TOT.PathCount, items[0].TOT.Paths)
 	}
 
 	if _, err := db.Exec("DELETE FROM node_config_refreshes"); err != nil {
@@ -103,13 +113,25 @@ func TestTOTTunnelPersistenceAndSecretRotation(t *testing.T) {
 
 func TestTOTValidationRejectsUnsafeValues(t *testing.T) {
 	request := CreateRequest{
-		Name:     "tot",
-		Type:     1,
-		InNodeID: []NodeSpec{{NodeID: 1}},
-		Flow:     1,
-		TOT:      TOTConfig{Enabled: true, MaxPayload: 512},
+		Name:      "tot",
+		Type:      2,
+		InNodeID:  []NodeSpec{{NodeID: 1}},
+		OutNodeID: []NodeSpec{{NodeID: 2}},
+		Flow:      1,
+		TOT:       TOTConfig{Enabled: true, MaxPayload: 512},
 	}
 	if err := validate(request); err == nil {
 		t.Fatal("unsafe TOT payload was accepted")
+	}
+	request.TOT.MaxPayload = 4096
+	request.TOT.Paths = []string{"203.0.113.10", "[2001:db8::10]:7000"}
+	if err := validate(request); err == nil {
+		t.Fatal("TOT path without port was accepted")
+	}
+	request.Type = 1
+	request.OutNodeID = nil
+	request.TOT.Paths = nil
+	if err := validate(request); err == nil {
+		t.Fatal("TOT was accepted for a direct tunnel")
 	}
 }
