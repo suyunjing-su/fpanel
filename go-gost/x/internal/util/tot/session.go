@@ -17,6 +17,7 @@ var (
 )
 
 type Options struct {
+	Key                []byte
 	MaxPayload         int
 	Window             int
 	RetransmitInterval time.Duration
@@ -24,6 +25,9 @@ type Options struct {
 }
 
 func (o *Options) defaults() {
+	if len(o.Key) < 16 {
+		o.Key = nil
+	}
 	if o.MaxPayload <= 0 {
 		o.MaxPayload = 32 << 10
 	}
@@ -277,7 +281,7 @@ func (s *Session) transmit(sequence uint64, retransmit bool) error {
 	}
 	var lastErr error
 	for _, p := range paths {
-		if err := p.send(entry.frame); err != nil {
+		if err := s.send(p, entry.frame); err != nil {
 			lastErr = err
 			s.dropPath(p, err)
 			continue
@@ -320,15 +324,15 @@ func (s *Session) pathCandidatesLocked() []*path {
 	return paths
 }
 
-func (p *path) send(frame Frame) error {
+func (s *Session) send(p *path, frame Frame) error {
 	p.write.Lock()
 	defer p.write.Unlock()
-	return WriteFrame(p.conn, frame)
+	return WriteFrame(p.conn, frame, s.options.Key)
 }
 
 func (s *Session) readPath(p *path) {
 	for {
-		frame, err := ReadFrame(p.conn, s.options.MaxPayload)
+		frame, err := ReadFrame(p.conn, s.options.MaxPayload, s.options.Key)
 		if err != nil {
 			s.dropPath(p, err)
 			return
@@ -351,7 +355,7 @@ func (s *Session) handleFrame(p *path, frame Frame) {
 		s.receiveData(p, frame)
 	case FrameAck:
 	case FramePing:
-		_ = p.send(Frame{Type: FramePong, SessionID: s.id, Ack: s.receivedAck()})
+		_ = s.send(p, Frame{Type: FramePong, SessionID: s.id, Ack: s.receivedAck()})
 	case FrameClose:
 		s.closeWithError(io.EOF)
 	}
@@ -380,7 +384,7 @@ func (s *Session) receiveData(p *path, frame Frame) {
 		s.stats.DuplicateFrames++
 		ack := s.recvSeq - 1
 		s.mu.Unlock()
-		_ = p.send(Frame{Type: FrameAck, SessionID: s.id, Ack: ack})
+		_ = s.send(p, Frame{Type: FrameAck, SessionID: s.id, Ack: ack})
 		return
 	}
 	if _, exists := s.reorder[frame.Sequence]; !exists {
@@ -398,7 +402,7 @@ func (s *Session) receiveData(p *path, frame Frame) {
 	}
 	ack := s.recvSeq - 1
 	s.mu.Unlock()
-	_ = p.send(Frame{Type: FrameAck, SessionID: s.id, Ack: ack})
+	_ = s.send(p, Frame{Type: FrameAck, SessionID: s.id, Ack: ack})
 	for _, payload := range ready {
 		select {
 		case s.incoming <- payload:
@@ -482,6 +486,8 @@ func (s *Session) IsClosed() bool {
 	}
 }
 
+func (s *Session) Done() <-chan struct{} { return s.closed }
+
 func (s *Session) HasPath(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -510,18 +516,21 @@ func (s *Session) Close() error {
 func (s *Session) closeWithError(err error) {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
-		s.err = err
 		paths := make([]*path, 0, len(s.paths))
 		for _, p := range s.paths {
 			paths = append(paths, p)
 		}
+		ack := s.recvSeq - 1
+		s.err = err
 		s.paths = make(map[uint64]*path)
 		s.stats.ActivePaths = 0
 		s.mu.Unlock()
-		close(s.closed)
 		for _, p := range paths {
+			_ = p.conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+			_ = s.send(p, Frame{Type: FrameClose, SessionID: s.id, Ack: ack})
 			_ = p.conn.Close()
 		}
+		close(s.closed)
 		s.signal()
 	})
 }

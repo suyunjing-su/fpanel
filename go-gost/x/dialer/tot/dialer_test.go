@@ -15,6 +15,40 @@ import (
 	xmetadata "github.com/go-gost/x/metadata"
 )
 
+func TestDialerCreatesIndependentSessions(t *testing.T) {
+	secret := "0123456789abcdef0123456789abcdef"
+	listener := listenerTot.NewListener(corelistener.AddrOption("127.0.0.1:0"))
+	if err := listener.Init(xmetadata.NewMetadata(map[string]any{"secret": secret, "pathCount": 1})); err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	dialer := NewDialer()
+	if err := dialer.Init(xmetadata.NewMetadata(map[string]any{"secret": secret, "pathCount": 1})); err != nil {
+		t.Fatal(err)
+	}
+	options := coredialer.NetDialerDialOption(testNetDialer{})
+	first, err := dialer.Dial(context.Background(), listener.Addr().String(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := dialer.Dial(context.Background(), listener.Addr().String(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if first.(*tot.Session).ID() == second.(*tot.Session).ID() {
+		t.Fatal("independent dials reused the same session")
+	}
+	for i := 0; i < 2; i++ {
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+	}
+}
 func TestDialerAndListenerExchangeData(t *testing.T) {
 	secret := "0123456789abcdef0123456789abcdef"
 	listener := listenerTot.NewListener(corelistener.AddrOption("127.0.0.1:0"))

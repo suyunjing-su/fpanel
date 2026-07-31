@@ -10,32 +10,80 @@ import (
 )
 
 func TestFrameRoundTripAndIntegrity(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
 	original := Frame{Type: FrameData, Flags: 3, SessionID: 7, Sequence: 11, Ack: 9, Payload: []byte("payload")}
 	var buffer bytes.Buffer
-	if err := WriteFrame(&buffer, original); err != nil {
+	if err := WriteFrame(&buffer, original, secret); err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := ReadFrame(&buffer, 1024)
+	encoded := append([]byte(nil), buffer.Bytes()...)
+	decoded, err := ReadFrame(&buffer, 1024, secret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if decoded.Type != original.Type || decoded.Flags != original.Flags || decoded.SessionID != original.SessionID || decoded.Sequence != original.Sequence || decoded.Ack != original.Ack || !bytes.Equal(decoded.Payload, original.Payload) {
 		t.Fatalf("frame mismatch: %#v", decoded)
 	}
-	corrupt := append([]byte(nil), buffer.Bytes()...)
-	_ = corrupt
 
-	buffer.Reset()
-	if err := WriteFrame(&buffer, original); err != nil {
-		t.Fatal(err)
+	for _, mutate := range []func([]byte){
+		func(data []byte) { data[8] ^= 0xff },
+		func(data []byte) { data[40] ^= 0xff },
+		func(data []byte) { data[len(data)-1] ^= 0xff },
+	} {
+		corrupt := append([]byte(nil), encoded...)
+		mutate(corrupt)
+		if _, err := ReadFrame(bytes.NewReader(corrupt), 1024, secret); !errors.Is(err, ErrInvalidFrame) {
+			t.Fatalf("corrupt frame error = %v", err)
+		}
 	}
-	data := buffer.Bytes()
-	data[len(data)-1] ^= 0xff
-	if _, err := ReadFrame(bytes.NewReader(data), 1024); !errors.Is(err, ErrInvalidFrame) {
-		t.Fatalf("corrupt payload error = %v", err)
+	if _, err := ReadFrame(bytes.NewReader(encoded), 1024, []byte("fedcba9876543210fedcba9876543210")); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("wrong secret error = %v", err)
 	}
 }
 
+func TestSessionCloseExchangesCloseFrame(t *testing.T) {
+	options := Options{Key: []byte("0123456789abcdef0123456789abcdef")}
+	left := NewSession(123, options)
+	right := NewSession(123, options)
+	leftConn, rightConn := net.Pipe()
+	if err := left.AddPath(leftConn); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.AddPath(rightConn); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := left.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-right.Done():
+	case <-time.After(time.Second):
+		t.Fatal("peer session did not close after receiving FrameClose")
+	}
+	if !left.IsClosed() {
+		t.Fatal("local session remained open")
+	}
+}
+
+func TestSessionCloseDoesNotBlockWithoutPeerReader(t *testing.T) {
+	left := NewSession(124, Options{Key: []byte("0123456789abcdef0123456789abcdef")})
+	peer, local := net.Pipe()
+	defer peer.Close()
+	if err := left.AddPath(local); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan struct{})
+	go func() {
+		_ = left.Close()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("session close blocked on an unresponsive path")
+	}
+}
 func TestSessionAggregatesPathsAndReordersFrames(t *testing.T) {
 	left := NewSession(42, Options{MaxPayload: 4, RetransmitInterval: 50 * time.Millisecond})
 	right := NewSession(42, Options{MaxPayload: 4, RetransmitInterval: 50 * time.Millisecond})

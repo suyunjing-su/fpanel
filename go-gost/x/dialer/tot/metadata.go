@@ -34,6 +34,7 @@ func (d *totDialer) parseMetadata(md md.Metadata) error {
 		d.md.recoveryPeriod = time.Second
 	}
 	d.md.session = coretot.Options{
+		Key:                []byte(d.md.secret),
 		MaxPayload:         mdutil.GetInt(md, "maxPayload", "frameSize"),
 		Window:             mdutil.GetInt(md, "window", "sendWindow"),
 		RetransmitInterval: mdutil.GetDuration(md, "retransmitInterval", "retransmit.interval"),

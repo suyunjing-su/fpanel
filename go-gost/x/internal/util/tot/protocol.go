@@ -1,6 +1,9 @@
 package tot
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
@@ -10,7 +13,8 @@ import (
 const (
 	magic      uint32 = 0x544f5431
 	version    uint8  = 1
-	headerSize        = 40
+	headerSize        = 56
+	tagSize           = 16
 )
 
 type FrameType uint8
@@ -39,7 +43,7 @@ type Frame struct {
 	Payload   []byte
 }
 
-func WriteFrame(w io.Writer, frame Frame) error {
+func WriteFrame(w io.Writer, frame Frame, secret ...[]byte) error {
 	if len(frame.Payload) > int(^uint32(0)) {
 		return ErrFrameTooLarge
 	}
@@ -53,13 +57,15 @@ func WriteFrame(w io.Writer, frame Frame) error {
 	binary.BigEndian.PutUint64(header[24:32], frame.Ack)
 	binary.BigEndian.PutUint32(header[32:36], uint32(len(frame.Payload)))
 	binary.BigEndian.PutUint32(header[36:40], crc32.ChecksumIEEE(frame.Payload))
+	tag := frameTag(secretBytes(secret), header[:40], frame.Payload)
+	copy(header[40:56], tag)
 	if err := writeFull(w, header); err != nil {
 		return err
 	}
 	return writeFull(w, frame.Payload)
 }
 
-func ReadFrame(r io.Reader, maxPayload int) (Frame, error) {
+func ReadFrame(r io.Reader, maxPayload int, secret ...[]byte) (Frame, error) {
 	var frame Frame
 	header := make([]byte, headerSize)
 	if _, err := io.ReadFull(r, header); err != nil {
@@ -89,7 +95,24 @@ func ReadFrame(r io.Reader, maxPayload int) (Frame, error) {
 	if crc32.ChecksumIEEE(frame.Payload) != binary.BigEndian.Uint32(header[36:40]) {
 		return Frame{}, ErrInvalidFrame
 	}
+	if subtle.ConstantTimeCompare(header[40:56], frameTag(secretBytes(secret), header[:40], frame.Payload)) != 1 {
+		return Frame{}, ErrInvalidFrame
+	}
 	return frame, nil
+}
+
+func secretBytes(secret [][]byte) []byte {
+	if len(secret) == 0 {
+		return nil
+	}
+	return secret[0]
+}
+
+func frameTag(secret, header, payload []byte) []byte {
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(header)
+	_, _ = mac.Write(payload)
+	return mac.Sum(nil)[:tagSize]
 }
 
 func writeFull(w io.Writer, data []byte) error {

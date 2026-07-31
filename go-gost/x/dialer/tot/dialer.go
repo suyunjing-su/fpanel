@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/go-gost/core/dialer"
@@ -28,16 +27,9 @@ type pathTarget struct {
 	address string
 }
 
-type sessionState struct {
-	session *coretot.Session
-	cancel  context.CancelFunc
-}
-
 type totDialer struct {
-	mu       sync.Mutex
-	sessions map[string]*sessionState
-	md       metadata
-	logger   logger.Logger
+	md     metadata
+	logger logger.Logger
 }
 
 func NewDialer(opts ...dialer.Option) dialer.Dialer {
@@ -45,7 +37,7 @@ func NewDialer(opts ...dialer.Option) dialer.Dialer {
 	for _, opt := range opts {
 		opt(options)
 	}
-	return &totDialer{sessions: make(map[string]*sessionState), logger: options.Logger}
+	return &totDialer{logger: options.Logger}
 }
 
 func (d *totDialer) Init(md md.Metadata) error { return d.parseMetadata(md) }
@@ -58,37 +50,26 @@ func (d *totDialer) Dial(ctx context.Context, addr string, opts ...dialer.DialOp
 	if options.Dialer == nil {
 		return nil, errors.New("TOT network dialer is required")
 	}
-	key := addr
-	d.mu.Lock()
-	state := d.sessions[key]
-	if state != nil && state.session.IsClosed() {
-		delete(d.sessions, key)
-		state.cancel()
-		state = nil
-	}
-	if state == nil {
-		id, err := coretot.NewSessionID()
-		if err != nil {
-			d.mu.Unlock()
-			return nil, err
-		}
-		sessionCtx, cancel := context.WithCancel(context.Background())
-		state = &sessionState{session: coretot.NewSession(id, d.md.session), cancel: cancel}
-		d.sessions[key] = state
-		go d.maintainPaths(sessionCtx, state.session, addr, options.Dialer)
-	}
-	d.mu.Unlock()
-	if err := d.ensureInitialPath(ctx, state.session, addr, options.Dialer); err != nil {
-		d.mu.Lock()
-		if d.sessions[key] == state && state.session.Stats().ActivePaths == 0 {
-			delete(d.sessions, key)
-			state.cancel()
-			_ = state.session.Close()
-		}
-		d.mu.Unlock()
+	id, err := coretot.NewSessionID()
+	if err != nil {
 		return nil, err
 	}
-	return state.session, nil
+	sessionCtx, cancel := context.WithCancel(context.Background())
+	session := coretot.NewSession(id, d.md.session)
+	go func() {
+		select {
+		case <-session.Done():
+			cancel()
+		case <-sessionCtx.Done():
+		}
+	}()
+	go d.maintainPaths(sessionCtx, session, addr, options.Dialer)
+	if err := d.ensureInitialPath(ctx, session, addr, options.Dialer); err != nil {
+		cancel()
+		_ = session.Close()
+		return nil, err
+	}
+	return session, nil
 }
 
 func (d *totDialer) Handshake(_ context.Context, conn net.Conn, _ ...dialer.HandshakeOption) (net.Conn, error) {

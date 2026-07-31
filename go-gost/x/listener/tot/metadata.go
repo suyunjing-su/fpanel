@@ -29,6 +29,7 @@ func (l *totListener) parseMetadata(md md.Metadata) error {
 		l.md.backlog = 128
 	}
 	l.md.session = coretot.Options{
+		Key:                []byte(secret),
 		MaxPayload:         mdutil.GetInt(md, "maxPayload", "frameSize"),
 		Window:             mdutil.GetInt(md, "window", "sendWindow"),
 		RetransmitInterval: mdutil.GetDuration(md, "retransmitInterval", "retransmit.interval"),
