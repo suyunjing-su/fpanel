@@ -1,24 +1,24 @@
 services:
   backend:
     image: cloudlink2/fps-backend:3.0.26-beta
-    container_name: springboot-backend
+    container_name: flux-control-plane
     restart: unless-stopped
     environment:
       DB_PATH: /app/data/gost.db
-      JWT_SECRET: ${JWT_SECRET}
-      LOG_DIR: /app/logs
-      JAVA_OPTS: "-Xms256m -Xmx512m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-admin}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?BOOTSTRAP_PASSWORD is required}
     ports:
       - "${BACKEND_PORT}:6365"
     volumes:
-      - backend_logs:/app/logs
       - sqlite_data:/app/data
     networks:
       - gost-network
     stop_grace_period: 30s
     stop_signal: SIGTERM
     healthcheck:
-      test: ["CMD", "sh", "-c", "wget --no-verbose --tries=1 --spider http://localhost:6365/flow/test || exit 1"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:6365/health/ready"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -40,9 +40,6 @@ services:
 volumes:
   sqlite_data:
     name: sqlite_data
-    driver: local
-  backend_logs:
-    name: backend_logs
     driver: local
 
 

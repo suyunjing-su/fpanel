@@ -36,12 +36,12 @@ curl -L https://raw.githubusercontent.com/suyunjing-su/fpanel/refs/heads/beta/in
 
 ```
 
-#### 默认管理员账号
+#### 初始管理员账号
 
-- **账号**: admin_user
-- **密码**: admin_user
+- **账号**: `admin`
+- **密码**: 安装脚本在部署时随机生成并显示一次
 
-> ⚠️ 首次登录后请立即修改默认密码！
+> ⚠️ 请安全保存初始密码，并在首次登录后立即修改。控制面运行时为原生 Go `fluxd`，不需要 Java 或 Maven。
 
 
 ## 免责声明

@@ -1,27 +1,26 @@
-# 构建阶段
-FROM maven:3.9.6-eclipse-temurin-21 AS build
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fluxd ./cmd/fluxd
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates su-exec tzdata \
+    && addgroup -S flux \
+    && adduser -S -G flux flux \
+    && mkdir -p /app/data \
+    && chown -R flux:flux /app
 WORKDIR /app
-COPY pom.xml .
-COPY src ./src
-RUN mvn clean package -DskipTests
-
-# 运行阶段
-FROM eclipse-temurin:21-jre
-WORKDIR /app
-ENV JAVA_OPTS="-Xmx512m -Xms256m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
-ENV LANG=en_US.UTF-8
-ENV LANGUAGE=en_US:en
-ENV LC_ALL=en_US.UTF-8
-
-RUN sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
-    && sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends fontconfig fonts-dejavu sqlite3 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=build /app/target/*.jar app.jar
-
+COPY --from=build /out/fluxd /app/fluxd
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
+ENV HTTP_ADDR=:6365 \
+    DB_PATH=/app/data/gost.db \
+    LOG_LEVEL=info
 EXPOSE 6365
-
-ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:6365/health/ready || exit 1
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["/app/fluxd"]

@@ -153,7 +153,40 @@ show_menu() {
 }
 
 generate_random() {
-  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c16
+  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c32
+}
+
+upsert_env() {
+  local key="$1"
+  local value="$2"
+  if grep -q "^${key}=" .env 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" .env
+  else
+    printf '%s=%s\n' "$key" "$value" >> .env
+  fi
+}
+
+ensure_go_control_plane_env() {
+  touch .env
+  local jwt_secret
+  jwt_secret=$(grep '^JWT_SECRET=' .env | cut -d'=' -f2- || true)
+  if [[ ${#jwt_secret} -lt 32 ]]; then
+    jwt_secret="$(generate_random)$(generate_random)"
+    upsert_env JWT_SECRET "$jwt_secret"
+    echo "✅ 已将 JWT 密钥升级为 Go 控制面要求的安全长度"
+  fi
+  local bootstrap_username
+  bootstrap_username=$(grep '^BOOTSTRAP_USERNAME=' .env | cut -d'=' -f2- || true)
+  if [[ -z "$bootstrap_username" ]]; then
+    bootstrap_username=admin
+  fi
+  upsert_env BOOTSTRAP_USERNAME "$bootstrap_username"
+  local bootstrap_password
+  bootstrap_password=$(grep '^BOOTSTRAP_PASSWORD=' .env | cut -d'=' -f2- || true)
+  if [[ ${#bootstrap_password} -lt 12 ]]; then
+    bootstrap_password=$(generate_random)
+    upsert_env BOOTSTRAP_PASSWORD "$bootstrap_password"
+  fi
 }
 
 # 删除脚本自身
@@ -177,8 +210,9 @@ get_config_params() {
   read -p "后端端口（默认 6365）: " BACKEND_PORT
   BACKEND_PORT=${BACKEND_PORT:-6365}
 
-  # 生成JWT密钥
-  JWT_SECRET=$(generate_random)
+  # 生成JWT密钥和初始管理员密码
+  JWT_SECRET=$(generate_random)$(generate_random)
+  BOOTSTRAP_PASSWORD=$(generate_random)
 }
 
 # 安装功能
@@ -201,6 +235,8 @@ install_panel() {
 
   cat > .env <<EOF
 JWT_SECRET=$JWT_SECRET
+BOOTSTRAP_USERNAME=admin
+BOOTSTRAP_PASSWORD=$BOOTSTRAP_PASSWORD
 FRONTEND_PORT=$FRONTEND_PORT
 BACKEND_PORT=$BACKEND_PORT
 EOF
@@ -212,8 +248,9 @@ EOF
   echo "🌐 访问地址: http://服务器IP:$FRONTEND_PORT"
   echo "📖 部署完成后请阅读下使用文档，求求了啊，不要上去就是一顿操作"
   echo "📚 文档地址: https://tes.cc/guide.html"
-  echo "💡 默认管理员账号: admin_user / admin_user"
-  echo "⚠️  登录后请立即修改默认密码！"
+  echo "💡 初始管理员账号: admin"
+  echo "🔐 初始管理员密码: $BOOTSTRAP_PASSWORD"
+  echo "⚠️  请安全保存并在首次登录后修改密码！"
 
 
 }
@@ -228,6 +265,7 @@ update_panel() {
   echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
   curl -L -o docker-compose.yml "$DOCKER_COMPOSE_URL"
   echo "✅ 下载完成"
+  ensure_go_control_plane_env
 
   # 自动检测并配置 IPv6 支持
   if check_ipv6_support; then
@@ -236,6 +274,7 @@ update_panel() {
   fi
 
   # 先发送 SIGTERM 信号，让应用优雅关闭
+  docker stop -t 30 flux-control-plane 2>/dev/null || true
   docker stop -t 30 springboot-backend 2>/dev/null || true
   docker stop -t 10 vite-frontend 2>/dev/null || true
   
@@ -258,8 +297,8 @@ update_panel() {
   # 检查后端容器健康状态
   echo "🔍 检查后端服务状态..."
   for i in {1..90}; do
-    if docker ps --format "{{.Names}}" | grep -q "^springboot-backend$"; then
-      BACKEND_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' springboot-backend 2>/dev/null || echo "unknown")
+    if docker ps --format "{{.Names}}" | grep -q "^flux-control-plane$"; then
+      BACKEND_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' flux-control-plane 2>/dev/null || echo "unknown")
       if [[ "$BACKEND_HEALTH" == "healthy" ]]; then
         echo "✅ 后端服务健康检查通过"
         break
@@ -275,7 +314,7 @@ update_panel() {
     fi
     if [ $i -eq 90 ]; then
       echo "❌ 后端服务启动超时（90秒）"
-      echo "🔍 当前状态：$(docker inspect -f '{{.State.Health.Status}}' springboot-backend 2>/dev/null || echo '容器不存在')"
+      echo "🔍 当前状态：$(docker inspect -f '{{.State.Health.Status}}' flux-control-plane 2>/dev/null || echo '容器不存在')"
       echo "🛑 更新终止"
       return 1
     fi

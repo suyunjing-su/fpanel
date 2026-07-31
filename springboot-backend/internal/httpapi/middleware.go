@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -53,7 +55,7 @@ func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.
 
 func authenticatePublicRoutes(manager *auth.Manager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" || r.URL.Path == "/metrics" ||
+		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" || r.URL.Path == "/metrics" || r.URL.Path == "/system-info" ||
 			r.URL.Path == "/flow/test" || r.URL.Path == "/flow/upload" || r.URL.Path == "/flow/config" || r.URL.Path == "/flow/config/all" || r.URL.Path == "/api/v1/user/login" || r.URL.Path == "/api/v1/config/get" ||
 			strings.HasPrefix(r.URL.Path, "/api/v1/captcha/") || strings.HasPrefix(r.URL.Path, "/api/v1/open_api/") {
 			next.ServeHTTP(w, r)
@@ -135,6 +137,20 @@ func (w *statusWriter) WriteHeader(status int) {
 
 func (w *statusWriter) Write(body []byte) (int, error) {
 	return w.ResponseWriter.Write(body)
+}
+
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (w *statusWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func recoverPanic(log *slog.Logger, next http.Handler) http.Handler {

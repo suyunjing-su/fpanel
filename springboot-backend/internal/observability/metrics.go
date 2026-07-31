@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,18 +13,23 @@ import (
 
 type Metrics struct {
 	startedAt time.Time
+	db        *sql.DB
 	active    atomic.Int64
 	mu        sync.Mutex
 	requests  map[string]uint64
 	durations map[string]float64
 }
 
-func NewMetrics() *Metrics {
-	return &Metrics{
+func NewMetrics(database ...*sql.DB) *Metrics {
+	metrics := &Metrics{
 		startedAt: time.Now(),
 		requests:  make(map[string]uint64),
 		durations: make(map[string]float64),
 	}
+	if len(database) > 0 {
+		metrics.db = database[0]
+	}
+	return metrics
 }
 
 func (m *Metrics) Observe(method string, status int, duration time.Duration) {
@@ -38,12 +44,40 @@ func (m *Metrics) TrackActive(delta int64) {
 	m.active.Add(delta)
 }
 
+func (m *Metrics) writeDatabaseMetrics(w http.ResponseWriter) {
+	if m.db == nil {
+		return
+	}
+	stats := m.db.Stats()
+	fmt.Fprint(w, "# HELP flux_db_open_connections Open database connections.\n# TYPE flux_db_open_connections gauge\n")
+	fmt.Fprintf(w, "flux_db_open_connections %d\n", stats.OpenConnections)
+	fmt.Fprint(w, "# HELP flux_db_in_use_connections Database connections currently in use.\n# TYPE flux_db_in_use_connections gauge\n")
+	fmt.Fprintf(w, "flux_db_in_use_connections %d\n", stats.InUse)
+	for _, metric := range []struct {
+		name  string
+		help  string
+		query string
+	}{
+		{name: "flux_nodes_online", help: "Nodes currently marked online.", query: "SELECT COUNT(1) FROM nodes WHERE status=1"},
+		{name: "flux_tunnels_enabled", help: "Tunnels currently enabled.", query: "SELECT COUNT(1) FROM tunnels WHERE status=1"},
+		{name: "flux_config_refresh_pending", help: "Pending node configuration refreshes.", query: "SELECT COUNT(1) FROM node_config_refreshes"},
+		{name: "flux_failure_events_active", help: "Active tunnel failure events.", query: "SELECT COUNT(1) FROM tunnel_failure_events WHERE resolved_at IS NULL"},
+	} {
+		var value int64
+		if err := m.db.QueryRow(metric.query).Scan(&value); err != nil {
+			continue
+		}
+		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n%s %d\n", metric.name, metric.help, metric.name, metric.name, value)
+	}
+}
+
 func (m *Metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	fmt.Fprintf(w, "# HELP flux_uptime_seconds Process uptime in seconds.\n")
 	fmt.Fprintf(w, "# TYPE flux_uptime_seconds gauge\nflux_uptime_seconds %.3f\n", time.Since(m.startedAt).Seconds())
 	fmt.Fprintf(w, "# HELP flux_http_active_requests Current HTTP requests.\n")
 	fmt.Fprintf(w, "# TYPE flux_http_active_requests gauge\nflux_http_active_requests %d\n", m.active.Load())
+	m.writeDatabaseMetrics(w)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -72,7 +72,7 @@ func run() error {
 	refreshQueue.Start(workerCtx)
 	tunnelhealth.NewExpiryWorker(db, refreshQueue, log).Start(workerCtx)
 	tunnelhealth.NewWorker(db, healthRepo, hub, refreshQueue, log).Start(workerCtx)
-	metrics := observability.NewMetrics()
+	metrics := observability.NewMetrics(db)
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
