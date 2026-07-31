@@ -54,7 +54,7 @@ func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.
 func authenticatePublicRoutes(manager *auth.Manager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" || r.URL.Path == "/metrics" ||
-			r.URL.Path == "/flow/test" || r.URL.Path == "/api/v1/user/login" || r.URL.Path == "/api/v1/config/get" ||
+			r.URL.Path == "/flow/test" || r.URL.Path == "/flow/upload" || r.URL.Path == "/api/v1/user/login" || r.URL.Path == "/api/v1/config/get" ||
 			strings.HasPrefix(r.URL.Path, "/api/v1/captcha/") || strings.HasPrefix(r.URL.Path, "/api/v1/open_api/") {
 			next.ServeHTTP(w, r)
 			return

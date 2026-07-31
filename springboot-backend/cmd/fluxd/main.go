@@ -20,6 +20,7 @@ import (
 	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
 	"github.com/suyunjing-su/fpanel/backend/internal/observability"
 	"github.com/suyunjing-su/fpanel/backend/internal/siteconfig"
+	"github.com/suyunjing-su/fpanel/backend/internal/traffic"
 	"github.com/suyunjing-su/fpanel/backend/internal/tunnels"
 	"github.com/suyunjing-su/fpanel/backend/internal/users"
 )
@@ -54,6 +55,7 @@ func run() error {
 	userRepo := users.NewRepository(db)
 	tunnelRepo := tunnels.NewRepository(db, nodeRepo)
 	forwardRepo := forwards.NewRepository(db, nodeRepo, tunnelRepo)
+	trafficRepo := traffic.NewRepository(db, nodeRepo)
 	metrics := observability.NewMetrics()
 	mux := http.NewServeMux()
 
@@ -72,6 +74,10 @@ func run() error {
 	mux.HandleFunc("GET /flow/test", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("test"))
+	})
+
+	mux.HandleFunc("POST /flow/upload", func(w http.ResponseWriter, r *http.Request) {
+		uploadTraffic(w, r, nodeRepo, trafficRepo)
 	})
 
 	isAdmin := func(r *http.Request) bool {
