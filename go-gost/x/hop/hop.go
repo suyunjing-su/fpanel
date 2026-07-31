@@ -189,20 +189,26 @@ func (p *chainHop) Select(ctx context.Context, opts ...hop.SelectOption) *chain.
 	if len(nodes) == 0 {
 		return nil
 	}
-	if len(nodes) == 1 {
-		return nodes[0]
-	}
-
-	sort.Slice(nodes, func(i, j int) bool {
+	sort.SliceStable(nodes, func(i, j int) bool {
 		return nodes[i].Options().Priority > nodes[j].Options().Priority
 	})
-
-	if nodes[0].Options().Priority > 0 {
-		return nodes[0]
-	}
-
 	if s := p.options.selector; s != nil {
-		return s.Select(ctx, nodes...)
+		for len(nodes) > 0 {
+			priority := nodes[0].Options().Priority
+			if priority <= 0 {
+				return s.Select(ctx, nodes...)
+			}
+			end := 1
+			for end < len(nodes) && nodes[end].Options().Priority == priority {
+				end++
+			}
+			selected := s.Select(ctx, nodes[:end]...)
+			if selected != nil {
+				return selected
+			}
+			nodes = nodes[end:]
+		}
+		return nil
 	}
 	return nodes[0]
 }

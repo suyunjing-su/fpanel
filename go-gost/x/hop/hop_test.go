@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-gost/core/chain"
+	"github.com/go-gost/core/routing"
 	xlogger "github.com/go-gost/x/logger"
 	xselector "github.com/go-gost/x/selector"
 )
@@ -45,6 +46,26 @@ func TestProbeRestoresRecoveredEndpoint(t *testing.T) {
 	h.probe(context.Background())
 	assertSelected(t, h, primary)
 }
+
+func TestMatchedPriorityEndpointsStillFailOver(t *testing.T) {
+	matcher := routingMatcherFunc(func(*routing.Request) bool { return true })
+	nodes := []*chain.Node{
+		chain.NewNode("matched-primary", "127.0.0.1:10001", chain.MatcherNodeOption(matcher), chain.PriorityNodeOption(100)),
+		chain.NewNode("matched-backup", "127.0.0.1:10002", chain.MatcherNodeOption(matcher), chain.PriorityNodeOption(100)),
+		chain.NewNode("lower-priority", "127.0.0.1:10003", chain.MatcherNodeOption(matcher), chain.PriorityNodeOption(50)),
+	}
+	h := newTestHop(nodes)
+
+	assertSelected(t, h, nodes[0])
+	nodes[0].Marker().Mark()
+	assertSelected(t, h, nodes[1])
+	nodes[1].Marker().Mark()
+	assertSelected(t, h, nodes[2])
+}
+
+type routingMatcherFunc func(*routing.Request) bool
+
+func (f routingMatcherFunc) Match(request *routing.Request) bool { return f(request) }
 
 func newTestHop(nodes []*chain.Node) *chainHop {
 	return &chainHop{

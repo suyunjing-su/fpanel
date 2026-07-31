@@ -15,32 +15,48 @@ import (
 )
 
 type Forward struct {
-	ID            int64  `json:"id"`
-	UserID        int64  `json:"userId"`
-	UserName      string `json:"userName,omitempty"`
-	Name          string `json:"name"`
-	TunnelID      int64  `json:"tunnelId"`
-	TunnelName    string `json:"tunnelName"`
-	InIP          string `json:"inIp"`
-	InPort        int    `json:"inPort"`
-	RemoteAddr    string `json:"remoteAddr"`
-	InterfaceName string `json:"interfaceName,omitempty"`
-	Strategy      string `json:"strategy"`
-	Status        int    `json:"status"`
-	InFlow        int64  `json:"inFlow"`
-	OutFlow       int64  `json:"outFlow"`
-	SortIndex     int    `json:"inx"`
-	CreatedTime   int64  `json:"createdTime"`
+	ID                   int64  `json:"id"`
+	UserID               int64  `json:"userId"`
+	UserName             string `json:"userName,omitempty"`
+	Name                 string `json:"name"`
+	TunnelID             int64  `json:"tunnelId"`
+	TunnelName           string `json:"tunnelName"`
+	InIP                 string `json:"inIp"`
+	InPort               int    `json:"inPort"`
+	RemoteAddr           string `json:"remoteAddr"`
+	InterfaceName        string `json:"interfaceName,omitempty"`
+	Strategy             string `json:"strategy"`
+	EndpointGroupID      *int64 `json:"endpointGroupId,omitempty"`
+	RouteRuleSetID       *int64 `json:"routeRuleSetId,omitempty"`
+	MaxConnections       int    `json:"maxConnections"`
+	MaxConnectionsPerIP  int    `json:"maxConnectionsPerIp"`
+	SourceRanges         string `json:"sourceRanges"`
+	SourceWhitelist      int    `json:"sourceWhitelist"`
+	ProxyProtocolReceive int    `json:"proxyProtocolReceive"`
+	ProxyProtocolSend    int    `json:"proxyProtocolSend"`
+	Status               int    `json:"status"`
+	InFlow               int64  `json:"inFlow"`
+	OutFlow              int64  `json:"outFlow"`
+	SortIndex            int    `json:"inx"`
+	CreatedTime          int64  `json:"createdTime"`
 }
 
 type CreateRequest struct {
-	UserID        int64  `json:"userId"`
-	Name          string `json:"name"`
-	TunnelID      int64  `json:"tunnelId"`
-	InPort        *int   `json:"inPort"`
-	RemoteAddr    string `json:"remoteAddr"`
-	InterfaceName string `json:"interfaceName"`
-	Strategy      string `json:"strategy"`
+	UserID               int64  `json:"userId"`
+	Name                 string `json:"name"`
+	TunnelID             int64  `json:"tunnelId"`
+	InPort               *int   `json:"inPort"`
+	RemoteAddr           string `json:"remoteAddr"`
+	InterfaceName        string `json:"interfaceName"`
+	Strategy             string `json:"strategy"`
+	EndpointGroupID      *int64 `json:"endpointGroupId"`
+	RouteRuleSetID       *int64 `json:"routeRuleSetId"`
+	MaxConnections       int    `json:"maxConnections"`
+	MaxConnectionsPerIP  int    `json:"maxConnectionsPerIp"`
+	SourceRanges         string `json:"sourceRanges"`
+	SourceWhitelist      int    `json:"sourceWhitelist"`
+	ProxyProtocolReceive int    `json:"proxyProtocolReceive"`
+	ProxyProtocolSend    int    `json:"proxyProtocolSend"`
 }
 
 type UpdateRequest struct {
@@ -64,7 +80,7 @@ func NewRepository(db *sql.DB, nodeRepo *nodes.Repository, tunnelRepo *tunnels.R
 }
 
 func (r *Repository) List(ctx context.Context, userID int64, admin bool) ([]Forward, error) {
-	query := `SELECT f.id,f.user_id,COALESCE(u.username,''),f.name,f.tunnel_id,t.name,f.remote_addr,f.interface_name,f.strategy,f.ingress_bytes,f.egress_bytes,f.status,f.sort_index,f.created_at,COALESCE((SELECT MIN(fp.port) FROM forward_ports fp WHERE fp.forward_id=f.id),0),t.in_ip FROM forwards f JOIN users u ON u.id=f.user_id JOIN tunnels t ON t.id=f.tunnel_id`
+	query := `SELECT f.id,f.user_id,COALESCE(u.username,''),f.name,f.tunnel_id,t.name,f.remote_addr,f.interface_name,f.strategy,f.endpoint_group_id,f.route_rule_set_id,f.max_connections,f.max_connections_per_ip,f.source_ranges,f.source_whitelist,f.proxy_protocol_receive,f.proxy_protocol_send,f.ingress_bytes,f.egress_bytes,f.status,f.sort_index,f.created_at,COALESCE((SELECT MIN(fp.port) FROM forward_ports fp WHERE fp.forward_id=f.id),0),t.in_ip FROM forwards f JOIN users u ON u.id=f.user_id JOIN tunnels t ON t.id=f.tunnel_id`
 	args := []any{}
 	if !admin {
 		query += " WHERE f.user_id=?"
@@ -79,7 +95,7 @@ func (r *Repository) List(ctx context.Context, userID int64, admin bool) ([]Forw
 	result := make([]Forward, 0)
 	for rows.Next() {
 		var f Forward
-		if err := rows.Scan(&f.ID, &f.UserID, &f.UserName, &f.Name, &f.TunnelID, &f.TunnelName, &f.RemoteAddr, &f.InterfaceName, &f.Strategy, &f.InFlow, &f.OutFlow, &f.Status, &f.SortIndex, &f.CreatedTime, &f.InPort, &f.InIP); err != nil {
+		if err := rows.Scan(&f.ID, &f.UserID, &f.UserName, &f.Name, &f.TunnelID, &f.TunnelName, &f.RemoteAddr, &f.InterfaceName, &f.Strategy, &f.EndpointGroupID, &f.RouteRuleSetID, &f.MaxConnections, &f.MaxConnectionsPerIP, &f.SourceRanges, &f.SourceWhitelist, &f.ProxyProtocolReceive, &f.ProxyProtocolSend, &f.InFlow, &f.OutFlow, &f.Status, &f.SortIndex, &f.CreatedTime, &f.InPort, &f.InIP); err != nil {
 			return nil, err
 		}
 		result = append(result, f)
@@ -94,7 +110,13 @@ func (r *Repository) Create(ctx context.Context, request CreateRequest, actorID 
 	if !admin && request.UserID != actorID {
 		return 0, errors.New("cannot create forward for another user")
 	}
+	if !admin && hasAdvancedControls(request) {
+		return 0, errors.New("advanced forwarding controls require administrator privileges")
+	}
 	if err := validate(request); err != nil {
+		return 0, err
+	}
+	if err := r.validateAdvancedReferences(ctx, request); err != nil {
 		return 0, err
 	}
 	transaction, err := r.db.BeginTx(ctx, nil)
@@ -121,7 +143,7 @@ func (r *Repository) Create(ctx context.Context, request CreateRequest, actorID 
 		return 0, err
 	}
 	now := time.Now().UnixMilli()
-	res, err := transaction.ExecContext(ctx, `INSERT INTO forwards(user_id,name,tunnel_id,remote_addr,interface_name,strategy,status,sort_index,created_at,updated_at) VALUES(?,?,?,?,?,?,1,COALESCE((SELECT MAX(sort_index)+1 FROM forwards),0),?,?)`, request.UserID, strings.TrimSpace(request.Name), request.TunnelID, normalizeAddresses(request.RemoteAddr), strings.TrimSpace(request.InterfaceName), normalizeStrategy(request.Strategy), now, now)
+	res, err := transaction.ExecContext(ctx, `INSERT INTO forwards(user_id,name,tunnel_id,remote_addr,interface_name,strategy,endpoint_group_id,route_rule_set_id,max_connections,max_connections_per_ip,source_ranges,source_whitelist,proxy_protocol_receive,proxy_protocol_send,status,sort_index,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,COALESCE((SELECT MAX(sort_index)+1 FROM forwards),0),?,?)`, request.UserID, strings.TrimSpace(request.Name), request.TunnelID, normalizeAddresses(request.RemoteAddr), strings.TrimSpace(request.InterfaceName), normalizeStrategy(request.Strategy), request.EndpointGroupID, request.RouteRuleSetID, request.MaxConnections, request.MaxConnectionsPerIP, normalizeSourceRanges(request.SourceRanges), request.SourceWhitelist, request.ProxyProtocolReceive, request.ProxyProtocolSend, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("create forward: %w", err)
 	}
@@ -147,7 +169,13 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest, actorID 
 	if request.UserID == 0 {
 		request.UserID = actorID
 	}
+	if !admin && hasAdvancedControls(request.CreateRequest) {
+		return errors.New("advanced forwarding controls require administrator privileges")
+	}
 	if err := validate(request.CreateRequest); err != nil {
+		return err
+	}
+	if err := r.validateAdvancedReferences(ctx, request.CreateRequest); err != nil {
 		return err
 	}
 	transaction, err := r.db.BeginTx(ctx, nil)
@@ -157,8 +185,14 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest, actorID 
 	defer transaction.Rollback()
 	var owner int64
 	var tunnelID int64
-	if err := transaction.QueryRowContext(ctx, "SELECT user_id,tunnel_id FROM forwards WHERE id=?", request.ID).Scan(&owner, &tunnelID); err != nil {
+	var currentEndpointGroupID, currentRuleSetID sql.NullInt64
+	var currentMaxConnections, currentMaxConnectionsPerIP, currentSourceWhitelist, currentProxyReceive, currentProxySend int
+	var currentSourceRanges string
+	if err := transaction.QueryRowContext(ctx, `SELECT user_id,tunnel_id,endpoint_group_id,route_rule_set_id,max_connections,max_connections_per_ip,source_ranges,source_whitelist,proxy_protocol_receive,proxy_protocol_send FROM forwards WHERE id=?`, request.ID).Scan(&owner, &tunnelID, &currentEndpointGroupID, &currentRuleSetID, &currentMaxConnections, &currentMaxConnectionsPerIP, &currentSourceRanges, &currentSourceWhitelist, &currentProxyReceive, &currentProxySend); err != nil {
 		return err
+	}
+	if !admin && (currentEndpointGroupID.Valid || currentRuleSetID.Valid || currentMaxConnections > 0 || currentMaxConnectionsPerIP > 0 || strings.TrimSpace(currentSourceRanges) != "" || currentSourceWhitelist != 0 || currentProxyReceive != 0 || currentProxySend != 0) {
+		return errors.New("advanced forwarding controls require administrator privileges")
 	}
 	if !admin && owner != actorID {
 		return errors.New("forward access denied")
@@ -191,7 +225,7 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest, actorID 
 			return err
 		}
 	}
-	_, err = transaction.ExecContext(ctx, "UPDATE forwards SET name=?,remote_addr=?,interface_name=?,strategy=?,updated_at=? WHERE id=?", strings.TrimSpace(request.Name), normalizeAddresses(request.RemoteAddr), strings.TrimSpace(request.InterfaceName), normalizeStrategy(request.Strategy), time.Now().UnixMilli(), request.ID)
+	_, err = transaction.ExecContext(ctx, `UPDATE forwards SET name=?,remote_addr=?,interface_name=?,strategy=?,endpoint_group_id=?,route_rule_set_id=?,max_connections=?,max_connections_per_ip=?,source_ranges=?,source_whitelist=?,proxy_protocol_receive=?,proxy_protocol_send=?,updated_at=? WHERE id=?`, strings.TrimSpace(request.Name), normalizeAddresses(request.RemoteAddr), strings.TrimSpace(request.InterfaceName), normalizeStrategy(request.Strategy), request.EndpointGroupID, request.RouteRuleSetID, request.MaxConnections, request.MaxConnectionsPerIP, normalizeSourceRanges(request.SourceRanges), request.SourceWhitelist, request.ProxyProtocolReceive, request.ProxyProtocolSend, time.Now().UnixMilli(), request.ID)
 	if err != nil {
 		return err
 	}
@@ -352,15 +386,99 @@ func validate(r CreateRequest) error {
 	if r.TunnelID <= 0 {
 		return errors.New("tunnel is required")
 	}
-	if strings.TrimSpace(r.RemoteAddr) == "" {
-		return errors.New("remote address is required")
+	if strings.TrimSpace(r.RemoteAddr) == "" && r.EndpointGroupID == nil {
+		return errors.New("remote address or endpoint group is required")
 	}
-	for _, value := range strings.Split(r.RemoteAddr, ",") {
-		if _, _, err := net.SplitHostPort(strings.TrimSpace(value)); err != nil {
-			return fmt.Errorf("invalid remote address: %s", value)
+	if strings.TrimSpace(r.RemoteAddr) != "" {
+		for _, value := range strings.Split(r.RemoteAddr, ",") {
+			if _, _, err := net.SplitHostPort(strings.TrimSpace(value)); err != nil {
+				return fmt.Errorf("invalid remote address: %s", value)
+			}
+		}
+	}
+	if r.MaxConnections < 0 || r.MaxConnectionsPerIP < 0 {
+		return errors.New("connection limits cannot be negative")
+	}
+	if r.SourceWhitelist != 0 && r.SourceWhitelist != 1 {
+		return errors.New("invalid source range mode")
+	}
+	if r.ProxyProtocolReceive < 0 || r.ProxyProtocolReceive > 2 || r.ProxyProtocolSend < 0 || r.ProxyProtocolSend > 2 {
+		return errors.New("Proxy Protocol version must be 0, 1, or 2")
+	}
+	if r.ProxyProtocolSend > 0 && r.TunnelID <= 0 {
+		return errors.New("Proxy Protocol send requires a tunnel")
+	}
+	for _, value := range splitSourceRanges(r.SourceRanges) {
+		if net.ParseIP(value) == nil {
+			if _, _, err := net.ParseCIDR(value); err != nil {
+				return fmt.Errorf("invalid source range: %s", value)
+			}
 		}
 	}
 	return nil
+}
+
+func (r *Repository) validateAdvancedReferences(ctx context.Context, request CreateRequest) error {
+	if request.EndpointGroupID != nil {
+		if *request.EndpointGroupID <= 0 {
+			return errors.New("endpoint group id must be positive")
+		}
+		var status, endpoints int
+		if err := r.db.QueryRowContext(ctx, `SELECT eg.status,COUNT(e.id) FROM endpoint_groups eg LEFT JOIN endpoints e ON e.group_id=eg.id AND e.status=1 WHERE eg.id=? GROUP BY eg.id`, *request.EndpointGroupID).Scan(&status, &endpoints); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("endpoint group does not exist")
+			}
+			return err
+		}
+		if status != 1 || endpoints == 0 {
+			return errors.New("endpoint group is disabled or has no enabled endpoints")
+		}
+	}
+	if request.RouteRuleSetID != nil {
+		if request.EndpointGroupID == nil {
+			return errors.New("route rule set requires an endpoint group")
+		}
+		if *request.RouteRuleSetID <= 0 {
+			return errors.New("route rule set id must be positive")
+		}
+		var status int
+		if err := r.db.QueryRowContext(ctx, `SELECT status FROM route_rule_sets WHERE id=?`, *request.RouteRuleSetID).Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("route rule set does not exist")
+			}
+			return err
+		}
+		if status != 1 {
+			return errors.New("route rule set is disabled")
+		}
+		var outside int
+		if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM route_rule_endpoints rre JOIN route_rules rr ON rr.id=rre.rule_id JOIN endpoints e ON e.id=rre.endpoint_id WHERE rr.rule_set_id=? AND e.group_id<>?`, *request.RouteRuleSetID, *request.EndpointGroupID).Scan(&outside); err != nil {
+			return err
+		}
+		if outside > 0 {
+			return errors.New("route rule set references endpoints outside the selected group")
+		}
+	}
+	return nil
+}
+
+func hasAdvancedControls(request CreateRequest) bool {
+	return request.EndpointGroupID != nil || request.RouteRuleSetID != nil || request.MaxConnections > 0 || request.MaxConnectionsPerIP > 0 || strings.TrimSpace(request.SourceRanges) != "" || request.SourceWhitelist != 0 || request.ProxyProtocolReceive != 0 || request.ProxyProtocolSend != 0
+}
+
+func splitSourceRanges(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' })
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func normalizeSourceRanges(value string) string {
+	return strings.Join(splitSourceRanges(value), ",")
 }
 func normalizeAddresses(value string) string {
 	parts := strings.FieldsFunc(value, func(r rune) bool { return r == '\n' || r == ',' })

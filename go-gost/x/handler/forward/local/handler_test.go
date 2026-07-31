@@ -1,9 +1,11 @@
 package local
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/go-gost/core/handler"
 	xhop "github.com/go-gost/x/hop"
 	xlogger "github.com/go-gost/x/logger"
+	xmetadata "github.com/go-gost/x/metadata"
 	xselector "github.com/go-gost/x/selector"
 )
 
@@ -63,6 +66,70 @@ func TestHandlerFallsThroughMultipleFIFOEndpoints(t *testing.T) {
 		t.Fatal("successful endpoint remained failed")
 	}
 }
+
+func TestHandlerSendsProxyProtocolV1(t *testing.T) {
+	hp := xhop.NewHop(
+		xhop.NodeOption(chain.NewNode("endpoint", "192.0.2.20:443")),
+		xhop.SelectorOption(xselector.NewSelector(
+			xselector.FIFOStrategy[*chain.Node](),
+			xselector.FailFilter[*chain.Node](1, time.Hour),
+		)),
+		xhop.LoggerOption(xlogger.NewLogger()),
+	)
+	targetClient, targetServer := net.Pipe()
+	router := &fixedRouter{conn: targetClient}
+	h := NewHandler(handler.RouterOption(router)).(*forwardHandler)
+	if err := h.Init(xmetadata.NewMetadata(map[string]any{"proxyProtocol": 1})); err != nil {
+		t.Fatal(err)
+	}
+	h.Forward(hp)
+
+	clientSide, serviceSide := net.Pipe()
+	client := &addressConn{
+		Conn:       serviceSide,
+		remoteAddr: &net.TCPAddr{IP: net.ParseIP("198.51.100.25"), Port: 54321},
+		localAddr:  &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 10000},
+	}
+	done := make(chan error, 1)
+	go func() { done <- h.Handle(context.Background(), client) }()
+
+	header, err := bufio.NewReader(targetServer).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(header, "PROXY TCP4 198.51.100.25 192.0.2.10 54321 10000") {
+		t.Fatalf("unexpected proxy protocol header %q", header)
+	}
+	clientSide.Close()
+	targetServer.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Handle() did not stop")
+	}
+}
+
+type fixedRouter struct{ conn net.Conn }
+
+func (r *fixedRouter) Options() *chain.RouterOptions { return &chain.RouterOptions{} }
+func (r *fixedRouter) Dial(context.Context, string, string) (net.Conn, error) {
+	return r.conn, nil
+}
+func (r *fixedRouter) Bind(context.Context, string, string, ...chain.BindOption) (net.Listener, error) {
+	return nil, errors.New("not implemented")
+}
+
+type addressConn struct {
+	net.Conn
+	remoteAddr net.Addr
+	localAddr  net.Addr
+}
+
+func (c *addressConn) RemoteAddr() net.Addr { return c.remoteAddr }
+func (c *addressConn) LocalAddr() net.Addr  { return c.localAddr }
 
 type sequenceRouter struct {
 	errors []error

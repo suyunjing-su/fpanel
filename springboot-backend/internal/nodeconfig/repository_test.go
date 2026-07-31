@@ -149,6 +149,88 @@ func TestBuildFiltersUnavailableForwards(t *testing.T) {
 	}
 }
 
+func TestBuildAdvancedForwardControls(t *testing.T) {
+	db := openTestDatabase(t)
+	execFixture(t, db, `INSERT INTO users(id,username,password_hash,role,expires_at,status,created_at,updated_at) VALUES(1,'admin','hash','admin',0,1,1,1)`)
+	execFixture(t, db, `INSERT INTO nodes(id,name,ip,server_ip,port_start,port_end,secret,status,created_at,updated_at) VALUES(1,'entry','10.0.0.1','203.0.113.1',10000,20000,'secret',1,1,1)`)
+	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,created_at,updated_at) VALUES(1,'direct',1,1,1,1,1,1)`)
+	execFixture(t, db, `INSERT INTO tunnel_nodes(id,tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol) VALUES(1,1,1,1,7000,'fifo',0,'tcp')`)
+	execFixture(t, db, `INSERT INTO endpoint_groups(id,name,strategy,max_fails,fail_timeout_ms,probe_interval_ms,probe_timeout_ms,status,created_at,updated_at) VALUES(1,'origins','round',2,45000,7000,1500,1,1,1)`)
+	execFixture(t, db, `INSERT INTO endpoints(id,group_id,name,address,priority,backup,status,sort_index,created_at,updated_at) VALUES
+		(1,1,'primary','192.0.2.10:443',20,0,1,0,1,1),
+		(2,1,'backup','192.0.2.20:443',10,1,1,1,1,1)`)
+	execFixture(t, db, `INSERT INTO route_rule_sets(id,name,status,created_at,updated_at) VALUES(1,'hosts',1,1,1)`)
+	execFixture(t, db, `INSERT INTO route_rules(id,rule_set_id,name,match_type,value,secondary_value,negate,priority,status,sort_index,created_at,updated_at) VALUES(1,1,'api','host','api.example.com','',0,200,1,0,1,1)`)
+	execFixture(t, db, `INSERT INTO route_rule_endpoints(rule_id,endpoint_id) VALUES(1,1)`)
+	execFixture(t, db, `INSERT INTO forwards(id,user_id,name,tunnel_id,remote_addr,interface_name,strategy,endpoint_group_id,route_rule_set_id,max_connections,max_connections_per_ip,source_ranges,source_whitelist,proxy_protocol_receive,proxy_protocol_send,status,sort_index,created_at,updated_at) VALUES(1,1,'advanced',1,'198.51.100.5:443','eth0','fifo',1,1,100,5,'192.0.2.0/24,2001:db8::1',1,2,1,1,0,1,1)`)
+	execFixture(t, db, `INSERT INTO forward_ports(forward_id,node_id,port) VALUES(1,1,10000)`)
+
+	document, err := NewRepository(db).Build(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := namedItem(document.Services, "1_1_0_tcp")
+	if service == nil {
+		t.Fatal("advanced TCP service is missing")
+	}
+	if service["climiter"] != "forward_conn_1" || service["admission"] != "forward_source_1" {
+		t.Fatalf("advanced resources are not bound: %#v", service)
+	}
+	metadata, _ := service["metadata"].(map[string]any)
+	if metadata["interface"] != "eth0" || metadata["proxyProtocol"] != 2 {
+		t.Fatalf("service metadata is incomplete: %#v", metadata)
+	}
+	handler, _ := service["handler"].(map[string]any)
+	handlerMetadata, _ := handler["metadata"].(map[string]any)
+	if handlerMetadata["proxyProtocol"] != 1 || handlerMetadata["sniffing"] != true {
+		t.Fatalf("handler metadata is incomplete: %#v", handlerMetadata)
+	}
+	forwarder, _ := service["forwarder"].(map[string]any)
+	selector, _ := forwarder["selector"].(map[string]any)
+	if selector["strategy"] != "round" || selector["maxFails"] != 2 || selector["failTimeout"] != int64(45_000_000_000) {
+		t.Fatalf("endpoint selector is incomplete: %#v", selector)
+	}
+	if forwarder["probePeriod"] != int64(7_000_000_000) || forwarder["probeTimeout"] != int64(1_500_000_000) {
+		t.Fatalf("endpoint probes are incomplete: %#v", forwarder)
+	}
+	nodes, ok := forwarder["nodes"].([]map[string]any)
+	if !ok || len(nodes) != 4 {
+		t.Fatalf("unexpected endpoint nodes: %#v", forwarder["nodes"])
+	}
+	matcher, _ := nodes[0]["matcher"].(map[string]any)
+	if matcher["rule"] != "Host(`api.example.com`)" || matcher["priority"] != 1_000_200 {
+		t.Fatalf("route matcher is incomplete: %#v", matcher)
+	}
+	backupMetadata, _ := nodes[2]["metadata"].(map[string]any)
+	if backupMetadata["backup"] != true {
+		t.Fatalf("backup endpoint is not marked: %#v", nodes[2])
+	}
+	if nodes[3]["addr"] != "198.51.100.5:443" {
+		t.Fatalf("legacy fallback endpoint is missing: %#v", nodes)
+	}
+	climiter := namedItem(document.CLimiters, "forward_conn_1")
+	limits, _ := climiter["limits"].([]string)
+	if len(limits) != 2 || limits[0] != "$ 100" || limits[1] != "$$ 5" {
+		t.Fatalf("unexpected connection limits: %#v", climiter)
+	}
+	admission := namedItem(document.Admissions, "forward_source_1")
+	matchers, _ := admission["matchers"].([]string)
+	if admission["whitelist"] != true || len(matchers) != 2 || matchers[1] != "2001:db8::1" {
+		t.Fatalf("unexpected admission: %#v", admission)
+	}
+
+	snapshot, err := DecodeSnapshot([]byte(`{"services":[],"chains":[],"limiters":[]}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.CLimiters == nil || snapshot.Admissions == nil {
+		t.Fatal("snapshot omitted authoritative advanced resource arrays")
+	}
+	if Equivalent(document, Document{Services: document.Services, Chains: document.Chains, Limiters: document.Limiters}) {
+		t.Fatal("advanced resource drift was ignored")
+	}
+}
+
 func TestEquivalentNormalizesInheritedHopInterface(t *testing.T) {
 	expected := Document{Chains: []map[string]any{{
 		"name": "chain",

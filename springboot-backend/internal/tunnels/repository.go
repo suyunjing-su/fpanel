@@ -452,13 +452,16 @@ func syncNodes(ctx context.Context, transaction *sql.Tx, tunnelID int64, request
 		if item.spec.SpeedLimitMbps != nil {
 			speed = *item.spec.SpeedLimitMbps
 		}
-		_, err := transaction.ExecContext(ctx, `INSERT INTO tunnel_nodes(tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol,flow_quota_bytes,speed_limit_mbps) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(tunnel_id,node_id) DO UPDATE SET chain_type=excluded.chain_type,port=excluded.port,strategy=excluded.strategy,hop_index=excluded.hop_index,protocol=excluded.protocol,flow_quota_bytes=excluded.flow_quota_bytes,speed_limit_mbps=excluded.speed_limit_mbps`, tunnelID, item.kind, item.spec.NodeID, item.spec.Port, item.spec.Strategy, item.hop, normalizeProtocol(item.spec.Protocol), quota, speed)
+		result, err := transaction.ExecContext(ctx, `INSERT INTO tunnel_nodes(tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol,flow_quota_bytes,speed_limit_mbps) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(tunnel_id,node_id) DO UPDATE SET chain_type=excluded.chain_type,port=excluded.port,strategy=excluded.strategy,hop_index=excluded.hop_index,protocol=excluded.protocol,flow_quota_bytes=excluded.flow_quota_bytes,speed_limit_mbps=excluded.speed_limit_mbps WHERE tunnel_nodes.group_binding_id IS NULL`, tunnelID, item.kind, item.spec.NodeID, item.spec.Port, item.spec.Strategy, item.hop, normalizeProtocol(item.spec.Protocol), quota, speed)
 		if err != nil {
 			return err
 		}
+		if count, _ := result.RowsAffected(); count == 0 {
+			return fmt.Errorf("node %d is managed by a node group binding", item.spec.NodeID)
+		}
 		keep = append(keep, item.spec.NodeID)
 	}
-	query := "DELETE FROM tunnel_nodes WHERE tunnel_id=?"
+	query := "DELETE FROM tunnel_nodes WHERE tunnel_id=? AND group_binding_id IS NULL"
 	args := []any{tunnelID}
 	if len(keep) > 0 {
 		query += " AND node_id NOT IN (" + strings.TrimRight(strings.Repeat("?,", len(keep)), ",") + ")"

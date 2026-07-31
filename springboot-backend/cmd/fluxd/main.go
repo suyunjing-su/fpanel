@@ -20,6 +20,7 @@ import (
 	"github.com/suyunjing-su/fpanel/backend/internal/nodehub"
 	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
 	"github.com/suyunjing-su/fpanel/backend/internal/observability"
+	"github.com/suyunjing-su/fpanel/backend/internal/runtimecontrols"
 	"github.com/suyunjing-su/fpanel/backend/internal/siteconfig"
 	"github.com/suyunjing-su/fpanel/backend/internal/speedlimits"
 	"github.com/suyunjing-su/fpanel/backend/internal/traffic"
@@ -63,6 +64,7 @@ func run() error {
 	trafficRepo := traffic.NewRepository(db, nodeRepo)
 	speedLimitRepo := speedlimits.NewRepository(db)
 	policyRepo := tunnelpolicies.NewRepository(db)
+	runtimeControlRepo := runtimecontrols.NewRepository(db)
 	healthRepo := tunnelhealth.NewRepository(db)
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
@@ -111,6 +113,7 @@ func run() error {
 		httpapi.WriteJSON(w, http.StatusBadRequest, httpapi.Failure(http.StatusBadRequest, err.Error()))
 	}
 	registerLimitRoutes(mux, speedLimitRepo, policyRepo, tunnelRepo, refreshQueue, isAdmin)
+	registerRuntimeControlRoutes(mux, runtimeControlRepo, refreshQueue, isAdmin)
 	mux.HandleFunc("POST /api/v1/tunnel/failure-event/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
 			forbidden(w)

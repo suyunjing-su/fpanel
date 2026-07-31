@@ -17,9 +17,11 @@ import (
 )
 
 type Document struct {
-	Services []map[string]any `json:"services"`
-	Chains   []map[string]any `json:"chains"`
-	Limiters []map[string]any `json:"limiters"`
+	Services   []map[string]any `json:"services"`
+	Chains     []map[string]any `json:"chains"`
+	Limiters   []map[string]any `json:"limiters"`
+	CLimiters  []map[string]any `json:"climiters"`
+	Admissions []map[string]any `json:"admissions"`
 }
 
 type Repository struct {
@@ -57,6 +59,10 @@ type tunnelNode struct {
 	HealthStatus        int
 	BandwidthOverloaded int
 	LastLatencyMS       *int64
+	GroupPriority       int
+	GroupBackup         int
+	GroupMaxFails       int
+	GroupFailTimeoutMS  int64
 	Node                nodeRecord
 }
 
@@ -67,6 +73,14 @@ type forwardRecord struct {
 	RemoteAddr             string
 	InterfaceName          string
 	Strategy               string
+	EndpointGroupID        *int64
+	RouteRuleSetID         *int64
+	MaxConnections         int
+	MaxConnectionsPerIP    int
+	SourceRanges           string
+	SourceWhitelist        int
+	ProxyProtocolReceive   int
+	ProxyProtocolSend      int
 	Status                 int
 	Port                   int
 	UserRole               string
@@ -88,6 +102,24 @@ type forwardRecord struct {
 	SpeedLimitID           *int64
 	SpeedLimitMbps         int
 	SpeedLimitStatus       int
+}
+
+type routeEndpoint struct {
+	ID       int64
+	Name     string
+	Address  string
+	Priority int
+	Backup   int
+	Rule     string
+}
+
+type endpointPlan struct {
+	Strategy        string
+	MaxFails        int
+	FailTimeoutMS   int64
+	ProbeIntervalMS int64
+	ProbeTimeoutMS  int64
+	Endpoints       []routeEndpoint
 }
 
 type entryPolicy struct {
@@ -145,13 +177,17 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 	}
 
 	document := Document{
-		Services: make([]map[string]any, 0),
-		Chains:   make([]map[string]any, 0),
-		Limiters: make([]map[string]any, 0),
+		Services:   make([]map[string]any, 0),
+		Chains:     make([]map[string]any, 0),
+		Limiters:   make([]map[string]any, 0),
+		CLimiters:  make([]map[string]any, 0),
+		Admissions: make([]map[string]any, 0),
 	}
 	chainNames := make(map[string]struct{})
 	serviceNames := make(map[string]struct{})
 	limiterSpeeds := make(map[string]int)
+	connectionLimiters := make(map[string][]string)
+	admissions := make(map[string]map[string]any)
 
 	for tunnelID, topology := range nodesByTunnel {
 		tunnel := tunnels[tunnelID]
@@ -223,9 +259,40 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 			}
 		}
 
+		endpointPlan, err := r.loadEndpointPlan(ctx, forward)
+		if err != nil {
+			return Document{}, err
+		}
+		if len(endpointPlan.Endpoints) == 0 && strings.TrimSpace(forward.RemoteAddr) == "" {
+			continue
+		}
+
+		connectionLimiterName := ""
+		connectionLimits := make([]string, 0, 2)
+		if forward.MaxConnections > 0 {
+			connectionLimits = append(connectionLimits, fmt.Sprintf("$ %d", forward.MaxConnections))
+		}
+		if forward.MaxConnectionsPerIP > 0 {
+			connectionLimits = append(connectionLimits, fmt.Sprintf("$$ %d", forward.MaxConnectionsPerIP))
+		}
+		if len(connectionLimits) > 0 {
+			connectionLimiterName = fmt.Sprintf("forward_conn_%d", forward.ID)
+			connectionLimiters[connectionLimiterName] = connectionLimits
+		}
+
+		admissionName := ""
+		if sourceRanges := splitValues(forward.SourceRanges); len(sourceRanges) > 0 {
+			admissionName = fmt.Sprintf("forward_source_%d", forward.ID)
+			admissions[admissionName] = map[string]any{
+				"name":      admissionName,
+				"whitelist": forward.SourceWhitelist == 1,
+				"matchers":  sourceRanges,
+			}
+		}
+
 		baseName := fmt.Sprintf("%d_%d_%d", forward.ID, forward.UserID, forward.UserTunnelID)
 		for _, protocol := range []string{"tcp", "udp"} {
-			service := buildForwardService(current, forward, tunnel, baseName, protocol, limiterName, chainNamesByTraffic[protocol])
+			service := buildForwardService(current, forward, tunnel, baseName, protocol, limiterName, connectionLimiterName, admissionName, chainNamesByTraffic[protocol], endpointPlan)
 			addNamed(&document.Services, serviceNames, service)
 		}
 	}
@@ -242,6 +309,17 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 			"limits": []string{"$ " + speed + "MB " + speed + "MB"},
 		})
 	}
+	connectionLimiterNames := sortedKeys(connectionLimiters)
+	for _, name := range connectionLimiterNames {
+		document.CLimiters = append(document.CLimiters, map[string]any{
+			"name":   name,
+			"limits": connectionLimiters[name],
+		})
+	}
+	admissionNames := sortedKeys(admissions)
+	for _, name := range admissionNames {
+		document.Admissions = append(document.Admissions, admissions[name])
+	}
 	sortNamed(document.Chains)
 	sortNamed(document.Services)
 	return document, nil
@@ -257,7 +335,7 @@ func (r *Repository) loadNode(ctx context.Context, nodeID int64) (nodeRecord, er
 
 func (r *Repository) loadTopology(ctx context.Context, nodeID int64) (map[int64]tunnelRecord, map[int64][]*tunnelNode, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id,t.type,t.status,tn.id,tn.chain_type,tn.node_id,COALESCE(tn.port,0),COALESCE(tn.strategy,'fifo'),COALESCE(tn.hop_index,0),COALESCE(tn.protocol,'tcp'),COALESCE(tn.flow_quota_bytes,0),COALESCE(tn.speed_limit_mbps,0),tn.ingress_bytes,tn.egress_bytes,tn.health_status,tn.bandwidth_overloaded,tn.last_latency_ms,n.server_ip,n.status,n.interface_name,n.tcp_listen_addr,n.udp_listen_addr
+		SELECT t.id,t.type,t.status,tn.id,tn.chain_type,tn.node_id,COALESCE(tn.port,0),COALESCE(tn.strategy,'fifo'),COALESCE(tn.hop_index,0),COALESCE(tn.protocol,'tcp'),COALESCE(tn.flow_quota_bytes,0),COALESCE(tn.speed_limit_mbps,0),tn.ingress_bytes,tn.egress_bytes,tn.health_status,tn.bandwidth_overloaded,tn.last_latency_ms,tn.group_priority,tn.group_backup,tn.group_max_fails,tn.group_fail_timeout_ms,n.server_ip,n.status,n.interface_name,n.tcp_listen_addr,n.udp_listen_addr
 		FROM tunnels t
 		JOIN tunnel_nodes tn ON tn.tunnel_id=t.id
 		JOIN nodes n ON n.id=tn.node_id
@@ -273,7 +351,7 @@ func (r *Repository) loadTopology(ctx context.Context, nodeID int64) (map[int64]
 		var tunnel tunnelRecord
 		var item tunnelNode
 		var latency sql.NullInt64
-		if err := rows.Scan(&tunnel.ID, &tunnel.Type, &tunnel.Status, &item.ID, &item.ChainType, &item.NodeID, &item.Port, &item.Strategy, &item.HopIndex, &item.Protocol, &item.FlowQuotaBytes, &item.SpeedLimitMbps, &item.IngressBytes, &item.EgressBytes, &item.HealthStatus, &item.BandwidthOverloaded, &latency, &item.Node.ServerIP, &item.Node.Status, &item.Node.InterfaceName, &item.Node.TCPListenAddr, &item.Node.UDPListenAddr); err != nil {
+		if err := rows.Scan(&tunnel.ID, &tunnel.Type, &tunnel.Status, &item.ID, &item.ChainType, &item.NodeID, &item.Port, &item.Strategy, &item.HopIndex, &item.Protocol, &item.FlowQuotaBytes, &item.SpeedLimitMbps, &item.IngressBytes, &item.EgressBytes, &item.HealthStatus, &item.BandwidthOverloaded, &latency, &item.GroupPriority, &item.GroupBackup, &item.GroupMaxFails, &item.GroupFailTimeoutMS, &item.Node.ServerIP, &item.Node.Status, &item.Node.InterfaceName, &item.Node.TCPListenAddr, &item.Node.UDPListenAddr); err != nil {
 			return nil, nil, fmt.Errorf("scan node topology: %w", err)
 		}
 		item.TunnelID = tunnel.ID
@@ -320,7 +398,9 @@ func (r *Repository) syncPolicies(ctx context.Context, tunnels map[int64]tunnelR
 
 func (r *Repository) loadForwards(ctx context.Context, nodeID int64) ([]forwardRecord, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT f.id,f.user_id,f.tunnel_id,f.remote_addr,f.interface_name,f.strategy,f.status,fp.port,
+		SELECT f.id,f.user_id,f.tunnel_id,f.remote_addr,f.interface_name,f.strategy,
+		       f.endpoint_group_id,f.route_rule_set_id,f.max_connections,f.max_connections_per_ip,
+		       f.source_ranges,f.source_whitelist,f.proxy_protocol_receive,f.proxy_protocol_send,f.status,fp.port,
 		       u.role,u.status,u.expires_at,u.flow_quota_bytes,u.ingress_bytes,u.egress_bytes,u.forward_quota,
 		       (SELECT COUNT(*) FROM forwards f2 WHERE f2.user_id=f.user_id AND f2.status=1 AND (f2.sort_index<f.sort_index OR (f2.sort_index=f.sort_index AND f2.id<=f.id))),
 		       COALESCE(ut.id,0),COALESCE(ut.status,0),COALESCE(ut.expires_at,0),COALESCE(ut.flow_quota_bytes,0),COALESCE(ut.ingress_bytes,0),COALESCE(ut.egress_bytes,0),COALESCE(ut.forward_quota,0),
@@ -340,12 +420,20 @@ func (r *Repository) loadForwards(ctx context.Context, nodeID int64) ([]forwardR
 	result := make([]forwardRecord, 0)
 	for rows.Next() {
 		var item forwardRecord
-		var speedLimitID sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.UserID, &item.TunnelID, &item.RemoteAddr, &item.InterfaceName, &item.Strategy, &item.Status, &item.Port,
+		var endpointGroupID, routeRuleSetID, speedLimitID sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.UserID, &item.TunnelID, &item.RemoteAddr, &item.InterfaceName, &item.Strategy,
+			&endpointGroupID, &routeRuleSetID, &item.MaxConnections, &item.MaxConnectionsPerIP,
+			&item.SourceRanges, &item.SourceWhitelist, &item.ProxyProtocolReceive, &item.ProxyProtocolSend, &item.Status, &item.Port,
 			&item.UserRole, &item.UserStatus, &item.UserExpiresAt, &item.UserFlowQuota, &item.UserIngress, &item.UserEgress, &item.UserForwardQuota, &item.UserForwardRank,
 			&item.UserTunnelID, &item.UserTunnelStatus, &item.UserTunnelExpiresAt, &item.UserTunnelFlowQuota, &item.UserTunnelIngress, &item.UserTunnelEgress, &item.UserTunnelForwardQuota, &item.UserTunnelForwardRank,
 			&speedLimitID, &item.SpeedLimitMbps, &item.SpeedLimitStatus); err != nil {
 			return nil, fmt.Errorf("scan node forward: %w", err)
+		}
+		if endpointGroupID.Valid {
+			item.EndpointGroupID = &endpointGroupID.Int64
+		}
+		if routeRuleSetID.Valid {
+			item.RouteRuleSetID = &routeRuleSetID.Int64
 		}
 		if speedLimitID.Valid {
 			item.SpeedLimitID = &speedLimitID.Int64
@@ -353,6 +441,112 @@ func (r *Repository) loadForwards(ctx context.Context, nodeID int64) ([]forwardR
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func (r *Repository) loadEndpointPlan(ctx context.Context, forward forwardRecord) (endpointPlan, error) {
+	plan := endpointPlan{
+		Strategy:        forward.Strategy,
+		MaxFails:        1,
+		FailTimeoutMS:   600000,
+		ProbeIntervalMS: 10000,
+		ProbeTimeoutMS:  3000,
+		Endpoints:       make([]routeEndpoint, 0),
+	}
+	if forward.EndpointGroupID == nil {
+		return plan, nil
+	}
+	var status int
+	if err := r.db.QueryRowContext(ctx, `SELECT strategy,max_fails,fail_timeout_ms,probe_interval_ms,probe_timeout_ms,status FROM endpoint_groups WHERE id=?`, *forward.EndpointGroupID).Scan(
+		&plan.Strategy, &plan.MaxFails, &plan.FailTimeoutMS, &plan.ProbeIntervalMS, &plan.ProbeTimeoutMS, &status,
+	); err != nil {
+		return endpointPlan{}, fmt.Errorf("load endpoint group %d: %w", *forward.EndpointGroupID, err)
+	}
+	if status != 1 {
+		return plan, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `SELECT id,name,address,priority,backup FROM endpoints WHERE group_id=? AND status=1 ORDER BY sort_index,id`, *forward.EndpointGroupID)
+	if err != nil {
+		return endpointPlan{}, fmt.Errorf("load endpoints: %w", err)
+	}
+	defer rows.Close()
+	endpoints := make([]routeEndpoint, 0)
+	byID := make(map[int64]routeEndpoint)
+	for rows.Next() {
+		var endpoint routeEndpoint
+		if err := rows.Scan(&endpoint.ID, &endpoint.Name, &endpoint.Address, &endpoint.Priority, &endpoint.Backup); err != nil {
+			return endpointPlan{}, fmt.Errorf("scan endpoint: %w", err)
+		}
+		endpoints = append(endpoints, endpoint)
+		byID[endpoint.ID] = endpoint
+	}
+	if err := rows.Err(); err != nil {
+		return endpointPlan{}, err
+	}
+
+	if forward.RouteRuleSetID != nil {
+		ruleRows, err := r.db.QueryContext(ctx, `
+			SELECT rr.id,rr.match_type,rr.value,rr.secondary_value,rr.negate,rr.priority,rre.endpoint_id
+			FROM route_rule_sets rrs
+			JOIN route_rules rr ON rr.rule_set_id=rrs.id AND rr.status=1
+			JOIN route_rule_endpoints rre ON rre.rule_id=rr.id
+			WHERE rrs.id=? AND rrs.status=1
+			ORDER BY rr.priority DESC,rr.sort_index,rr.id,rre.endpoint_id`, *forward.RouteRuleSetID)
+		if err != nil {
+			return endpointPlan{}, fmt.Errorf("load route rules: %w", err)
+		}
+		defer ruleRows.Close()
+		for ruleRows.Next() {
+			var ruleID, endpointID int64
+			var matchType, value, secondaryValue string
+			var negate, priority int
+			if err := ruleRows.Scan(&ruleID, &matchType, &value, &secondaryValue, &negate, &priority, &endpointID); err != nil {
+				return endpointPlan{}, fmt.Errorf("scan route rule: %w", err)
+			}
+			endpoint, exists := byID[endpointID]
+			if !exists {
+				continue
+			}
+			endpoint.Name = fmt.Sprintf("rule_%d_%s", ruleID, endpoint.Name)
+			endpoint.Rule = matcherExpression(matchType, value, secondaryValue, negate == 1)
+			endpoint.Priority = 1_000_000 + priority
+			plan.Endpoints = append(plan.Endpoints, endpoint)
+		}
+		if err := ruleRows.Err(); err != nil {
+			return endpointPlan{}, err
+		}
+	}
+	plan.Endpoints = append(plan.Endpoints, endpoints...)
+	return plan, nil
+}
+
+func matcherExpression(matchType, value, secondaryValue string, negate bool) string {
+	function := map[string]string{
+		"client_ip":     "ClientIP",
+		"protocol":      "Proto",
+		"host":          "Host",
+		"host_regexp":   "HostRegexp",
+		"method":        "Method",
+		"path":          "Path",
+		"path_regexp":   "PathRegexp",
+		"path_prefix":   "PathPrefix",
+		"header":        "Header",
+		"header_regexp": "HeaderRegexp",
+		"query":         "Query",
+		"query_regexp":  "QueryRegexp",
+	}[matchType]
+	if function == "" {
+		return ""
+	}
+	arguments := "`" + value + "`"
+	if secondaryValue != "" {
+		arguments += ",`" + secondaryValue + "`"
+	}
+	expression := function + "(" + arguments + ")"
+	if negate {
+		return "!" + expression
+	}
+	return expression
 }
 
 func (r *Repository) loadEntryPolicies(ctx context.Context, nodeID int64) (map[int64]entryPolicy, error) {
@@ -512,11 +706,27 @@ func buildPathChain(current nodeRecord, tunnelID int64, suffix, trafficProtocol 
 		}
 		nodes := make([]map[string]any, 0, len(candidates))
 		for index, item := range candidates {
+			metadata := make(map[string]any)
+			if item.GroupBackup == 1 {
+				metadata["backup"] = true
+			}
+			if item.GroupMaxFails > 0 {
+				metadata["maxFails"] = item.GroupMaxFails
+			}
+			if item.GroupFailTimeoutMS > 0 {
+				metadata["failTimeout"] = item.GroupFailTimeoutMS * int64(time.Millisecond)
+			}
 			node := map[string]any{
 				"name":      fmt.Sprintf("node_%d", index+1),
 				"addr":      joinHostPort(item.Node.ServerIP, item.Port, item.Protocol, trafficProtocol),
 				"connector": map[string]any{"type": "relay"},
 				"dialer":    transportConfig(item.Protocol, trafficProtocol, false),
+			}
+			if item.GroupPriority > 0 {
+				node["matcher"] = map[string]any{"priority": item.GroupPriority}
+			}
+			if len(metadata) > 0 {
+				node["metadata"] = metadata
 			}
 			if strings.TrimSpace(current.InterfaceName) != "" {
 				node["interface"] = current.InterfaceName
@@ -552,49 +762,126 @@ func buildRelayService(current nodeRecord, item *tunnelNode, _ []*tunnelNode, tr
 	return service
 }
 
-func buildForwardService(current nodeRecord, forward forwardRecord, tunnel tunnelRecord, baseName, protocol, limiterName, chain string) map[string]any {
+func buildForwardService(current nodeRecord, forward forwardRecord, tunnel tunnelRecord, baseName, protocol, limiterName, connectionLimiterName, admissionName, chain string, plan endpointPlan) map[string]any {
+	handler := map[string]any{"type": protocol}
+	listener := map[string]any{"type": protocol}
 	service := map[string]any{
 		"name":      baseName + "_" + protocol,
 		"addr":      joinListenHost(protocolListenAddr(current, protocol), forward.Port),
-		"handler":   map[string]any{"type": protocol},
-		"listener":  map[string]any{"type": protocol},
-		"forwarder": buildForwarder(forward.RemoteAddr, forward.Strategy),
+		"handler":   handler,
+		"listener":  listener,
+		"forwarder": buildForwarder(forward.RemoteAddr, forward.Strategy, plan),
 	}
 	if protocol == "udp" {
-		service["listener"] = map[string]any{"type": "udp", "metadata": map[string]any{"keepAlive": true}}
+		listener["metadata"] = map[string]any{"keepAlive": true}
 	}
+	metadata := make(map[string]any)
 	if tunnel.Type == 1 && strings.TrimSpace(forward.InterfaceName) != "" {
-		service["metadata"] = map[string]any{"interface": forward.InterfaceName}
+		metadata["interface"] = forward.InterfaceName
+	}
+	if protocol == "tcp" && forward.ProxyProtocolReceive > 0 {
+		metadata["proxyProtocol"] = forward.ProxyProtocolReceive
+	}
+	if len(metadata) > 0 {
+		service["metadata"] = metadata
+	}
+	if protocol == "tcp" && forward.ProxyProtocolSend > 0 {
+		handlerMetadata := map[string]any{"proxyProtocol": forward.ProxyProtocolSend}
+		if planNeedsSniffing(plan) {
+			handlerMetadata["sniffing"] = true
+			handlerMetadata["sniffing.timeout"] = int64(5 * time.Second)
+		}
+		handler["metadata"] = handlerMetadata
+	} else if protocol == "tcp" && planNeedsSniffing(plan) {
+		handler["metadata"] = map[string]any{
+			"sniffing":         true,
+			"sniffing.timeout": int64(5 * time.Second),
+		}
 	}
 	if limiterName != "" {
 		service["limiter"] = limiterName
 	}
+	if connectionLimiterName != "" {
+		service["climiter"] = connectionLimiterName
+	}
+	if admissionName != "" {
+		service["admission"] = admissionName
+	}
 	if tunnel.Type == 2 {
-		service["handler"] = map[string]any{"type": protocol, "retries": 1, "chain": chain}
+		handler["retries"] = 1
+		handler["chain"] = chain
 	}
 	return service
 }
 
-func buildForwarder(remoteAddr, strategy string) map[string]any {
-	addresses := strings.Split(remoteAddr, ",")
-	nodes := make([]map[string]any, 0, len(addresses))
-	for _, address := range addresses {
-		address = strings.TrimSpace(address)
-		if address == "" {
-			continue
+func buildForwarder(remoteAddr, strategy string, plan endpointPlan) map[string]any {
+	nodes := make([]map[string]any, 0, len(plan.Endpoints)+1)
+	for _, endpoint := range plan.Endpoints {
+		node := map[string]any{
+			"name": endpoint.Name,
+			"addr": endpoint.Address,
 		}
-		nodes = append(nodes, map[string]any{"name": fmt.Sprintf("node_%d", len(nodes)+1), "addr": address})
+		metadata := make(map[string]any)
+		if endpoint.Backup == 1 {
+			metadata["backup"] = true
+		}
+		if len(metadata) > 0 {
+			node["metadata"] = metadata
+		}
+		if endpoint.Rule != "" || endpoint.Priority > 0 {
+			node["matcher"] = map[string]any{
+				"rule":     endpoint.Rule,
+				"priority": endpoint.Priority,
+			}
+		}
+		nodes = append(nodes, node)
+	}
+	for _, address := range splitValues(remoteAddr) {
+		nodes = append(nodes, map[string]any{
+			"name": fmt.Sprintf("legacy_%d", len(nodes)+1),
+			"addr": address,
+		})
+	}
+	if plan.Strategy == "" {
+		plan.Strategy = strategy
+	}
+	if plan.MaxFails <= 0 {
+		plan.MaxFails = 1
+	}
+	if plan.FailTimeoutMS <= 0 {
+		plan.FailTimeoutMS = 600000
+	}
+	if plan.ProbeIntervalMS <= 0 {
+		plan.ProbeIntervalMS = 10000
+	}
+	if plan.ProbeTimeoutMS <= 0 {
+		plan.ProbeTimeoutMS = 3000
 	}
 	return map[string]any{
 		"nodes":        nodes,
-		"probePeriod":  int64(10_000_000_000),
-		"probeTimeout": int64(3_000_000_000),
+		"probePeriod":  plan.ProbeIntervalMS * int64(time.Millisecond),
+		"probeTimeout": plan.ProbeTimeoutMS * int64(time.Millisecond),
 		"selector": map[string]any{
-			"strategy":    normalizeStrategy(strategy),
-			"maxFails":    1,
-			"failTimeout": int64(600_000_000_000),
+			"strategy":    normalizeStrategy(plan.Strategy),
+			"maxFails":    plan.MaxFails,
+			"failTimeout": plan.FailTimeoutMS * int64(time.Millisecond),
 		},
 	}
+}
+
+func planNeedsSniffing(plan endpointPlan) bool {
+	for _, endpoint := range plan.Endpoints {
+		if endpoint.Rule == "" {
+			continue
+		}
+		if !strings.HasPrefix(endpoint.Rule, "ClientIP(") &&
+			!strings.HasPrefix(endpoint.Rule, "!ClientIP(") &&
+			!strings.HasPrefix(endpoint.Rule, "Proto(") &&
+			!strings.HasPrefix(endpoint.Rule, "!Proto(") {
+			return true
+		}
+	}
+	return false
 }
 
 func transportConfig(protocol, trafficProtocol string, listener bool) map[string]any {
@@ -764,6 +1051,28 @@ func quotaReached(quota, first, second int64) bool {
 	return first >= quota-second
 }
 
+func splitValues(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r'
+	})
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
+}
+
+func sortedKeys[T any](values map[string]T) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func normalizeStrategy(strategy string) string {
 	strategy = strings.ToLower(strings.TrimSpace(strategy))
 	if strategy == "round" || strategy == "rand" {
@@ -835,13 +1144,21 @@ func DecodeSnapshot(raw []byte, secret string) (Document, error) {
 	if document.Limiters == nil {
 		document.Limiters = []map[string]any{}
 	}
+	if document.CLimiters == nil {
+		document.CLimiters = []map[string]any{}
+	}
+	if document.Admissions == nil {
+		document.Admissions = []map[string]any{}
+	}
 	return document, nil
 }
 
 func Equivalent(expected, actual Document) bool {
 	return namedItemsEqual(expected.Services, actual.Services, true) &&
 		namedItemsEqual(expected.Chains, actual.Chains, false) &&
-		namedItemsEqual(expected.Limiters, actual.Limiters, false)
+		namedItemsEqual(expected.Limiters, actual.Limiters, false) &&
+		namedItemsEqual(expected.CLimiters, actual.CLimiters, false) &&
+		namedItemsEqual(expected.Admissions, actual.Admissions, false)
 }
 
 func namedItemsEqual(expected, actual []map[string]any, stripStatus bool) bool {

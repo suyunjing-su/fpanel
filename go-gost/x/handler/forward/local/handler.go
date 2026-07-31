@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-gost/core/chain"
@@ -16,6 +18,7 @@ import (
 	"github.com/go-gost/core/recorder"
 	ctxvalue "github.com/go-gost/x/ctx"
 	xnet "github.com/go-gost/x/internal/net"
+	"github.com/go-gost/x/internal/net/proxyproto"
 	"github.com/go-gost/x/internal/util/forwarder"
 	"github.com/go-gost/x/internal/util/sniffing"
 	tls_util "github.com/go-gost/x/internal/util/tls"
@@ -123,14 +126,17 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 		return rate_limiter.ErrRateLimit
 	}
 
-	var proto string
+	proto := network
 	if network == "tcp" && h.md.sniffing {
 		if h.md.sniffingTimeout > 0 {
 			conn.SetReadDeadline(time.Now().Add(h.md.sniffingTimeout))
 		}
 
 		br := bufio.NewReader(conn)
-		proto, _ = sniffing.Sniff(ctx, br)
+		detected, _ := sniffing.Sniff(ctx, br)
+		if detected != "" {
+			proto = detected
+		}
 		ro.Proto = proto
 
 		if h.md.sniffingTimeout > 0 {
@@ -141,6 +147,9 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 			var buf bytes.Buffer
 			cc, err := h.options.Router.Dial(ctxvalue.ContextWithBuffer(ctx, &buf), "tcp", address)
 			ro.Route = buf.String()
+			if err == nil {
+				cc = proxyproto.WrapClientConn(h.md.proxyProtocol, conn.RemoteAddr(), convertAddr(conn.LocalAddr()), cc)
+			}
 			return cc, err
 		}
 		sniffer := &forwarder.Sniffer{
@@ -184,7 +193,10 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 	var cc net.Conn
 	attempted := make(map[*chain.Node]struct{})
 	for {
-		target = h.hop.Select(ctx, hop.ProtocolSelectOption(proto))
+		target = h.hop.Select(ctx,
+			hop.ProtocolSelectOption(proto),
+			hop.ClientIPSelectOption(net.ParseIP(ro.ClientIP)),
+		)
 		if target == nil {
 			return errors.New("node not available")
 		}
@@ -223,9 +235,25 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 	}
 	defer cc.Close()
 
+	if network == "tcp" {
+		cc = proxyproto.WrapClientConn(h.md.proxyProtocol, conn.RemoteAddr(), convertAddr(conn.LocalAddr()), cc)
+	}
 	xnet.Transport(conn, cc)
 
 	return nil
+}
+
+func convertAddr(addr net.Addr) net.Addr {
+	host, sp, _ := net.SplitHostPort(addr.String())
+	ip := net.ParseIP(host)
+	port, _ := strconv.Atoi(sp)
+	if ip == nil || ip.Equal(net.IPv6zero) {
+		ip = net.IPv4zero
+	}
+	if strings.HasPrefix(addr.Network(), "tcp") {
+		return &net.TCPAddr{IP: ip, Port: port}
+	}
+	return &net.UDPAddr{IP: ip, Port: port}
 }
 
 func (h *forwardHandler) Close() error {
