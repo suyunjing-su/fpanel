@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-gost/x/config"
 	"github.com/go-gost/x/controller"
 )
 
@@ -60,6 +61,25 @@ func syncFullConfigFromDashboard(pool *controller.Pool, secret string) error {
 	return fmt.Errorf("all controllers failed: %s", strings.Join(failures, "; "))
 }
 
+func syncFullConfigOrUseCache(pool *controller.Pool, secret, path string) (bool, error) {
+	syncErr := syncFullConfigFromDashboard(pool, secret)
+	if syncErr == nil {
+		return false, nil
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("%v; cached config unavailable: %w", syncErr, err)
+	}
+	if len(strings.TrimSpace(string(content))) == 0 {
+		return false, fmt.Errorf("%v; cached config is empty", syncErr)
+	}
+	var cached config.Config
+	if err := json.Unmarshal(content, &cached); err != nil {
+		return false, fmt.Errorf("%v; cached config is invalid: %w", syncErr, err)
+	}
+	return true, nil
+}
+
 func fetchFullConfig(addr string, secret string) error {
 	baseURL, err := buildSecureControlBaseURL(addr)
 	if err != nil {
@@ -108,7 +128,7 @@ func fetchFullConfig(addr string, secret string) error {
 		return fmt.Errorf("serialize full config payload failed: %v", err)
 	}
 
-	if err := os.WriteFile("gost.json", serialized, 0600); err != nil {
+	if err := config.WriteFileAtomic("gost.json", serialized, 0600); err != nil {
 		return fmt.Errorf("write gost.json failed: %v", err)
 	}
 

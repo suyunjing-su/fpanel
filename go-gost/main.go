@@ -121,11 +121,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := syncFullConfigFromDashboard(controllerPool, config.Secret); err != nil {
-		fmt.Printf("❌ 拉取全量配置失败: %v\n", err)
+	usingCache, err := syncFullConfigOrUseCache(controllerPool, config.Secret, "gost.json")
+	if err != nil {
+		fmt.Printf("❌ 拉取全量配置失败且无可用本地缓存: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✅ 已从dashboard拉取并覆写本地gost.json")
+	if usingCache {
+		fmt.Println("⚠️ 所有控制器暂不可用，使用已验证的本地gost.json启动")
+	} else {
+		fmt.Println("✅ 已从dashboard拉取并覆写本地gost.json")
+	}
 
 	log := xlogger.NewLogger()
 	logger.SetDefault(log)

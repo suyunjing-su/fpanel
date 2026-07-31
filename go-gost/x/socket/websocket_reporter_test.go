@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,7 +89,8 @@ func TestUpdateLocalConfigPreservesControllers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join("config.json"), []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateLocalConfigJSON(1, 0, 1); err != nil {
+	httpValue, tlsValue, socksValue := 1, 0, 1
+	if _, _, _, err := updateLocalConfigJSON(&httpValue, &tlsValue, &socksValue); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := os.ReadFile("config.json")
@@ -105,6 +107,62 @@ func TestUpdateLocalConfigPreservesControllers(t *testing.T) {
 	}
 	if !reflect.DeepEqual(config.Controllers, []string{"https://primary.example.com", "https://backup.example.com"}) || config.HTTP != 1 || config.SOCKS != 1 {
 		t.Fatalf("local configuration was corrupted: %s", updated)
+	}
+}
+
+func TestUpdateLocalConfigPreservesOmittedProtocols(t *testing.T) {
+	oldDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldDirectory)
+	content := `{"addr":"https://primary.example.com","controllers":["https://primary.example.com","https://backup.example.com"],"secret":"secret","http":1,"tls":1,"socks":1}`
+	if err := os.WriteFile("config.json", []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	httpValue := 0
+	httpFlag, tlsFlag, socksFlag, err := updateLocalConfigJSON(&httpValue, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpFlag != 0 || tlsFlag != 1 || socksFlag != 1 {
+		t.Fatalf("protocol values were not preserved: %d %d %d", httpFlag, tlsFlag, socksFlag)
+	}
+	updated, err := os.ReadFile("config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updated), `"secret": "secret"`) || !strings.Contains(string(updated), `"tls": 1`) {
+		t.Fatalf("identity or protocol settings were lost: %s", updated)
+	}
+}
+
+func TestUpdateLocalConfigRejectsCorruptIdentityFile(t *testing.T) {
+	oldDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldDirectory)
+	original := []byte(`{"secret":`)
+	if err := os.WriteFile("config.json", original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	httpValue := 1
+	if _, _, _, err := updateLocalConfigJSON(&httpValue, nil, nil); err == nil {
+		t.Fatal("corrupt identity file was overwritten")
+	}
+	current, err := os.ReadFile("config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(current, original) {
+		t.Fatalf("corrupt file changed: %s", current)
 	}
 }
 

@@ -918,7 +918,7 @@ func restoreGostConfigFile(backup gostConfigFileBackup) error {
 		return nil
 	}
 
-	return os.WriteFile("gost.json", backup.content, 0600)
+	return config.WriteFileAtomic("gost.json", backup.content, 0600)
 }
 
 func (w *WebSocketReporter) fetchAndOverwriteFullConfig() (int, error) {
@@ -996,7 +996,7 @@ func (w *WebSocketReporter) fetchFullConfigFrom(address string) (int, error) {
 		return 0, fmt.Errorf("格式化全量配置失败: %v", err)
 	}
 
-	if err := os.WriteFile("gost.json", serialized.Bytes(), 0600); err != nil {
+	if err := config.WriteFileAtomic("gost.json", serialized.Bytes(), 0600); err != nil {
 		return 0, fmt.Errorf("覆写gost.json失败: %v", err)
 	}
 
@@ -1242,67 +1242,55 @@ func (w *WebSocketReporter) handleSetProtocol(data interface{}) error {
 		return fmt.Errorf("解析协议设置失败: %v", err)
 	}
 
-	// 读取当前值作为默认
-	httpVal, tlsVal, socksVal := 0, 0, 0
-
-	if req.HTTP != nil {
-		if *req.HTTP != 0 && *req.HTTP != 1 {
-			return fmt.Errorf("http 取值必须为0或1")
+	for name, value := range map[string]*int{"http": req.HTTP, "tls": req.TLS, "socks": req.SOCKS} {
+		if value != nil && *value != 0 && *value != 1 {
+			return fmt.Errorf("%s 取值必须为0或1", name)
 		}
-		httpVal = *req.HTTP
 	}
-	if req.TLS != nil {
-		if *req.TLS != 0 && *req.TLS != 1 {
-			return fmt.Errorf("tls 取值必须为0或1")
-		}
-		tlsVal = *req.TLS
-	}
-	if req.SOCKS != nil {
-		if *req.SOCKS != 0 && *req.SOCKS != 1 {
-			return fmt.Errorf("socks 取值必须为0或1")
-		}
-		socksVal = *req.SOCKS
-	}
-
-	// 设置至 service，全量传递（未提供的值沿用0）
-	service.SetProtocolBlock(httpVal, tlsVal, socksVal)
-
-	// 同步写入本地 config.json
-	if err := updateLocalConfigJSON(httpVal, tlsVal, socksVal); err != nil {
+	httpVal, tlsVal, socksVal, err := updateLocalConfigJSON(req.HTTP, req.TLS, req.SOCKS)
+	if err != nil {
 		return fmt.Errorf("写入config.json失败: %v", err)
 	}
+	service.SetProtocolBlock(httpVal, tlsVal, socksVal)
 	return nil
 }
 
-// updateLocalConfigJSON 将 http/tls/socks 写入工作目录下的 config.json
-func updateLocalConfigJSON(httpVal int, tlsVal int, socksVal int) error {
+func updateLocalConfigJSON(httpValue, tlsValue, socksValue *int) (int, int, int, error) {
 	path := "config.json"
-
-	// 读取现有配置
 	type LocalConfig struct {
 		Addr        string   `json:"addr"`
 		Controllers []string `json:"controllers,omitempty"`
 		Secret      string   `json:"secret"`
-		Http        int      `json:"http"`
-		Tls         int      `json:"tls"`
-		Socks       int      `json:"socks"`
+		HTTP        int      `json:"http"`
+		TLS         int      `json:"tls"`
+		SOCKS       int      `json:"socks"`
 	}
 
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, 0, err
+	}
 	var cfg LocalConfig
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &cfg)
+	if err := json.Unmarshal(content, &cfg); err != nil {
+		return 0, 0, 0, fmt.Errorf("解析现有配置失败: %v", err)
 	}
-
-	cfg.Http = httpVal
-	cfg.Tls = tlsVal
-	cfg.Socks = socksVal
-
-	// 写回
+	if httpValue != nil {
+		cfg.HTTP = *httpValue
+	}
+	if tlsValue != nil {
+		cfg.TLS = *tlsValue
+	}
+	if socksValue != nil {
+		cfg.SOCKS = *socksValue
+	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return err
+		return 0, 0, 0, err
 	}
-	return os.WriteFile(path, data, 0644)
+	if err := config.WriteFileAtomic(path, data, 0600); err != nil {
+		return 0, 0, 0, err
+	}
+	return cfg.HTTP, cfg.TLS, cfg.SOCKS, nil
 }
 
 // handleCall 处理服务端的call回调消息

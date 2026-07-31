@@ -48,6 +48,46 @@ func TestSyncFullConfigFallsBackAndPromotesController(t *testing.T) {
 	}
 }
 
+func TestSyncFullConfigUsesValidCacheWhenControllersFail(t *testing.T) {
+	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer controlServer.Close()
+	pool, err := controller.New([]string{controlServer.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "gost.json")
+	if err := os.WriteFile(path, []byte(`{"services":[],"chains":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	usingCache, err := syncFullConfigOrUseCache(pool, "secret", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !usingCache {
+		t.Fatal("valid cache was not selected")
+	}
+}
+
+func TestSyncFullConfigRejectsInvalidCache(t *testing.T) {
+	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer controlServer.Close()
+	pool, err := controller.New([]string{controlServer.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "gost.json")
+	if err := os.WriteFile(path, []byte(`{"services":`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncFullConfigOrUseCache(pool, "secret", path); err == nil {
+		t.Fatal("invalid cache was accepted")
+	}
+}
+
 func TestLoadConfigSupportsLegacyAndControllerList(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"addr":"http://primary/","controllers":["http://primary","https://backup"],"secret":"secret"}`), 0600); err != nil {
