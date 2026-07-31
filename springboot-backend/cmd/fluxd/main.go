@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/suyunjing-su/fpanel/backend/internal/auth"
+	"github.com/suyunjing-su/fpanel/backend/internal/captcha"
 	"github.com/suyunjing-su/fpanel/backend/internal/config"
 	"github.com/suyunjing-su/fpanel/backend/internal/database"
 	"github.com/suyunjing-su/fpanel/backend/internal/forwards"
@@ -58,6 +59,7 @@ func run() error {
 	nodeConfigRepo := nodeconfig.NewRepository(db)
 	hub := nodehub.New(log, nodeRepo)
 	configRepo := siteconfig.NewRepository(db)
+	captchaService := captcha.New(configRepo, captcha.Options{})
 	userRepo := users.NewRepository(db)
 	tunnelRepo := tunnels.NewRepository(db, nodeRepo)
 	forwardRepo := forwards.NewRepository(db, nodeRepo, tunnelRepo)
@@ -147,7 +149,7 @@ func run() error {
 			}
 			key = request.Name
 		}
-		value, err := configRepo.Get(r.Context(), key)
+		value, err := configRepo.GetPublic(r.Context(), key)
 		if err != nil {
 			badRequest(w, err)
 			return
@@ -157,6 +159,10 @@ func run() error {
 	mux.HandleFunc("GET /api/v1/config/get", configHandler)
 	mux.HandleFunc("POST /api/v1/config/get", configHandler)
 	mux.HandleFunc("POST /api/v1/config/list", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r) {
+			forbidden(w)
+			return
+		}
 		values, err := configRepo.List(r.Context())
 		if err != nil {
 			httpapi.WriteJSON(w, 500, httpapi.Failure(500, "配置查询失败"))
@@ -198,30 +204,8 @@ func run() error {
 		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
 	})
 
-	mux.HandleFunc("POST /api/v1/user/login", func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Username string `json:"username"`
-			User     string `json:"user"`
-			Password string `json:"password"`
-		}
-		if !httpapi.DecodeJSON(w, r, &request) {
-			return
-		}
-		if request.Username == "" {
-			request.Username = request.User
-		}
-		identity, err := authRepo.Authenticate(r.Context(), auth.NormalizeUsername(request.Username), request.Password)
-		if err != nil {
-			httpapi.WriteJSON(w, 401, httpapi.Failure(401, "用户名或密码错误"))
-			return
-		}
-		token, err := jwtManager.Issue(identity)
-		if err != nil {
-			httpapi.WriteJSON(w, 500, httpapi.Failure(500, "登录失败"))
-			return
-		}
-		httpapi.WriteJSON(w, 200, httpapi.Success(map[string]any{"token": token, "role_id": identity.RoleID, "name": identity.Username}))
-	})
+	registerCaptchaRoutes(mux, captchaService)
+	registerLoginRoute(mux, captchaService, authRepo, jwtManager)
 	mux.HandleFunc("POST /api/v1/user/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
 			forbidden(w)

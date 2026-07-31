@@ -73,6 +73,13 @@ export const updateFavicon = (logo?: string) => {
   link.href = faviconHref;
 };
 
+const CAPTCHA_SECRET_KEYS = [
+  'captcha_geetest_key',
+  'captcha_recaptcha_secret_key',
+  'captcha_hcaptcha_secret_key',
+  'captcha_turnstile_secret_key'
+];
+
 // 缓存工具函数
 export const configCache = {
   // 获取缓存的配置
@@ -131,11 +138,10 @@ export const getCachedConfigs = async (): Promise<Record<string, string>> => {
     'login_page_description',
     'captcha_enabled',
     'captcha_provider',
-    'captcha_type',
     'captcha_geetest_id',
-    'captcha_geetest_domain',
     'captcha_recaptcha_site_key',
-    'captcha_hcaptcha_site_key'
+    'captcha_hcaptcha_site_key',
+    'captcha_turnstile_site_key'
   ];
   const cachedConfigs: Record<string, string> = {};
   let hasCachedData = false;
@@ -152,6 +158,7 @@ export const getCachedConfigs = async (): Promise<Record<string, string>> => {
 
   // 从API获取最新配置
   try {
+    CAPTCHA_SECRET_KEYS.forEach((key) => configCache.remove(key));
     const response = await getConfigs();
     if (response.code === 0 && response.data) {
       const configs = response.data;

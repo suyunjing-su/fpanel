@@ -43,8 +43,6 @@ interface ConfigItem {
 }
 
 const isCaptchaEnabled = (configs: Record<string, string>) => configs.captcha_enabled === 'true';
-const isNativeCaptchaProvider = (configs: Record<string, string>) =>
-  isCaptchaEnabled(configs) && (configs.captcha_provider || 'native') === 'native';
 
 const CAPTCHA_PROVIDER_REQUIRED_FIELDS: Record<string, { key: string; label: string }[]> = {
   geetest: [
@@ -58,13 +56,18 @@ const CAPTCHA_PROVIDER_REQUIRED_FIELDS: Record<string, { key: string; label: str
   hcaptcha: [
     { key: 'captcha_hcaptcha_site_key', label: 'hCaptcha Site Key' },
     { key: 'captcha_hcaptcha_secret_key', label: 'hCaptcha Secret Key' }
+  ],
+  turnstile: [
+    { key: 'captcha_turnstile_site_key', label: 'Turnstile Site Key' },
+    { key: 'captcha_turnstile_secret_key', label: 'Turnstile Secret Key' }
   ]
 };
 
 const DEFAULT_CAPTCHA_SECRET_STATUS = {
   geetestKeyConfigured: false,
   recaptchaSecretKeyConfigured: false,
-  hcaptchaSecretKeyConfigured: false
+  hcaptchaSecretKeyConfigured: false,
+  turnstileSecretKeyConfigured: false
 };
 
 // 网站配置项定义
@@ -116,15 +119,10 @@ const CONFIG_ITEMS: ConfigItem[] = [
   {
     key: 'captcha_provider',
     label: '验证码提供商',
-    description: '选择登录验证码提供商，原生为内置验证码，其它为第三方服务',
+    description: '选择登录验证码提供商，所有验证均由服务端向提供商复核',
     type: 'select',
     shouldShow: isCaptchaEnabled,
     options: [
-      {
-        label: '原生',
-        value: 'native',
-        description: '使用系统内置验证码能力'
-      },
       {
         label: '极验 v4',
         value: 'geetest',
@@ -139,40 +137,11 @@ const CONFIG_ITEMS: ConfigItem[] = [
         label: 'hCaptcha',
         value: 'hcaptcha',
         description: '接入 hCaptcha (Invisible)'
-      }
-    ]
-  },
-  {
-    key: 'captcha_type',
-    label: '验证码类型',
-    description: '原生验证码子类型设置',
-    type: 'select',
-    shouldShow: isNativeCaptchaProvider,
-    options: [
-      { 
-        label: '随机类型', 
-        value: 'RANDOM', 
-        description: '系统随机选择验证码类型' 
       },
-      { 
-        label: '滑块验证码', 
-        value: 'SLIDER', 
-        description: '拖动滑块完成拼图验证' 
-      },
-      { 
-        label: '文字点选验证码', 
-        value: 'WORD_IMAGE_CLICK', 
-        description: '按顺序点击指定文字' 
-      },
-      { 
-        label: '旋转验证码', 
-        value: 'ROTATE', 
-        description: '旋转图片到正确角度' 
-      },
-      { 
-        label: '拼图验证码', 
-        value: 'CONCAT', 
-        description: '拖动滑块完成图片拼接' 
+      {
+        label: 'Cloudflare Turnstile',
+        value: 'turnstile',
+        description: '接入 Cloudflare 隐私友好型人机验证'
       }
     ]
   },
@@ -191,14 +160,6 @@ const CONFIG_ITEMS: ConfigItem[] = [
     description: '极验控制台中的 captcha_key（敏感信息）',
     type: 'input',
     inputType: 'password',
-    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'geetest'
-  },
-  {
-    key: 'captcha_geetest_domain',
-    label: 'GeeTest API 域名',
-    placeholder: 'https://gcaptcha4.geetest.com',
-    description: '极验服务域名，默认 https://gcaptcha4.geetest.com',
-    type: 'input',
     shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'geetest'
   },
   {
@@ -234,6 +195,23 @@ const CONFIG_ITEMS: ConfigItem[] = [
     type: 'input',
     inputType: 'password',
     shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'hcaptcha'
+  },
+  {
+    key: 'captcha_turnstile_site_key',
+    label: 'Turnstile Site Key',
+    placeholder: '请输入 Cloudflare Turnstile Site Key',
+    description: '前端公开站点密钥',
+    type: 'input',
+    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'turnstile'
+  },
+  {
+    key: 'captcha_turnstile_secret_key',
+    label: 'Turnstile Secret Key',
+    placeholder: '请输入 Cloudflare Turnstile Secret Key',
+    description: '后端 Siteverify 校验密钥（敏感信息）',
+    type: 'input',
+    inputType: 'password',
+    shouldShow: (configs) => isCaptchaEnabled(configs) && configs.captcha_provider === 'turnstile'
   }
 ];
 
@@ -247,14 +225,10 @@ const getInitialConfigs = (): Record<string, string> => {
     'login_page_description',
     'captcha_enabled',
     'captcha_provider',
-    'captcha_type',
     'captcha_geetest_id',
-    'captcha_geetest_key',
-    'captcha_geetest_domain',
     'captcha_recaptcha_site_key',
-    'captcha_recaptcha_secret_key',
     'captcha_hcaptcha_site_key',
-    'captcha_hcaptcha_secret_key',
+    'captcha_turnstile_site_key',
     'ip',
     'protocol_type'
   ];
@@ -274,12 +248,9 @@ const getInitialConfigs = (): Record<string, string> => {
     initialConfigs.protocol_type = 'http';
   }
   if (!initialConfigs.captcha_provider) {
-    initialConfigs.captcha_provider = 'native';
+    initialConfigs.captcha_provider = 'geetest';
   }
-  if (!initialConfigs.captcha_geetest_domain) {
-    initialConfigs.captcha_geetest_domain = 'https://gcaptcha4.geetest.com';
-  }
-  
+
   return initialConfigs;
 };
 
@@ -318,10 +289,7 @@ export default function ConfigPage() {
         configData.protocol_type = 'http';
       }
       if (!configData.captcha_provider) {
-        configData.captcha_provider = 'native';
-      }
-      if (!configData.captcha_geetest_domain) {
-        configData.captcha_geetest_domain = 'https://gcaptcha4.geetest.com';
+        configData.captcha_provider = 'geetest';
       }
 
       try {
@@ -331,7 +299,8 @@ export default function ConfigPage() {
           setCaptchaSecretStatus({
             geetestKeyConfigured: !!runtimeData.geetestKeyConfigured,
             recaptchaSecretKeyConfigured: !!runtimeData.recaptchaSecretKeyConfigured,
-            hcaptchaSecretKeyConfigured: !!runtimeData.hcaptchaSecretKeyConfigured
+            hcaptchaSecretKeyConfigured: !!runtimeData.hcaptchaSecretKeyConfigured,
+            turnstileSecretKeyConfigured: !!runtimeData.turnstileSecretKeyConfigured
           });
         }
       } catch (runtimeError) {
@@ -368,26 +337,10 @@ export default function ConfigPage() {
   const handleConfigChange = (key: string, value: string) => {
     let newConfigs = { ...configs, [key]: value };
     
-    // 特殊处理：启用验证码时，如果验证码类型未设置，默认为随机
-    if (key === 'captcha_enabled' && value === 'true') {
-      if (!newConfigs.captcha_provider) {
-        newConfigs.captcha_provider = 'native';
-      }
-      if (!newConfigs.captcha_type) {
-        newConfigs.captcha_type = 'RANDOM';
-      }
+    if (key === 'captcha_enabled' && value === 'true' && !newConfigs.captcha_provider) {
+      newConfigs.captcha_provider = 'geetest';
     }
 
-    // 切换到原生时，确保原生子选项存在
-    if (key === 'captcha_provider' && value === 'native' && !newConfigs.captcha_type) {
-      newConfigs.captcha_type = 'RANDOM';
-    }
-
-    // 切换极验时，补齐默认域名
-    if (key === 'captcha_provider' && value === 'geetest' && !newConfigs.captcha_geetest_domain) {
-      newConfigs.captcha_geetest_domain = 'https://gcaptcha4.geetest.com';
-    }
-    
     setConfigs(newConfigs);
     
     // 检查是否有变更
@@ -419,6 +372,9 @@ export default function ConfigPage() {
     if (key === 'captcha_hcaptcha_secret_key') {
       return captchaSecretStatus.hcaptchaSecretKeyConfigured;
     }
+    if (key === 'captcha_turnstile_secret_key') {
+      return captchaSecretStatus.turnstileSecretKeyConfigured;
+    }
     return false;
   };
 
@@ -427,10 +383,7 @@ export default function ConfigPage() {
       return [] as string[];
     }
 
-    const provider = (configs.captcha_provider || 'native').trim();
-    if (provider === 'native') {
-      return [] as string[];
-    }
+    const provider = (configs.captcha_provider || 'geetest').trim();
 
     const fields = CAPTCHA_PROVIDER_REQUIRED_FIELDS[provider] || [];
     return fields
@@ -457,9 +410,10 @@ export default function ConfigPage() {
       return true;
     }
 
-    const provider = (configs.captcha_provider || 'native').trim();
-    if (provider === 'native') {
-      return true;
+    const provider = (configs.captcha_provider || 'geetest').trim();
+    if (!CAPTCHA_PROVIDER_REQUIRED_FIELDS[provider]) {
+      toast.error('不支持的验证码提供商');
+      return false;
     }
     const missingLabels = getCaptchaProviderMissingLabels();
 
@@ -489,7 +443,8 @@ export default function ConfigPage() {
       const sensitiveKeys = new Set([
         'captcha_geetest_key',
         'captcha_recaptcha_secret_key',
-        'captcha_hcaptcha_secret_key'
+        'captcha_hcaptcha_secret_key',
+        'captcha_turnstile_secret_key'
       ]);
       const payload: Record<string, string> = { ...configs };
 

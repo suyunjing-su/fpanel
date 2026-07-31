@@ -12,14 +12,15 @@ export interface LoginData {
 
 export interface CaptchaRuntimeConfig {
   enabled: boolean;
-  provider: 'native' | 'geetest' | 'recaptcha' | 'hcaptcha' | string;
-  nativeType?: string;
+  provider: 'geetest' | 'recaptcha' | 'hcaptcha' | 'turnstile' | string;
   geetestCaptchaId?: string;
   geetestKeyConfigured?: boolean;
   recaptchaSiteKey?: string;
   recaptchaSecretKeyConfigured?: boolean;
   hcaptchaSiteKey?: string;
   hcaptchaSecretKeyConfigured?: boolean;
+  turnstileSiteKey?: string;
+  turnstileSecretKeyConfigured?: boolean;
 }
 
 export interface LoginResponse {
@@ -128,5 +129,3 @@ export const updateConfig = (name: string, value: string) => Network.post("/conf
 // 验证码相关接口
 export const checkCaptcha = () => Network.post("/captcha/check");
 export const getCaptchaRuntime = () => Network.post<CaptchaRuntimeConfig>("/captcha/runtime");
-export const generateCaptcha = () => Network.post(`/captcha/generate`);
-export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data); 

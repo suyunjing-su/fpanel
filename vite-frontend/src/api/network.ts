@@ -95,12 +95,13 @@ const Network = {
                  .catch(function(error: any) {
            console.error('GET请求错误:', error);
            
-           // 检查是否是401错误（token失效）
-           if (error.response && error.response.status === 401) {
+           if (error.response?.status === 401 && isTokenExpired(error.response.data)) {
              handleTokenExpired();
+           }
+           if (error.response?.data) {
+             resolve(error.response.data as ApiResponse<T>);
              return;
            }
-           
            resolve({"code": -1, "msg": error.message || "网络请求失败", "data": null as T});
          });
     });
@@ -134,12 +135,13 @@ const Network = {
                  .catch(function(error: any) {
            console.error('POST请求错误:', error);
            
-           // 检查是否是401错误（token失效）
-           if (error.response && error.response.status === 401) {
+           if (error.response?.status === 401 && isTokenExpired(error.response.data)) {
              handleTokenExpired();
+           }
+           if (error.response?.data) {
+             resolve(error.response.data as ApiResponse<T>);
              return;
            }
-           
            resolve({"code": -1, "msg": error.message || "网络请求失败", "data": null as T});
          });
     });

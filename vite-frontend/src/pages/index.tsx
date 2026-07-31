@@ -4,16 +4,11 @@ import { Card, CardBody, CardHeader } from "@heroui/card";
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import toast from 'react-hot-toast';
-import axios from 'axios';
 import ReCAPTCHA from 'react-google-recaptcha';
 import HCaptcha from '@hcaptcha/react-hcaptcha';
 import { isWebViewFunc } from '@/utils/panel';
 import { getCachedConfig, getPanelBrandLogo, siteConfig } from '@/config/site';
 import { login, LoginData, checkCaptcha, getCaptchaRuntime, CaptchaRuntimeConfig } from "@/api";
-import "@/utils/tac.css";
-import "@/utils/tac.min.js";
-import bgImage from "@/images/bg.jpg";
-
 
 interface LoginForm {
   username: string;
@@ -26,33 +21,15 @@ interface LoginForm {
 
 
 
-interface CaptchaConfig {
-  requestCaptchaDataUrl: string;
-  validCaptchaUrl: string;
-  bindEl: string;
-  validSuccess: (res: any, captcha: any, tac: any) => void;
-  validFail?: (res: any, captcha: any, tac: any) => void;
-  btnCloseFun?: (event: any, tac: any) => void;
-  btnRefreshFun?: (event: any, tac: any) => void;
-}
-
-interface CaptchaStyle {
-  btnUrl?: string;
-  bgUrl?: string;
-  logoUrl?: string | null;
-  moveTrackMaskBgColor?: string;
-  moveTrackMaskBorderColor?: string;
-}
-
-type CaptchaProvider = 'native' | 'geetest' | 'recaptcha' | 'hcaptcha';
+type CaptchaProvider = 'geetest' | 'recaptcha' | 'hcaptcha' | 'turnstile';
 
 const DEFAULT_CAPTCHA_RUNTIME: CaptchaRuntimeConfig = {
   enabled: false,
-  provider: 'native',
-  nativeType: 'RANDOM',
+  provider: 'geetest',
   geetestCaptchaId: '',
   recaptchaSiteKey: '',
-  hcaptchaSiteKey: ''
+  hcaptchaSiteKey: '',
+  turnstileSiteKey: ''
 };
 
 export default function IndexPage() {
@@ -60,7 +37,7 @@ export default function IndexPage() {
     username: "",
     password: "",
     captchaId: "",
-    captchaProvider: 'native',
+    captchaProvider: '',
     captchaToken: '',
     captchaPayload: ''
   });
@@ -68,13 +45,13 @@ export default function IndexPage() {
   const [errors, setErrors] = useState<Partial<LoginForm>>({});
   const [showCaptcha, setShowCaptcha] = useState(false);
   const [captchaRuntime, setCaptchaRuntime] = useState<CaptchaRuntimeConfig>(DEFAULT_CAPTCHA_RUNTIME);
-  const [captchaProvider, setCaptchaProvider] = useState<CaptchaProvider>('native');
+  const [captchaProvider, setCaptchaProvider] = useState<CaptchaProvider>('geetest');
   const navigate = useNavigate();
-  const tacInstanceRef = useRef<any>(null);
   const geeTestRef = useRef<any>(null);
-  const captchaContainerRef = useRef<HTMLDivElement>(null);
   const recaptchaRef = useRef<ReCAPTCHA | null>(null);
   const hcaptchaRef = useRef<HCaptcha | null>(null);
+  const turnstileContainerRef = useRef<HTMLDivElement>(null);
+  const turnstileWidgetRef = useRef<string | null>(null);
   const geetestContainerId = 'geetest-captcha-container';
   const [isWebView, setIsWebView] = useState(false);
   const [appName, setAppName] = useState(siteConfig.name || 'flux');
@@ -83,16 +60,15 @@ export default function IndexPage() {
   const isDarkMode = document.documentElement.classList.contains('dark') ||
     document.documentElement.getAttribute('data-theme') === 'dark' ||
     window.matchMedia('(prefers-color-scheme: dark)').matches;
-  // 清理验证码实例
   useEffect(() => {
     return () => {
-      if (tacInstanceRef.current) {
-        tacInstanceRef.current.destroyWindow();
-        tacInstanceRef.current = null;
-      }
       if (geeTestRef.current?.destroy) {
         geeTestRef.current.destroy();
         geeTestRef.current = null;
+      }
+      if (turnstileWidgetRef.current && window.turnstile) {
+        window.turnstile.remove(turnstileWidgetRef.current);
+        turnstileWidgetRef.current = null;
       }
     };
   }, []);
@@ -162,7 +138,7 @@ export default function IndexPage() {
       ...DEFAULT_CAPTCHA_RUNTIME,
       ...runtimeResponse.data
     };
-    const provider = (runtime.provider || 'native').toLowerCase() as CaptchaProvider;
+    const provider = (runtime.provider || 'geetest').toLowerCase() as CaptchaProvider;
     runtime.provider = provider;
     setCaptchaRuntime(runtime);
     setCaptchaProvider(provider);
@@ -170,80 +146,15 @@ export default function IndexPage() {
   };
 
   const resetCaptchaState = () => {
-    if (tacInstanceRef.current) {
-      tacInstanceRef.current.destroyWindow();
-      tacInstanceRef.current = null;
-    }
     if (geeTestRef.current?.destroy) {
       geeTestRef.current.destroy();
       geeTestRef.current = null;
     }
     recaptchaRef.current?.reset();
     hcaptchaRef.current?.resetCaptcha();
-  };
-
-  // 初始化原生验证码
-  const initNativeCaptcha = async () => {
-    if (!window.TAC || !captchaContainerRef.current) {
-      return;
-    }
-
-    try {
-      resetCaptchaState();
-
-      // 使用axios的baseURL，确保在WebView中使用正确的面板地址
-      const baseURL = axios.defaults.baseURL || (import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/api/v1/` : '/api/v1/');
-      
-      const config: CaptchaConfig = {
-        requestCaptchaDataUrl: `${baseURL}captcha/generate`,
-        validCaptchaUrl: `${baseURL}captcha/verify`, 
-        bindEl: "#captcha-container",
-        validSuccess: (res: any, _: any, tac: any) => {
-          form.captchaId = res.data.validToken;
-          form.captchaProvider = 'native';
-          form.captchaToken = '';
-          form.captchaPayload = '';
-
-          setShowCaptcha(false);
-          tac.destroyWindow();
-          performLogin();
-        },
-        validFail: (_: any, _captcha: any, tac: any) => {
-          tac.reloadCaptcha();
-        },
-        btnCloseFun: (_event: any, tac: any) => {
-          setShowCaptcha(false);
-          tac.destroyWindow();
-          setLoading(false);
-        },
-        btnRefreshFun: (_event: any, tac: any) => {
-          tac.reloadCaptcha();
-        }
-      };
-
-      // 检测暗黑模式
-      const isDarkMode = document.documentElement.classList.contains('dark') || 
-                        document.documentElement.getAttribute('data-theme') === 'dark' ||
-                        window.matchMedia('(prefers-color-scheme: dark)').matches;
-      
-      // 根据主题调整颜色
-      const trackColor = isDarkMode ? "#4a5568" : "#7db0be"; // 暗黑模式使用更深的灰蓝色
-      
-      const style: CaptchaStyle = {
-        bgUrl: bgImage,
-        logoUrl: null,
-        moveTrackMaskBgColor: trackColor,
-        moveTrackMaskBorderColor: trackColor
-      };
-
-      tacInstanceRef.current = new window.TAC(config, style);
-      tacInstanceRef.current.init();
-
-    } catch (error) {
-      console.error('初始化验证码失败:', error);
-      toast.error('验证码初始化失败，请刷新页面重试');
-      setShowCaptcha(false);
-      setLoading(false);
+    if (turnstileWidgetRef.current && window.turnstile) {
+      window.turnstile.remove(turnstileWidgetRef.current);
+      turnstileWidgetRef.current = null;
     }
   };
 
@@ -350,6 +261,62 @@ export default function IndexPage() {
     });
   };
 
+  const ensureTurnstileScript = async (): Promise<void> => {
+    if (window.turnstile) {
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const existing = document.querySelector<HTMLScriptElement>('script[data-flux-turnstile]');
+      if (existing) {
+        existing.addEventListener('load', () => resolve(), { once: true });
+        existing.addEventListener('error', () => reject(new Error('加载 Turnstile SDK 失败')), { once: true });
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      script.async = true;
+      script.defer = true;
+      script.dataset.fluxTurnstile = 'true';
+      script.onload = () => resolve();
+      script.onerror = () => {
+        script.remove();
+        reject(new Error('加载 Turnstile SDK 失败'));
+      };
+      document.head.appendChild(script);
+    });
+  };
+
+  const initTurnstile = async (runtime: CaptchaRuntimeConfig) => {
+    const siteKey = (runtime.turnstileSiteKey || '').trim();
+    if (!siteKey) {
+      throw new Error('Turnstile Site Key 未配置');
+    }
+    await ensureTurnstileScript();
+    resetCaptchaState();
+    if (!window.turnstile || !turnstileContainerRef.current) {
+      throw new Error('Turnstile SDK 未就绪');
+    }
+    turnstileWidgetRef.current = window.turnstile.render(turnstileContainerRef.current, {
+      sitekey: siteKey,
+      theme: isDarkMode ? 'dark' : 'light',
+      callback: (token) => {
+        setShowCaptcha(false);
+        void performLogin({ captchaProvider: 'turnstile', captchaToken: token, captchaPayload: '' });
+      },
+      'expired-callback': () => {
+        if (turnstileWidgetRef.current) {
+          window.turnstile?.reset(turnstileWidgetRef.current);
+        }
+      },
+      'error-callback': () => {
+        toast.error('Turnstile 验证加载失败，请重试');
+        setShowCaptcha(false);
+        setLoading(false);
+        return true;
+      }
+    });
+  };
+
   // 执行登录请求
   const performLogin = async (captchaOverrides?: Partial<LoginData>) => {
 
@@ -359,7 +326,7 @@ export default function IndexPage() {
         username: form.username.trim(),
         password: form.password,
         captchaId: form.captchaId,
-        captchaProvider: form.captchaProvider || 'native',
+        captchaProvider: form.captchaProvider || '',
         captchaToken: form.captchaToken || '',
         captchaPayload: form.captchaPayload || '',
         ...captchaOverrides
@@ -416,32 +383,17 @@ export default function IndexPage() {
 
       if (checkResponse.data === 0) {
         setCaptchaRuntime(DEFAULT_CAPTCHA_RUNTIME);
-        setCaptchaProvider('native');
         setForm((prev) => ({
           ...prev,
           captchaId: '',
-          captchaProvider: 'native',
+          captchaProvider: '',
           captchaToken: '',
           captchaPayload: ''
         }));
         await performLogin();
       } else {
         const runtime = await loadCaptchaRuntime();
-        const provider = (runtime.provider || 'native').toLowerCase() as CaptchaProvider;
-
-        if (provider === 'native') {
-          setForm((prev) => ({
-            ...prev,
-            captchaProvider: 'native',
-            captchaToken: '',
-            captchaPayload: ''
-          }));
-          setShowCaptcha(true);
-          setTimeout(() => {
-            initNativeCaptcha();
-          }, 100);
-          return;
-        }
+        const provider = (runtime.provider || 'geetest').toLowerCase() as CaptchaProvider;
 
         if (provider === 'geetest') {
           setShowCaptcha(true);
@@ -457,12 +409,37 @@ export default function IndexPage() {
         }
 
         if (provider === 'recaptcha') {
-          await executeGoogleRecaptcha(runtime);
+          setTimeout(() => {
+            executeGoogleRecaptcha(runtime).catch((error) => {
+              console.error('执行 reCAPTCHA 失败:', error);
+              toast.error(error instanceof Error ? error.message : 'reCAPTCHA 验证失败');
+              setLoading(false);
+            });
+          }, 0);
           return;
         }
 
         if (provider === 'hcaptcha') {
-          await executeHCaptcha(runtime);
+          setTimeout(() => {
+            executeHCaptcha(runtime).catch((error) => {
+              console.error('执行 hCaptcha 失败:', error);
+              toast.error(error instanceof Error ? error.message : 'hCaptcha 验证失败');
+              setLoading(false);
+            });
+          }, 0);
+          return;
+        }
+
+        if (provider === 'turnstile') {
+          setShowCaptcha(true);
+          setTimeout(() => {
+            initTurnstile(runtime).catch((error) => {
+              console.error('初始化 Turnstile 失败:', error);
+              toast.error(error instanceof Error ? error.message : '初始化 Turnstile 失败');
+              setShowCaptcha(false);
+              setLoading(false);
+            });
+          }, 100);
           return;
         }
 
@@ -602,17 +579,13 @@ export default function IndexPage() {
           <div className="absolute inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm captcha-backdrop-enter" />
           <div className="relative mb-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-900/95 px-6 py-5 shadow-2xl min-w-[320px]">
             <p className="text-sm text-slate-500 dark:text-slate-400 mb-3 text-center">
-              {captchaProvider === 'geetest' ? '请完成极验验证' : '请完成人机验证'}
+              {captchaProvider === 'geetest' ? '请完成极验验证' : '请完成 Cloudflare Turnstile 验证'}
             </p>
-            {captchaProvider === 'native' && (
-              <div
-                id="captcha-container"
-                ref={captchaContainerRef}
-                className={`w-full flex justify-center ${isDarkMode ? 'brightness-[0.8] contrast-[0.9]' : ''}`}
-              />
-            )}
             {captchaProvider === 'geetest' && (
               <div id={geetestContainerId} className="w-full flex justify-center min-h-[56px]" />
+            )}
+            {captchaProvider === 'turnstile' && (
+              <div ref={turnstileContainerRef} className="w-full flex justify-center min-h-[65px]" />
             )}
           </div>
         </div>

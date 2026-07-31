@@ -11,9 +11,34 @@ import (
 
 type Repository struct{ db *sql.DB }
 
+var publicKeys = map[string]struct{}{
+	"app_logo":               {},
+	"app_name":               {},
+	"login_page_description": {},
+}
+
+var secretKeys = map[string]struct{}{
+	"captcha_geetest_key":          {},
+	"captcha_hcaptcha_secret_key":  {},
+	"captcha_recaptcha_secret_key": {},
+	"captcha_turnstile_secret_key": {},
+}
+
 func NewRepository(db *sql.DB) *Repository { return &Repository{db: db} }
 
 func (r *Repository) Get(ctx context.Context, key string) (string, error) {
+	return r.get(ctx, key)
+}
+
+func (r *Repository) GetPublic(ctx context.Context, key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if _, ok := publicKeys[key]; !ok {
+		return "", errors.New("config is not public")
+	}
+	return r.get(ctx, key)
+}
+
+func (r *Repository) get(ctx context.Context, key string) (string, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return "", errors.New("config name is required")
@@ -29,7 +54,7 @@ func (r *Repository) Get(ctx context.Context, key string) (string, error) {
 }
 
 func (r *Repository) List(ctx context.Context) (map[string]string, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT key, value FROM site_config ORDER BY key")
+	rows, err := r.db.QueryContext(ctx, "SELECT key, value, secret FROM site_config ORDER BY key")
 	if err != nil {
 		return nil, fmt.Errorf("list site config: %w", err)
 	}
@@ -37,8 +62,12 @@ func (r *Repository) List(ctx context.Context) (map[string]string, error) {
 	result := make(map[string]string)
 	for rows.Next() {
 		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
+		var secret bool
+		if err := rows.Scan(&key, &value, &secret); err != nil {
 			return nil, fmt.Errorf("scan site config: %w", err)
+		}
+		if secret {
+			value = ""
 		}
 		result[key] = value
 	}
@@ -46,6 +75,20 @@ func (r *Repository) List(ctx context.Context) (map[string]string, error) {
 		return nil, fmt.Errorf("iterate site config: %w", err)
 	}
 	return result, nil
+}
+
+func (r *Repository) SecretConfigured(ctx context.Context, key string) (bool, error) {
+	if _, ok := secretKeys[strings.TrimSpace(key)]; !ok {
+		return false, errors.New("config is not a secret")
+	}
+	var configured bool
+	if err := r.db.QueryRowContext(ctx, "SELECT TRIM(value) <> '' FROM site_config WHERE key = ?", key).Scan(&configured); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check site config secret: %w", err)
+	}
+	return configured, nil
 }
 
 func (r *Repository) Update(ctx context.Context, values map[string]string) error {
@@ -63,8 +106,18 @@ func (r *Repository) Update(ctx context.Context, values map[string]string) error
 		if key == "" {
 			return errors.New("config name is required")
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO site_config(key, value, updated_at) VALUES(?, ?, ?)
-			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, now); err != nil {
+		secret := 0
+		if _, ok := secretKeys[key]; ok {
+			secret = 1
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO site_config(key, value, secret, updated_at) VALUES(?, ?, ?, ?)
+			ON CONFLICT(key) DO UPDATE SET
+				value = excluded.value,
+				secret = CASE WHEN site_config.secret = 1 OR excluded.secret = 1 THEN 1 ELSE 0 END,
+				updated_at = excluded.updated_at`, key, value, secret, now); err != nil {
 			return fmt.Errorf("update site config %q: %w", key, err)
 		}
 	}
