@@ -34,6 +34,7 @@ interface Node {
   maxBandwidthMbps?: number | null;
   tcpListenAddr?: string;
   udpListenAddr?: string;
+  interfaceName?: string;
   version?: string;
   http?: number; // 0 关 1 开
   tls?: number;  // 0 关 1 开
@@ -517,7 +518,7 @@ export default function NodePage() {
       maxBandwidthMbps: node.maxBandwidthMbps != null ? String(node.maxBandwidthMbps) : '',
       tcpListenAddr: node.tcpListenAddr || '[::]',
       udpListenAddr: node.udpListenAddr || '[::]',
-      interfaceName: (node as any).interfaceName || '',
+      interfaceName: node.interfaceName || '',
       http: typeof node.http === 'number' ? node.http : 1,
       tls: typeof node.tls === 'number' ? node.tls : 1,
       socks: typeof node.socks === 'number' ? node.socks : 1

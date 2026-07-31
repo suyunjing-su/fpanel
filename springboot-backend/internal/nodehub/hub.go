@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/suyunjing-su/fpanel/backend/internal/nodehub/crypto"
 	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
-	"github.com/gorilla/websocket"
 )
 
 var errNodeOffline = errors.New("node is offline")
@@ -224,10 +224,14 @@ func (h *Hub) Command(ctx context.Context, nodeID int64, command CommandMessage)
 	}
 	s.wait[command.RequestID] = waiter
 	s.mu.Unlock()
-	if err := s.sendPlain(payload); err != nil {
+	defer func() {
 		s.mu.Lock()
-		delete(s.wait, command.RequestID)
+		if s.wait[command.RequestID] == waiter {
+			delete(s.wait, command.RequestID)
+		}
 		s.mu.Unlock()
+	}()
+	if err := s.sendPlain(payload); err != nil {
 		return CommandResponse{}, err
 	}
 	timer := time.NewTimer(10 * time.Second)
@@ -243,6 +247,84 @@ func (h *Hub) Command(ctx context.Context, nodeID int64, command CommandMessage)
 	case <-timer.C:
 		return CommandResponse{}, context.DeadlineExceeded
 	}
+}
+
+func (h *Hub) AddLimiter(ctx context.Context, nodeID int64, name, speed string) error {
+	err := h.limiterCommand(ctx, nodeID, "AddLimiters", map[string]any{"name": name, "limits": []string{"$ " + speed + "MB " + speed + "MB"}})
+	if isCommandConflict(err, "exists") {
+		return nil
+	}
+	return err
+}
+
+func (h *Hub) UpdateLimiter(ctx context.Context, nodeID int64, name, speed string) error {
+	data := map[string]any{"name": name, "limits": []string{"$ " + speed + "MB " + speed + "MB"}}
+	err := h.limiterCommand(ctx, nodeID, "UpdateLimiters", map[string]any{"limiter": name, "data": data})
+	if isCommandConflict(err, "not found") {
+		return h.AddLimiter(ctx, nodeID, name, speed)
+	}
+	return err
+}
+
+func (h *Hub) DeleteLimiter(ctx context.Context, nodeID int64, name string) error {
+	err := h.limiterCommand(ctx, nodeID, "DeleteLimiters", map[string]any{"limiter": name})
+	if isCommandConflict(err, "not found") {
+		return nil
+	}
+	return err
+}
+
+func isCommandConflict(err error, marker string) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), marker)
+}
+
+func (h *Hub) limiterCommand(ctx context.Context, nodeID int64, commandType string, data any) error {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	response, err := h.Command(ctx, nodeID, CommandMessage{Type: commandType, Data: payload})
+	if err != nil {
+		return err
+	}
+	if !response.Success {
+		return errors.New(response.Message)
+	}
+	return nil
+}
+
+func (h *Hub) TCPPing(ctx context.Context, nodeID int64, request TCPPingRequest) (TCPPingResponse, error) {
+	data, err := json.Marshal(request)
+	if err != nil {
+		return TCPPingResponse{}, err
+	}
+	response, err := h.Command(ctx, nodeID, CommandMessage{Type: "TcpPing", Data: data})
+	if err != nil {
+		return TCPPingResponse{}, err
+	}
+	encoded, err := json.Marshal(response.Data)
+	if err != nil {
+		return TCPPingResponse{}, err
+	}
+	var result TCPPingResponse
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		return TCPPingResponse{}, err
+	}
+	if !response.Success && result.Error == "" {
+		result.Error = response.Message
+	}
+	return result, nil
+}
+
+func (h *Hub) ForcePullFullConfig(ctx context.Context, nodeID int64) error {
+	response, err := h.Command(ctx, nodeID, CommandMessage{Type: "ForcePullFullConfig", Data: json.RawMessage(`{}`)})
+	if err != nil {
+		return err
+	}
+	if !response.Success {
+		return errors.New(response.Message)
+	}
+	return nil
 }
 
 func (h *Hub) String() string {

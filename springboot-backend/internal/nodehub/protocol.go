@@ -28,6 +28,22 @@ type CommandResponse struct {
 	Data      any    `json:"data,omitempty"`
 	RequestID string `json:"requestId,omitempty"`
 }
+
+type TCPPingRequest struct {
+	IP      string `json:"ip"`
+	Port    int    `json:"port"`
+	Count   int    `json:"count"`
+	Timeout int    `json:"timeout"`
+}
+
+type TCPPingResponse struct {
+	IP          string  `json:"ip"`
+	Port        int     `json:"port"`
+	Success     bool    `json:"success"`
+	AverageTime float64 `json:"averageTime"`
+	PacketLoss  float64 `json:"packetLoss"`
+	Error       string  `json:"errorMessage,omitempty"`
+}
 type envelope struct {
 	Encrypted bool   `json:"encrypted"`
 	Data      string `json:"data"`

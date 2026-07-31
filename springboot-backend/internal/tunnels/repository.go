@@ -11,6 +11,11 @@ import (
 	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
 )
 
+const (
+	bytesPerGB int64 = 1024 * 1024 * 1024
+	maxQuotaGB int64 = 8_589_934_591
+)
+
 type NodeSpec struct {
 	NodeID            int64  `json:"nodeId"`
 	Protocol          string `json:"protocol,omitempty"`
@@ -58,19 +63,20 @@ type UpdateRequest struct {
 }
 
 type UserTunnel struct {
-	ID            int64  `json:"id"`
-	UserID        int64  `json:"userId"`
-	TunnelID      int64  `json:"tunnelId"`
-	TunnelName    string `json:"tunnelName"`
-	Status        int    `json:"status"`
-	Flow          int64  `json:"flow"`
-	InFlow        int64  `json:"inFlow"`
-	OutFlow       int64  `json:"outFlow"`
-	Num           int    `json:"num"`
-	ExpTime       int64  `json:"expTime"`
-	FlowResetTime int    `json:"flowResetTime"`
-	SpeedID       *int64 `json:"speedId,omitempty"`
-	TunnelFlow    int    `json:"tunnelFlow"`
+	ID             int64  `json:"id"`
+	UserID         int64  `json:"userId"`
+	TunnelID       int64  `json:"tunnelId"`
+	TunnelName     string `json:"tunnelName"`
+	Status         int    `json:"status"`
+	Flow           int64  `json:"flow"`
+	InFlow         int64  `json:"inFlow"`
+	OutFlow        int64  `json:"outFlow"`
+	Num            int    `json:"num"`
+	ExpTime        int64  `json:"expTime"`
+	FlowResetTime  int    `json:"flowResetTime"`
+	SpeedID        *int64 `json:"speedId,omitempty"`
+	SpeedLimitName string `json:"speedLimitName,omitempty"`
+	TunnelFlow     int    `json:"tunnelFlow"`
 }
 
 type AssignRequest struct {
@@ -201,10 +207,7 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest) error {
 	if count, _ := result.RowsAffected(); count == 0 {
 		return sql.ErrNoRows
 	}
-	if _, err := transaction.ExecContext(ctx, "DELETE FROM tunnel_nodes WHERE tunnel_id=?", request.ID); err != nil {
-		return err
-	}
-	if err := insertNodes(ctx, transaction, request.ID, request.CreateRequest); err != nil {
+	if err := syncNodes(ctx, transaction, request.ID, request.CreateRequest); err != nil {
 		return err
 	}
 	return transaction.Commit()
@@ -222,7 +225,7 @@ func (r *Repository) Delete(ctx context.Context, id int64) error {
 }
 
 func (r *Repository) UserTunnelList(ctx context.Context, userID int64) ([]UserTunnel, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT ut.id,ut.user_id,ut.tunnel_id,t.name,ut.status,ut.flow_quota_bytes,ut.ingress_bytes,ut.egress_bytes,ut.forward_quota,ut.expires_at,ut.flow_reset_day,ut.speed_limit_id,t.flow FROM user_tunnels ut JOIN tunnels t ON t.id=ut.tunnel_id WHERE ut.user_id=? ORDER BY ut.id`, userID)
+	rows, err := r.db.QueryContext(ctx, `SELECT ut.id,ut.user_id,ut.tunnel_id,t.name,ut.status,ut.flow_quota_bytes,ut.ingress_bytes,ut.egress_bytes,ut.forward_quota,ut.expires_at,ut.flow_reset_day,ut.speed_limit_id,COALESCE(sl.name,''),t.flow FROM user_tunnels ut JOIN tunnels t ON t.id=ut.tunnel_id LEFT JOIN speed_limits sl ON sl.id=ut.speed_limit_id WHERE ut.user_id=? ORDER BY ut.id`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -230,49 +233,55 @@ func (r *Repository) UserTunnelList(ctx context.Context, userID int64) ([]UserTu
 	result := make([]UserTunnel, 0)
 	for rows.Next() {
 		var permission UserTunnel
-		if err := rows.Scan(&permission.ID, &permission.UserID, &permission.TunnelID, &permission.TunnelName, &permission.Status, &permission.Flow, &permission.InFlow, &permission.OutFlow, &permission.Num, &permission.ExpTime, &permission.FlowResetTime, &permission.SpeedID, &permission.TunnelFlow); err != nil {
+		if err := rows.Scan(&permission.ID, &permission.UserID, &permission.TunnelID, &permission.TunnelName, &permission.Status, &permission.Flow, &permission.InFlow, &permission.OutFlow, &permission.Num, &permission.ExpTime, &permission.FlowResetTime, &permission.SpeedID, &permission.SpeedLimitName, &permission.TunnelFlow); err != nil {
 			return nil, err
 		}
+		permission.Flow /= bytesPerGB
 		result = append(result, permission)
 	}
 	return result, rows.Err()
 }
 
 func (r *Repository) Assign(ctx context.Context, request AssignRequest) (int64, error) {
-	if request.UserID <= 0 || request.TunnelID <= 0 || request.Flow < 0 || request.Num < 0 {
+	if request.UserID <= 0 || request.TunnelID <= 0 || request.Flow < 0 || request.Flow > maxQuotaGB || request.Num < 0 {
 		return 0, errors.New("invalid user tunnel assignment")
+	}
+	if err := r.validateSpeedLimit(ctx, request.SpeedID, request.TunnelID); err != nil {
+		return 0, err
 	}
 	now := time.Now().UnixMilli()
 	result, err := r.db.ExecContext(ctx, `INSERT INTO user_tunnels(user_id,tunnel_id,flow_quota_bytes,forward_quota,flow_reset_day,expires_at,speed_limit_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		request.UserID, request.TunnelID, request.Flow, request.Num, request.FlowResetTime, request.ExpTime, request.SpeedID, 1, now, now)
+		request.UserID, request.TunnelID, request.Flow*bytesPerGB, request.Num, request.FlowResetTime, request.ExpTime, request.SpeedID, 1, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("assign tunnel: %w", err)
 	}
 	return result.LastInsertId()
 }
 
-func (r *Repository) UpdateUserTunnel(ctx context.Context, request UpdateUserTunnelRequest) error {
-	if request.ID <= 0 || request.Flow < 0 || request.Num < 0 {
-		return errors.New("invalid user tunnel update")
+func (r *Repository) UpdateUserTunnel(ctx context.Context, request UpdateUserTunnelRequest) (int64, error) {
+	if request.ID <= 0 || request.Flow < 0 || request.Flow > maxQuotaGB || request.Num < 0 {
+		return 0, errors.New("invalid user tunnel update")
 	}
-	var expiresAt int64
-	var resetDay int
-	if err := r.db.QueryRowContext(ctx, "SELECT expires_at,flow_reset_day FROM user_tunnels WHERE id=?", request.ID).Scan(&expiresAt, &resetDay); err != nil {
-		return err
+	if request.Status != nil && *request.Status != 0 && *request.Status != 1 {
+		return 0, errors.New("invalid user tunnel status")
 	}
-	status := 1
-	if request.Status != nil {
-		status = *request.Status
+	var tunnelID int64
+	err := r.db.QueryRowContext(ctx, `UPDATE user_tunnels SET flow_quota_bytes=?,forward_quota=?,expires_at=COALESCE(?,expires_at),flow_reset_day=COALESCE(?,flow_reset_day),speed_limit_id=?,status=COALESCE(?,status),updated_at=? WHERE id=? AND (CAST(? AS INTEGER) IS NULL OR EXISTS (SELECT 1 FROM speed_limits WHERE id=CAST(? AS INTEGER) AND tunnel_id=user_tunnels.tunnel_id AND status=1)) RETURNING tunnel_id`,
+		request.Flow*bytesPerGB, request.Num, request.ExpTime, request.FlowResetTime, request.SpeedID, request.Status, time.Now().UnixMilli(), request.ID, request.SpeedID, request.SpeedID).Scan(&tunnelID)
+	if errors.Is(err, sql.ErrNoRows) {
+		var exists int
+		if checkErr := r.db.QueryRowContext(ctx, "SELECT COUNT(1) FROM user_tunnels WHERE id=?", request.ID).Scan(&exists); checkErr != nil {
+			return 0, checkErr
+		}
+		if exists == 0 {
+			return 0, sql.ErrNoRows
+		}
+		return 0, errors.New("speed limit does not belong to tunnel or is disabled")
 	}
-	if request.ExpTime != nil {
-		expiresAt = *request.ExpTime
+	if err != nil {
+		return 0, err
 	}
-	if request.FlowResetTime != nil {
-		resetDay = *request.FlowResetTime
-	}
-	_, err := r.db.ExecContext(ctx, `UPDATE user_tunnels SET flow_quota_bytes=?,forward_quota=?,expires_at=?,flow_reset_day=?,speed_limit_id=?,status=?,updated_at=? WHERE id=?`,
-		request.Flow, request.Num, expiresAt, resetDay, request.SpeedID, status, time.Now().UnixMilli(), request.ID)
-	return err
+	return tunnelID, nil
 }
 
 func (r *Repository) Remove(ctx context.Context, id int64) error {
@@ -303,6 +312,26 @@ func (r *Repository) UserChoices(ctx context.Context, userID int64) ([]map[strin
 		result = append(result, map[string]any{"id": id, "name": name, "status": status})
 	}
 	return result, rows.Err()
+}
+
+func (r *Repository) validateSpeedLimit(ctx context.Context, speedID *int64, tunnelID int64) error {
+	if speedID == nil {
+		return nil
+	}
+	if *speedID <= 0 {
+		return errors.New("invalid speed limit")
+	}
+	var status int
+	if err := r.db.QueryRowContext(ctx, "SELECT status FROM speed_limits WHERE id=? AND tunnel_id=?", *speedID, tunnelID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("speed limit does not belong to tunnel")
+		}
+		return err
+	}
+	if status != 1 {
+		return errors.New("speed limit is disabled")
+	}
+	return nil
 }
 
 func (r *Repository) validateNodes(ctx context.Context, request CreateRequest) error {
@@ -374,14 +403,71 @@ func validate(request CreateRequest) error {
 			return errors.New("tunnel nodes must be unique and positive")
 		}
 		seen[spec.NodeID] = true
-		if spec.FlowQuotaGB != nil && *spec.FlowQuotaGB < 0 {
-			return errors.New("flow quota cannot be negative")
+		if spec.FlowQuotaGB != nil && (*spec.FlowQuotaGB < 0 || *spec.FlowQuotaGB > maxQuotaGB) {
+			return errors.New("flow quota is outside the supported range")
 		}
 		if spec.SpeedLimitMbps != nil && *spec.SpeedLimitMbps < 0 {
 			return errors.New("speed limit cannot be negative")
 		}
 	}
 	return nil
+}
+
+func syncNodes(ctx context.Context, transaction *sql.Tx, tunnelID int64, request CreateRequest) error {
+	keep := make([]int64, 0, len(request.InNodeID)+len(request.OutNodeID))
+	all := []struct {
+		kind int
+		hop  int
+		spec NodeSpec
+	}{}
+	for _, spec := range request.InNodeID {
+		all = append(all, struct {
+			kind int
+			hop  int
+			spec NodeSpec
+		}{1, 0, spec})
+	}
+	for index, group := range request.ChainNodes {
+		for _, spec := range group {
+			all = append(all, struct {
+				kind int
+				hop  int
+				spec NodeSpec
+			}{2, index + 1, spec})
+		}
+	}
+	for _, spec := range request.OutNodeID {
+		all = append(all, struct {
+			kind int
+			hop  int
+			spec NodeSpec
+		}{3, 0, spec})
+	}
+	for _, item := range all {
+		quota := int64(0)
+		if item.spec.FlowQuotaGB != nil {
+			quota = *item.spec.FlowQuotaGB * bytesPerGB
+		}
+		speed := 0
+		if item.spec.SpeedLimitMbps != nil {
+			speed = *item.spec.SpeedLimitMbps
+		}
+		_, err := transaction.ExecContext(ctx, `INSERT INTO tunnel_nodes(tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol,flow_quota_bytes,speed_limit_mbps) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(tunnel_id,node_id) DO UPDATE SET chain_type=excluded.chain_type,port=excluded.port,strategy=excluded.strategy,hop_index=excluded.hop_index,protocol=excluded.protocol,flow_quota_bytes=excluded.flow_quota_bytes,speed_limit_mbps=excluded.speed_limit_mbps`, tunnelID, item.kind, item.spec.NodeID, item.spec.Port, item.spec.Strategy, item.hop, normalizeProtocol(item.spec.Protocol), quota, speed)
+		if err != nil {
+			return err
+		}
+		keep = append(keep, item.spec.NodeID)
+	}
+	query := "DELETE FROM tunnel_nodes WHERE tunnel_id=?"
+	args := []any{tunnelID}
+	if len(keep) > 0 {
+		query += " AND node_id NOT IN (" + strings.TrimRight(strings.Repeat("?,", len(keep)), ",") + ")"
+		for _, id := range keep {
+			args = append(args, id)
+		}
+	}
+	_, err := transaction.ExecContext(ctx, query, args...)
+	return err
 }
 
 func insertNodes(ctx context.Context, transaction *sql.Tx, tunnelID int64, request CreateRequest) error {
@@ -408,7 +494,7 @@ func insertNodes(ctx context.Context, transaction *sql.Tx, tunnelID int64, reque
 func insertNode(ctx context.Context, transaction *sql.Tx, tunnelID int64, kind, hop int, spec NodeSpec) error {
 	quota := int64(0)
 	if spec.FlowQuotaGB != nil {
-		quota = *spec.FlowQuotaGB * 1024 * 1024 * 1024
+		quota = *spec.FlowQuotaGB * bytesPerGB
 	}
 	speed := 0
 	if spec.SpeedLimitMbps != nil {
@@ -437,7 +523,7 @@ func (r *Repository) loadNodes(ctx context.Context, tunnel *Tunnel) error {
 		}
 		spec := NodeSpec{NodeID: int64(nodeID), Port: port, Strategy: strategy, Inx: hop, Protocol: protocol, HealthStatus: health, BandwidthOverload: overloaded}
 		if quota.Valid && quota.Int64 > 0 {
-			value := quota.Int64 / (1024 * 1024 * 1024)
+			value := quota.Int64 / bytesPerGB
 			spec.FlowQuotaGB = &value
 		}
 		if speed > 0 {

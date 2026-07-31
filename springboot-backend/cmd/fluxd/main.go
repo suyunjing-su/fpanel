@@ -16,11 +16,15 @@ import (
 	"github.com/suyunjing-su/fpanel/backend/internal/database"
 	"github.com/suyunjing-su/fpanel/backend/internal/forwards"
 	"github.com/suyunjing-su/fpanel/backend/internal/httpapi"
+	"github.com/suyunjing-su/fpanel/backend/internal/nodeconfig"
 	"github.com/suyunjing-su/fpanel/backend/internal/nodehub"
 	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
 	"github.com/suyunjing-su/fpanel/backend/internal/observability"
 	"github.com/suyunjing-su/fpanel/backend/internal/siteconfig"
+	"github.com/suyunjing-su/fpanel/backend/internal/speedlimits"
 	"github.com/suyunjing-su/fpanel/backend/internal/traffic"
+	"github.com/suyunjing-su/fpanel/backend/internal/tunnelhealth"
+	"github.com/suyunjing-su/fpanel/backend/internal/tunnelpolicies"
 	"github.com/suyunjing-su/fpanel/backend/internal/tunnels"
 	"github.com/suyunjing-su/fpanel/backend/internal/users"
 )
@@ -50,12 +54,22 @@ func run() error {
 	jwtManager := auth.New(cfg.JWTSecret, cfg.TokenTTL)
 	authRepo := auth.NewRepository(db)
 	nodeRepo := nodes.NewRepository(db)
+	nodeConfigRepo := nodeconfig.NewRepository(db)
 	hub := nodehub.New(log, nodeRepo)
 	configRepo := siteconfig.NewRepository(db)
 	userRepo := users.NewRepository(db)
 	tunnelRepo := tunnels.NewRepository(db, nodeRepo)
 	forwardRepo := forwards.NewRepository(db, nodeRepo, tunnelRepo)
 	trafficRepo := traffic.NewRepository(db, nodeRepo)
+	speedLimitRepo := speedlimits.NewRepository(db)
+	policyRepo := tunnelpolicies.NewRepository(db)
+	healthRepo := tunnelhealth.NewRepository(db)
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	refreshQueue := tunnelhealth.NewRefreshQueue(db, hub, log)
+	refreshQueue.Start(workerCtx)
+	tunnelhealth.NewExpiryWorker(db, refreshQueue, log).Start(workerCtx)
+	tunnelhealth.NewWorker(db, healthRepo, hub, refreshQueue, log).Start(workerCtx)
 	metrics := observability.NewMetrics()
 	mux := http.NewServeMux()
 
@@ -77,7 +91,13 @@ func run() error {
 	})
 
 	mux.HandleFunc("POST /flow/upload", func(w http.ResponseWriter, r *http.Request) {
-		uploadTraffic(w, r, nodeRepo, trafficRepo)
+		uploadTraffic(w, r, nodeRepo, trafficRepo, refreshQueue, log)
+	})
+	mux.HandleFunc("GET /flow/config/all", func(w http.ResponseWriter, r *http.Request) {
+		getNodeFullConfig(w, r, nodeRepo, nodeConfigRepo, log)
+	})
+	mux.HandleFunc("POST /flow/config", func(w http.ResponseWriter, r *http.Request) {
+		reconcileNodeConfig(w, r, nodeRepo, nodeConfigRepo, refreshQueue, log)
 	})
 
 	isAdmin := func(r *http.Request) bool {
@@ -90,6 +110,28 @@ func run() error {
 	badRequest := func(w http.ResponseWriter, err error) {
 		httpapi.WriteJSON(w, http.StatusBadRequest, httpapi.Failure(http.StatusBadRequest, err.Error()))
 	}
+	registerLimitRoutes(mux, speedLimitRepo, policyRepo, tunnelRepo, refreshQueue, isAdmin)
+	mux.HandleFunc("POST /api/v1/tunnel/failure-event/list", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r) {
+			forbidden(w)
+			return
+		}
+		var request struct {
+			TunnelID   int64  `json:"tunnelId"`
+			NodeID     int64  `json:"nodeId"`
+			EventType  string `json:"eventType"`
+			ActiveOnly bool   `json:"activeOnly"`
+		}
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		value, err := healthRepo.ListEvents(r.Context(), request.TunnelID, request.NodeID, request.EventType, request.ActiveOnly)
+		if err != nil {
+			httpapi.WriteJSON(w, http.StatusInternalServerError, httpapi.Failure(http.StatusInternalServerError, "故障事件查询失败"))
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(value))
+	})
 
 	configHandler := func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Query().Get("name")
@@ -353,10 +395,11 @@ func run() error {
 		if !httpapi.DecodeJSON(w, r, &request) {
 			return
 		}
-		if err := tunnelRepo.UpdateUserTunnel(r.Context(), request); err != nil {
+		if _, err := tunnelRepo.UpdateUserTunnel(r.Context(), request); err != nil {
 			badRequest(w, err)
 			return
 		}
+		refreshQueue.Wake()
 		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
 	})
 	mux.HandleFunc("POST /api/v1/tunnel/user/remove", func(w http.ResponseWriter, r *http.Request) {

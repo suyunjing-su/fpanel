@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +20,7 @@ type Node struct {
 	ServerIP         string  `json:"serverIp"`
 	PortStart        int     `json:"portSta"`
 	PortEnd          int     `json:"portEnd"`
+	Port             string  `json:"port"`
 	Version          string  `json:"version"`
 	HTTP             int     `json:"http"`
 	TLS              int     `json:"tls"`
@@ -29,17 +31,26 @@ type Node struct {
 	BytesTransmitted uint64  `json:"bytes_transmitted,omitempty"`
 	CPUUsage         float64 `json:"cpu_usage,omitempty"`
 	MemoryUsage      float64 `json:"memory_usage,omitempty"`
+	MaxBandwidthMbps int     `json:"maxBandwidthMbps"`
+	InterfaceName    string  `json:"interfaceName"`
+	TCPListenAddr    string  `json:"tcpListenAddr"`
+	UDPListenAddr    string  `json:"udpListenAddr"`
 }
 
 type CreateRequest struct {
-	Name      string `json:"name"`
-	IP        string `json:"ip"`
-	ServerIP  string `json:"serverIp"`
-	PortStart int    `json:"portSta"`
-	PortEnd   int    `json:"portEnd"`
-	HTTP      int    `json:"http"`
-	TLS       int    `json:"tls"`
-	Socks     int    `json:"socks"`
+	Name             string `json:"name"`
+	IP               string `json:"ip"`
+	ServerIP         string `json:"serverIp"`
+	PortStart        int    `json:"portSta"`
+	PortEnd          int    `json:"portEnd"`
+	Port             string `json:"port"`
+	HTTP             int    `json:"http"`
+	TLS              int    `json:"tls"`
+	Socks            int    `json:"socks"`
+	MaxBandwidthMbps int    `json:"maxBandwidthMbps"`
+	InterfaceName    string `json:"interfaceName"`
+	TCPListenAddr    string `json:"tcpListenAddr"`
+	UDPListenAddr    string `json:"udpListenAddr"`
 }
 type UpdateRequest struct {
 	CreateRequest
@@ -50,7 +61,7 @@ type Repository struct{ db *sql.DB }
 func NewRepository(db *sql.DB) *Repository { return &Repository{db: db} }
 
 func (r *Repository) List(ctx context.Context) ([]Node, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage FROM nodes ORDER BY id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr FROM nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -58,19 +69,26 @@ func (r *Repository) List(ctx context.Context) ([]Node, error) {
 	result := make([]Node, 0)
 	for rows.Next() {
 		var node Node
-		if err := rows.Scan(&node.ID, &node.Name, &node.IP, &node.ServerIP, &node.PortStart, &node.PortEnd, &node.Version, &node.HTTP, &node.TLS, &node.Socks, &node.Status, &node.Uptime, &node.BytesReceived, &node.BytesTransmitted, &node.CPUUsage, &node.MemoryUsage); err != nil {
+		if err := rows.Scan(&node.ID, &node.Name, &node.IP, &node.ServerIP, &node.PortStart, &node.PortEnd, &node.Version, &node.HTTP, &node.TLS, &node.Socks, &node.Status, &node.Uptime, &node.BytesReceived, &node.BytesTransmitted, &node.CPUUsage, &node.MemoryUsage, &node.MaxBandwidthMbps, &node.InterfaceName, &node.TCPListenAddr, &node.UDPListenAddr); err != nil {
 			return nil, fmt.Errorf("scan node: %w", err)
 		}
+		node.Port = fmt.Sprintf("%d-%d", node.PortStart, node.PortEnd)
 		result = append(result, node)
 	}
 	return result, rows.Err()
 }
 func (r *Repository) Get(ctx context.Context, id int64) (Node, error) {
 	var n Node
-	err := r.db.QueryRowContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage FROM nodes WHERE id=?`, id).Scan(&n.ID, &n.Name, &n.IP, &n.ServerIP, &n.PortStart, &n.PortEnd, &n.Version, &n.HTTP, &n.TLS, &n.Socks, &n.Status, &n.Uptime, &n.BytesReceived, &n.BytesTransmitted, &n.CPUUsage, &n.MemoryUsage)
+	err := r.db.QueryRowContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr FROM nodes WHERE id=?`, id).Scan(&n.ID, &n.Name, &n.IP, &n.ServerIP, &n.PortStart, &n.PortEnd, &n.Version, &n.HTTP, &n.TLS, &n.Socks, &n.Status, &n.Uptime, &n.BytesReceived, &n.BytesTransmitted, &n.CPUUsage, &n.MemoryUsage, &n.MaxBandwidthMbps, &n.InterfaceName, &n.TCPListenAddr, &n.UDPListenAddr)
+	n.Port = fmt.Sprintf("%d-%d", n.PortStart, n.PortEnd)
 	return n, err
 }
 func (r *Repository) Create(ctx context.Context, req CreateRequest) (int64, error) {
+	var err error
+	req, err = normalizeRequest(req)
+	if err != nil {
+		return 0, err
+	}
 	if err := validate(req); err != nil {
 		return 0, err
 	}
@@ -79,7 +97,7 @@ func (r *Repository) Create(ctx context.Context, req CreateRequest) (int64, erro
 		return 0, err
 	}
 	now := time.Now().UnixMilli()
-	res, err := r.db.ExecContext(ctx, `INSERT INTO nodes(name,ip,server_ip,port_start,port_end,secret,http,tls,socks,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, req.Name, req.IP, req.ServerIP, req.PortStart, req.PortEnd, secret, req.HTTP, req.TLS, req.Socks, now, now)
+	res, err := r.db.ExecContext(ctx, `INSERT INTO nodes(name,ip,server_ip,port_start,port_end,secret,http,tls,socks,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, req.Name, req.IP, req.ServerIP, req.PortStart, req.PortEnd, secret, req.HTTP, req.TLS, req.Socks, req.MaxBandwidthMbps, strings.TrimSpace(req.InterfaceName), normalizeListenAddr(req.TCPListenAddr), normalizeListenAddr(req.UDPListenAddr), now, now)
 	if err != nil {
 		return 0, fmt.Errorf("create node: %w", err)
 	}
@@ -89,10 +107,15 @@ func (r *Repository) Update(ctx context.Context, req UpdateRequest) error {
 	if req.ID <= 0 {
 		return errors.New("node id must be positive")
 	}
+	normalized, err := normalizeRequest(req.CreateRequest)
+	if err != nil {
+		return err
+	}
+	req.CreateRequest = normalized
 	if err := validate(req.CreateRequest); err != nil {
 		return err
 	}
-	res, err := r.db.ExecContext(ctx, `UPDATE nodes SET name=?,ip=?,server_ip=?,port_start=?,port_end=?,http=?,tls=?,socks=?,updated_at=? WHERE id=?`, req.Name, req.IP, req.ServerIP, req.PortStart, req.PortEnd, req.HTTP, req.TLS, req.Socks, time.Now().UnixMilli(), req.ID)
+	res, err := r.db.ExecContext(ctx, `UPDATE nodes SET name=?,ip=?,server_ip=?,port_start=?,port_end=?,http=?,tls=?,socks=?,max_bandwidth_mbps=?,interface_name=?,tcp_listen_addr=?,udp_listen_addr=?,updated_at=? WHERE id=?`, req.Name, req.IP, req.ServerIP, req.PortStart, req.PortEnd, req.HTTP, req.TLS, req.Socks, req.MaxBandwidthMbps, strings.TrimSpace(req.InterfaceName), normalizeListenAddr(req.TCPListenAddr), normalizeListenAddr(req.UDPListenAddr), time.Now().UnixMilli(), req.ID)
 	if err != nil {
 		return fmt.Errorf("update node: %w", err)
 	}
@@ -148,6 +171,32 @@ func (r *Repository) Delete(ctx context.Context, id int64) error {
 	}
 	return nil
 }
+func normalizeRequest(req CreateRequest) (CreateRequest, error) {
+	if strings.TrimSpace(req.IP) == "" {
+		req.IP = strings.TrimSpace(req.ServerIP)
+	}
+	if req.PortStart == 0 && req.PortEnd == 0 && strings.TrimSpace(req.Port) != "" {
+		parts := strings.Split(strings.TrimSpace(req.Port), "-")
+		if len(parts) == 1 {
+			port, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+			if err != nil {
+				return req, errors.New("invalid node port range")
+			}
+			req.PortStart, req.PortEnd = port, port
+		} else if len(parts) == 2 {
+			start, startErr := strconv.Atoi(strings.TrimSpace(parts[0]))
+			end, endErr := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if startErr != nil || endErr != nil {
+				return req, errors.New("invalid node port range")
+			}
+			req.PortStart, req.PortEnd = start, end
+		} else {
+			return req, errors.New("invalid node port range")
+		}
+	}
+	return req, nil
+}
+
 func validate(req CreateRequest) error {
 	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.IP) == "" || strings.TrimSpace(req.ServerIP) == "" {
 		return errors.New("node name and addresses are required")
@@ -155,21 +204,52 @@ func validate(req CreateRequest) error {
 	if req.PortStart < 1 || req.PortStart > 65535 || req.PortEnd < req.PortStart || req.PortEnd > 65535 {
 		return errors.New("invalid node port range")
 	}
+	if req.MaxBandwidthMbps < 0 {
+		return errors.New("maximum bandwidth cannot be negative")
+	}
 	for _, v := range []int{req.HTTP, req.TLS, req.Socks} {
 		if v != 0 && v != 1 {
 			return errors.New("node protocol flags must be 0 or 1")
 		}
 	}
 	for _, address := range strings.Split(req.IP, ",") {
-		if net.ParseIP(strings.TrimSpace(address)) == nil {
+		if !validHost(strings.TrimSpace(address)) {
 			return fmt.Errorf("invalid node address: %s", address)
 		}
 	}
-	if net.ParseIP(strings.TrimSpace(req.ServerIP)) == nil {
+	if !validHost(strings.TrimSpace(req.ServerIP)) {
 		return errors.New("invalid server address")
 	}
 	return nil
 }
+
+func validHost(value string) bool {
+	if net.ParseIP(value) != nil {
+		return true
+	}
+	if value == "" || len(value) > 253 || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if character != '-' && (character < '0' || character > '9') && (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') {
+				return false
+			}
+		}
+	}
+	return true
+}
+func normalizeListenAddr(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "[::]"
+	}
+	return value
+}
+
 func newSecret() (string, error) {
 	var b [24]byte
 	if _, err := rand.Read(b[:]); err != nil {

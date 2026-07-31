@@ -776,17 +776,12 @@ func (w *WebSocketReporter) handleForcePullFullConfig() error {
 	w.reloadMutex.Lock()
 	defer w.reloadMutex.Unlock()
 
-	previousServiceCount := len(config.Global().Services)
-	if runtimeServiceCount := len(registry.ServiceRegistry().GetAll()); runtimeServiceCount > previousServiceCount {
-		previousServiceCount = runtimeServiceCount
-	}
-
 	fileBackup, err := backupGostConfigFile()
 	if err != nil {
 		return fmt.Errorf("创建gost.json回滚快照失败: %v", err)
 	}
 
-	fetchedServiceCount, err := w.fetchAndOverwriteFullConfig(previousServiceCount)
+	fetchedServiceCount, err := w.fetchAndOverwriteFullConfig()
 	if err != nil {
 		return err
 	}
@@ -899,7 +894,7 @@ func restoreGostConfigFile(backup gostConfigFileBackup) error {
 	return os.WriteFile("gost.json", backup.content, 0600)
 }
 
-func (w *WebSocketReporter) fetchAndOverwriteFullConfig(previousServiceCount int) (int, error) {
+func (w *WebSocketReporter) fetchAndOverwriteFullConfig() (int, error) {
 	baseURL, err := buildSecureControlBaseURL(w.addr)
 	if err != nil {
 		return 0, err
@@ -945,11 +940,6 @@ func (w *WebSocketReporter) fetchAndOverwriteFullConfig(previousServiceCount int
 	var fetchedCfg config.Config
 	if err := json.Unmarshal(processedPayload, &fetchedCfg); err != nil {
 		return 0, fmt.Errorf("全量配置格式非法: %v", err)
-	}
-
-	// Guard against transient responses that would wipe all listeners unexpectedly.
-	if previousServiceCount > 0 && len(fetchedCfg.Services) == 0 {
-		return 0, fmt.Errorf("拒绝应用空服务全量配置，当前仍有%d个运行监听", previousServiceCount)
 	}
 
 	var serialized bytes.Buffer
