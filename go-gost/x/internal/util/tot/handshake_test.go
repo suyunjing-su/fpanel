@@ -17,7 +17,7 @@ func TestAcceptorAuthenticatesAndAggregatesPaths(t *testing.T) {
 	}
 	secret := []byte("0123456789abcdef0123456789abcdef")
 	acceptor, err := NewAcceptor(listener, AcceptorOptions{
-		Session:   Options{MaxPayload: 4, RetransmitInterval: 20 * time.Millisecond},
+		Session:   Options{Key: secret, MaxPayload: 4, RetransmitInterval: 20 * time.Millisecond},
 		Handshake: HandshakeOptions{Secret: secret},
 	})
 	if err != nil {
@@ -25,7 +25,7 @@ func TestAcceptorAuthenticatesAndAggregatesPaths(t *testing.T) {
 	}
 	defer acceptor.Close()
 
-	client := NewSession(1234, Options{MaxPayload: 4, RetransmitInterval: 20 * time.Millisecond})
+	client := NewSession(1234, Options{Key: secret, Role: RoleClient, MaxPayload: 4, RetransmitInterval: 20 * time.Millisecond})
 	defer client.Close()
 	addClientPath := func() {
 		conn, err := net.Dial("tcp", listener.Addr().String())

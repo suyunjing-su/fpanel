@@ -2,6 +2,9 @@ package tot
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -13,7 +16,9 @@ import (
 var (
 	ErrClosed          = errors.New("TOT session is closed")
 	ErrNoPath          = errors.New("TOT session has no active path")
+	ErrPathExists      = errors.New("TOT session path already exists")
 	ErrRetransmitLimit = errors.New("TOT retransmission limit reached")
+	ErrCloseTimeout    = errors.New("TOT session close timed out")
 )
 
 var sessionRegistry = struct {
@@ -55,12 +60,22 @@ func Snapshot() AggregateStats {
 	return aggregate
 }
 
+type Role uint8
+
+const (
+	RolePeer Role = iota
+	RoleClient
+	RoleServer
+)
+
 type Options struct {
 	Key                []byte
+	Role               Role
 	MaxPayload         int
 	Window             int
 	RetransmitInterval time.Duration
 	MaxRetries         int
+	CloseTimeout       time.Duration
 }
 
 func (o *Options) defaults() {
@@ -79,6 +94,9 @@ func (o *Options) defaults() {
 	if o.MaxRetries <= 0 {
 		o.MaxRetries = 20
 	}
+	if o.CloseTimeout <= 0 {
+		o.CloseTimeout = 2 * time.Second
+	}
 }
 
 type Stats struct {
@@ -95,6 +113,7 @@ type packet struct {
 	frame   Frame
 	sentAt  time.Time
 	retries int
+	busy    bool
 }
 
 type path struct {
@@ -108,24 +127,31 @@ type path struct {
 type Session struct {
 	id      uint64
 	options Options
+	sendKey []byte
+	recvKey []byte
 
-	mu         sync.Mutex
-	receiveMu  sync.Mutex
-	paths      map[uint64]*path
-	nextPath   uint64
-	roundRobin uint64
-	pending    map[uint64]*packet
-	sendSeq    uint64
-	recvSeq    uint64
-	reorder    map[uint64][]byte
-	stats      Stats
-	err        error
-	local      net.Addr
-	remote     net.Addr
+	mu              sync.Mutex
+	receiveMu       sync.Mutex
+	retransmitMu    sync.Mutex
+	paths           map[uint64]*path
+	nextPath        uint64
+	roundRobin      uint64
+	pending         map[uint64]*packet
+	sendSeq         uint64
+	recvSeq         uint64
+	reorder         map[uint64][]byte
+	stats           Stats
+	err             error
+	closing         bool
+	remoteFinalSeq  uint64
+	remoteCloseSeen bool
+	local           net.Addr
+	remote          net.Addr
 
 	incoming      chan []byte
 	readBuf       bytes.Buffer
 	notify        chan struct{}
+	retransmit    chan struct{}
 	closed        chan struct{}
 	closeOnce     sync.Once
 	readDeadline  time.Time
@@ -134,23 +160,47 @@ type Session struct {
 
 func NewSession(id uint64, options Options) *Session {
 	options.defaults()
+	sendKey, recvKey := sessionFrameKeys(options.Key, id, options.Role)
 	s := &Session{
-		id:       id,
-		options:  options,
-		paths:    make(map[uint64]*path),
-		pending:  make(map[uint64]*packet),
-		sendSeq:  1,
-		recvSeq:  1,
-		reorder:  make(map[uint64][]byte),
-		incoming: make(chan []byte, options.Window),
-		notify:   make(chan struct{}, 1),
-		closed:   make(chan struct{}),
+		id:         id,
+		options:    options,
+		sendKey:    sendKey,
+		recvKey:    recvKey,
+		paths:      make(map[uint64]*path),
+		pending:    make(map[uint64]*packet),
+		sendSeq:    1,
+		recvSeq:    1,
+		reorder:    make(map[uint64][]byte),
+		incoming:   make(chan []byte, options.Window),
+		notify:     make(chan struct{}, 1),
+		retransmit: make(chan struct{}, 1),
+		closed:     make(chan struct{}),
 	}
 	sessionRegistry.Lock()
 	sessionRegistry.items[s] = struct{}{}
 	sessionRegistry.Unlock()
 	go s.retransmitLoop()
 	return s
+}
+
+func sessionFrameKeys(secret []byte, id uint64, role Role) ([]byte, []byte) {
+	if role == RolePeer {
+		return append([]byte(nil), secret...), append([]byte(nil), secret...)
+	}
+	derive := func(direction string) []byte {
+		mac := hmac.New(sha256.New, secret)
+		_, _ = mac.Write([]byte("TOT/1/frame/" + direction))
+		var session [8]byte
+		binary.BigEndian.PutUint64(session[:], id)
+		_, _ = mac.Write(session[:])
+		return mac.Sum(nil)
+	}
+	clientToServer := derive("client-to-server")
+	serverToClient := derive("server-to-client")
+	if role == RoleClient {
+		return clientToServer, serverToClient
+	}
+	return serverToClient, clientToServer
 }
 
 func (s *Session) ID() uint64 { return s.id }
@@ -170,6 +220,12 @@ func (s *Session) AddNamedPath(key string, conn net.Conn) error {
 		return ErrClosed
 	default:
 	}
+	for _, existing := range s.paths {
+		if key != "" && existing.key == key {
+			s.mu.Unlock()
+			return ErrPathExists
+		}
+	}
 	s.nextPath++
 	p := &path{id: s.nextPath, key: key, conn: conn}
 	s.paths[p.id] = p
@@ -180,12 +236,19 @@ func (s *Session) AddNamedPath(key string, conn net.Conn) error {
 	s.mu.Unlock()
 	s.signal()
 	go s.readPath(p)
-	go s.retransmitPending()
+	s.requestRetransmit()
 	return nil
 }
 
 func (s *Session) Read(buffer []byte) (int, error) {
 	for {
+		select {
+		case data := <-s.incoming:
+			s.mu.Lock()
+			_, _ = s.readBuf.Write(data)
+			s.mu.Unlock()
+		default:
+		}
 		s.mu.Lock()
 		if s.readBuf.Len() > 0 {
 			n, _ := s.readBuf.Read(buffer)
@@ -214,6 +277,14 @@ func (s *Session) Read(buffer []byte) (int, error) {
 			_, _ = s.readBuf.Write(data)
 			s.mu.Unlock()
 		case <-s.closed:
+			select {
+			case data := <-s.incoming:
+				s.mu.Lock()
+				_, _ = s.readBuf.Write(data)
+				s.mu.Unlock()
+				continue
+			default:
+			}
 			s.mu.Lock()
 			err = s.err
 			s.mu.Unlock()
@@ -263,8 +334,11 @@ func (s *Session) Write(data []byte) (int, error) {
 func (s *Session) queue(payload []byte) (uint64, error) {
 	for {
 		s.mu.Lock()
-		if s.err != nil {
+		if s.err != nil || s.closing {
 			err := s.err
+			if err == nil {
+				err = ErrClosed
+			}
 			s.mu.Unlock()
 			return 0, err
 		}
@@ -313,17 +387,32 @@ func (s *Session) wait(deadline time.Time) error {
 func (s *Session) transmit(sequence uint64, retransmit bool) error {
 	s.mu.Lock()
 	entry := s.pending[sequence]
-	paths := s.pathCandidatesLocked()
-	s.mu.Unlock()
 	if entry == nil {
+		s.mu.Unlock()
 		return nil
 	}
+	if entry.busy {
+		s.mu.Unlock()
+		return nil
+	}
+	entry.busy = true
+	frame := entry.frame
+	paths := s.pathCandidatesLocked()
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if current := s.pending[sequence]; current != nil {
+			current.busy = false
+		}
+		s.mu.Unlock()
+		s.signal()
+	}()
 	if len(paths) == 0 {
 		return ErrNoPath
 	}
 	var lastErr error
 	for _, p := range paths {
-		if err := s.send(p, entry.frame); err != nil {
+		if err := s.send(p, frame); err != nil {
 			lastErr = err
 			s.dropPath(p, err)
 			continue
@@ -369,12 +458,12 @@ func (s *Session) pathCandidatesLocked() []*path {
 func (s *Session) send(p *path, frame Frame) error {
 	p.write.Lock()
 	defer p.write.Unlock()
-	return WriteFrame(p.conn, frame, s.options.Key)
+	return WriteFrame(p.conn, frame, s.sendKey)
 }
 
 func (s *Session) readPath(p *path) {
 	for {
-		frame, err := ReadFrame(p.conn, s.options.MaxPayload, s.options.Key)
+		frame, err := ReadFrame(p.conn, s.options.MaxPayload, s.recvKey)
 		if err != nil {
 			s.dropPath(p, err)
 			return
@@ -399,6 +488,19 @@ func (s *Session) handleFrame(p *path, frame Frame) {
 	case FramePing:
 		_ = s.send(p, Frame{Type: FramePong, SessionID: s.id, Ack: s.receivedAck()})
 	case FrameClose:
+		s.receiveClose(frame.Sequence)
+	}
+}
+
+func (s *Session) receiveClose(finalSequence uint64) {
+	s.mu.Lock()
+	if finalSequence > s.remoteFinalSeq {
+		s.remoteFinalSeq = finalSequence
+	}
+	s.remoteCloseSeen = true
+	ready := s.recvSeq > s.remoteFinalSeq
+	s.mu.Unlock()
+	if ready {
 		s.closeWithError(io.EOF)
 	}
 }
@@ -443,14 +545,18 @@ func (s *Session) receiveData(p *path, frame Frame) {
 		ready = append(ready, payload)
 	}
 	ack := s.recvSeq - 1
+	closeReady := s.remoteCloseSeen && s.recvSeq > s.remoteFinalSeq
 	s.mu.Unlock()
-	_ = s.send(p, Frame{Type: FrameAck, SessionID: s.id, Ack: ack})
 	for _, payload := range ready {
 		select {
 		case s.incoming <- payload:
 		case <-s.closed:
 			return
 		}
+	}
+	_ = s.send(p, Frame{Type: FrameAck, SessionID: s.id, Ack: ack})
+	if closeReady {
+		s.closeWithError(io.EOF)
 	}
 }
 
@@ -467,6 +573,8 @@ func (s *Session) retransmitLoop() {
 		select {
 		case <-ticker.C:
 			s.retransmitPending()
+		case <-s.retransmit:
+			s.retransmitPending()
 		case <-s.closed:
 			return
 		}
@@ -474,6 +582,8 @@ func (s *Session) retransmitLoop() {
 }
 
 func (s *Session) retransmitPending() {
+	s.retransmitMu.Lock()
+	defer s.retransmitMu.Unlock()
 	now := time.Now()
 	var sequences []uint64
 	s.mu.Lock()
@@ -482,6 +592,9 @@ func (s *Session) retransmitPending() {
 		return
 	}
 	for sequence, entry := range s.pending {
+		if entry.busy {
+			continue
+		}
 		if entry.sentAt.IsZero() || now.Sub(entry.sentAt) >= s.options.RetransmitInterval {
 			if entry.retries >= s.options.MaxRetries {
 				s.mu.Unlock()
@@ -509,7 +622,14 @@ func (s *Session) dropPath(p *path, _ error) {
 	s.mu.Unlock()
 	_ = p.conn.Close()
 	s.signal()
-	go s.retransmitPending()
+	s.requestRetransmit()
+}
+
+func (s *Session) requestRetransmit() {
+	select {
+	case s.retransmit <- struct{}{}:
+	default:
+	}
 }
 
 func (s *Session) signal() {
@@ -551,6 +671,31 @@ func (s *Session) Stats() Stats {
 }
 
 func (s *Session) Close() error {
+	s.mu.Lock()
+	if s.closing || s.err != nil {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closing = true
+	deadline := time.Now().Add(s.options.CloseTimeout)
+	s.mu.Unlock()
+	for {
+		s.mu.Lock()
+		pending := len(s.pending)
+		err := s.err
+		s.mu.Unlock()
+		if pending == 0 || err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			s.closeWithError(ErrCloseTimeout)
+			return ErrCloseTimeout
+		}
+		if err := s.wait(deadline); err != nil && !errors.Is(err, ErrClosed) {
+			s.closeWithError(ErrCloseTimeout)
+			return ErrCloseTimeout
+		}
+	}
 	s.closeWithError(io.EOF)
 	return nil
 }
@@ -563,13 +708,14 @@ func (s *Session) closeWithError(err error) {
 			paths = append(paths, p)
 		}
 		ack := s.recvSeq - 1
+		finalSequence := s.sendSeq - 1
 		s.err = err
 		s.paths = make(map[uint64]*path)
 		s.stats.ActivePaths = 0
 		s.mu.Unlock()
 		for _, p := range paths {
 			_ = p.conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
-			_ = s.send(p, Frame{Type: FrameClose, SessionID: s.id, Ack: ack})
+			_ = s.send(p, Frame{Type: FrameClose, SessionID: s.id, Sequence: finalSequence, Ack: ack})
 			_ = p.conn.Close()
 		}
 		close(s.closed)

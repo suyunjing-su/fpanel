@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -54,6 +55,120 @@ func TestFrameRoundTripAndIntegrity(t *testing.T) {
 	if _, err := ReadFrame(bytes.NewReader(encoded), 1024, []byte("fedcba9876543210fedcba9876543210")); !errors.Is(err, ErrInvalidFrame) {
 		t.Fatalf("wrong secret error = %v", err)
 	}
+}
+
+func TestSessionWaitsForFinalDataAfterCloseFrame(t *testing.T) {
+	session := NewSession(125, Options{})
+	peer, local := net.Pipe()
+	defer peer.Close()
+	if err := session.AddPath(local); err != nil {
+		t.Fatal(err)
+	}
+	path := session.paths[1]
+	done := make(chan struct{})
+	go func() {
+		_, _ = ReadFrame(peer, 1024)
+		close(done)
+	}()
+	session.receiveClose(1)
+	if session.IsClosed() {
+		t.Fatal("session closed before final data arrived")
+	}
+	session.receiveData(path, Frame{Type: FrameData, SessionID: session.ID(), Sequence: 1, Payload: []byte("final")})
+	buffer := make([]byte, 5)
+	if _, err := io.ReadFull(session, buffer); err != nil {
+		t.Fatal(err)
+	}
+	if string(buffer) != "final" {
+		t.Fatalf("payload = %q", buffer)
+	}
+	select {
+	case <-session.Done():
+	case <-time.After(time.Second):
+		t.Fatal("session remained open after final data")
+	}
+	<-done
+}
+
+func TestSessionDirectionKeysRejectReflectedFrames(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	client := NewSession(126, Options{Key: secret, Role: RoleClient})
+	server := NewSession(126, Options{Key: secret, Role: RoleServer})
+	defer client.Close()
+	defer server.Close()
+	if !bytes.Equal(client.sendKey, server.recvKey) || !bytes.Equal(client.recvKey, server.sendKey) {
+		t.Fatal("peer direction keys do not match")
+	}
+	if bytes.Equal(client.sendKey, client.recvKey) {
+		t.Fatal("session directions share one frame key")
+	}
+	var encoded bytes.Buffer
+	frame := Frame{Type: FrameData, SessionID: client.ID(), Sequence: 1, Payload: []byte("request")}
+	if err := WriteFrame(&encoded, frame, client.sendKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFrame(&encoded, 1024, client.recvKey); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("reflected frame error = %v", err)
+	}
+}
+
+func TestSessionRejectsDuplicateNamedPath(t *testing.T) {
+	session := NewSession(127, Options{})
+	defer session.Close()
+	firstPeer, first := net.Pipe()
+	defer firstPeer.Close()
+	if err := session.AddNamedPath("primary", first); err != nil {
+		t.Fatal(err)
+	}
+	secondPeer, second := net.Pipe()
+	defer secondPeer.Close()
+	defer second.Close()
+	if err := session.AddNamedPath("primary", second); !errors.Is(err, ErrPathExists) {
+		t.Fatalf("duplicate path error = %v", err)
+	}
+	if session.Stats().ActivePaths != 1 {
+		t.Fatalf("active paths = %d", session.Stats().ActivePaths)
+	}
+}
+
+func TestRetransmitPendingIsSingleFlight(t *testing.T) {
+	session := NewSession(128, Options{RetransmitInterval: time.Second, MaxRetries: 5})
+	peer, local := net.Pipe()
+	defer peer.Close()
+	if err := session.AddPath(local); err != nil {
+		t.Fatal(err)
+	}
+	session.mu.Lock()
+	session.pending[1] = &packet{frame: Frame{Type: FrameData, SessionID: session.ID(), Sequence: 1, Payload: []byte("retry")}}
+	session.sendSeq = 2
+	session.mu.Unlock()
+	readDone := make(chan struct{})
+	go func() {
+		_, _ = ReadFrame(peer, 1024)
+		close(readDone)
+	}()
+	var workers sync.WaitGroup
+	workers.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer workers.Done()
+			session.retransmitPending()
+		}()
+	}
+	workers.Wait()
+	<-readDone
+	stats := session.Stats()
+	if stats.Retransmits != 1 {
+		t.Fatalf("retransmits = %d, want 1", stats.Retransmits)
+	}
+	session.mu.Lock()
+	retries := session.pending[1].retries
+	session.pending = make(map[uint64]*packet)
+	session.mu.Unlock()
+	if retries != 1 {
+		t.Fatalf("retry budget consumed %d times", retries)
+	}
+	_ = session.Close()
 }
 
 func TestSessionCloseExchangesCloseFrame(t *testing.T) {

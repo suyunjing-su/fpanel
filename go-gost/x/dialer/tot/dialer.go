@@ -55,7 +55,9 @@ func (d *totDialer) Dial(ctx context.Context, addr string, opts ...dialer.DialOp
 		return nil, err
 	}
 	sessionCtx, cancel := context.WithCancel(context.Background())
-	session := coretot.NewSession(id, d.md.session)
+	sessionOptions := d.md.session
+	sessionOptions.Role = coretot.RoleClient
+	session := coretot.NewSession(id, sessionOptions)
 	go func() {
 		select {
 		case <-session.Done():
@@ -63,12 +65,12 @@ func (d *totDialer) Dial(ctx context.Context, addr string, opts ...dialer.DialOp
 		case <-sessionCtx.Done():
 		}
 	}()
-	go d.maintainPaths(sessionCtx, session, addr, options.Dialer)
 	if err := d.ensureInitialPath(ctx, session, addr, options.Dialer); err != nil {
 		cancel()
 		_ = session.Close()
 		return nil, err
 	}
+	go d.maintainPaths(sessionCtx, session, addr, options.Dialer)
 	return session, nil
 }
 

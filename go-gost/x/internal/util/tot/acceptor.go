@@ -127,7 +127,9 @@ func (a *Acceptor) acceptPath(conn net.Conn) {
 	managed := a.sessions[sessionID]
 	fresh := managed == nil
 	if fresh {
-		managed = &managedSession{session: NewSession(sessionID, a.options.Session)}
+		sessionOptions := a.options.Session
+		sessionOptions.Role = RoleServer
+		managed = &managedSession{session: NewSession(sessionID, sessionOptions)}
 		a.sessions[sessionID] = managed
 	}
 	managed.lastSeen = time.Now()
