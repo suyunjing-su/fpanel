@@ -19,6 +19,7 @@ import (
 	"github.com/go-gost/x/config"
 	"github.com/go-gost/x/config/loader"
 	config_parser "github.com/go-gost/x/config/parsing/parser"
+	"github.com/go-gost/x/controller"
 	"github.com/go-gost/x/internal/util/crypto"
 	"github.com/go-gost/x/registry"
 	"github.com/go-gost/x/service"
@@ -125,11 +126,12 @@ func buildSecureControlBaseURL(addr string) (string, error) {
 
 // SystemInfo 系统信息结构体
 type SystemInfo struct {
-	Uptime           uint64  `json:"uptime"`            // 开机时间	（秒）
-	BytesReceived    uint64  `json:"bytes_received"`    // 接收字节数
-	BytesTransmitted uint64  `json:"bytes_transmitted"` // 发送字节数
-	CPUUsage         float64 `json:"cpu_usage"`         // CPU使用率（百分比）
-	MemoryUsage      float64 `json:"memory_usage"`      // 内存使用率（百分比）
+	Uptime             uint64              `json:"uptime"`
+	BytesReceived      uint64              `json:"bytes_received"`
+	BytesTransmitted   uint64              `json:"bytes_transmitted"`
+	CPUUsage           float64             `json:"cpu_usage"`
+	MemoryUsage        float64             `json:"memory_usage"`
+	ControllerStatuses []controller.Status `json:"controllers"`
 }
 
 // NetworkStats 网络统计信息
@@ -185,21 +187,23 @@ type TcpPingResponse struct {
 }
 
 type WebSocketReporter struct {
-	url            string
-	addr           string // 保存服务器地址
-	secret         string // 保存密钥
-	version        string // 保存版本号
-	conn           *websocket.Conn
-	reconnectTime  time.Duration
-	pingInterval   time.Duration
-	configInterval time.Duration
-	ctx            context.Context
-	cancel         context.CancelFunc
-	connected      bool
-	connecting     bool              // 新增：正在连接状态
-	connMutex      sync.Mutex        // 新增：连接状态锁
-	reloadMutex    sync.Mutex        // 避免并发全量重载导致运行态抖动
-	aesCrypto      *crypto.AESCrypto // 新增：AES加密器
+	url                       string
+	addr                      string
+	controllers               *controller.Pool
+	secret                    string
+	version                   string // 保存版本号
+	conn                      *websocket.Conn
+	reconnectTime             time.Duration
+	pingInterval              time.Duration
+	configInterval            time.Duration
+	ctx                       context.Context
+	cancel                    context.CancelFunc
+	connected                 bool
+	connecting                bool
+	connectionFailureRecorded bool
+	connMutex                 sync.Mutex
+	reloadMutex               sync.Mutex        // 避免并发全量重载导致运行态抖动
+	aesCrypto                 *crypto.AESCrypto // 新增：AES加密器
 }
 
 // NewWebSocketReporter 创建一个新的WebSocket报告器
@@ -286,71 +290,87 @@ func (w *WebSocketReporter) run() {
 func (w *WebSocketReporter) connect() error {
 	w.connMutex.Lock()
 	defer w.connMutex.Unlock()
-
-	// 如果已经在连接中或已连接，直接返回
 	if w.connecting || w.connected {
 		return nil
 	}
-
-	// 设置连接中状态
 	w.connecting = true
-	defer func() {
-		w.connecting = false
-	}()
+	defer func() { w.connecting = false }()
 
-	// 重新读取 config.json 获取最新的协议配置
 	type LocalConfig struct {
-		Addr   string `json:"addr"`
-		Secret string `json:"secret"`
-		Http   int    `json:"http"`
-		Tls    int    `json:"tls"`
-		Socks  int    `json:"socks"`
+		Http  int `json:"http"`
+		Tls   int `json:"tls"`
+		Socks int `json:"socks"`
 	}
-
 	var cfg LocalConfig
 	if b, err := os.ReadFile("config.json"); err == nil {
-		json.Unmarshal(b, &cfg)
+		_ = json.Unmarshal(b, &cfg)
 	}
 
-	// 使用最新的配置重新构建 URL
-	currentURL, err := buildNodeWebSocketURL(w.addr)
-	if err != nil {
-		return fmt.Errorf("构建WebSocket地址失败: %v", err)
+	addresses := []string{w.addr}
+	if w.controllers != nil {
+		addresses = w.controllers.Candidates()
 	}
-
-	u, err := url.Parse(currentURL)
-	if err != nil {
-		return fmt.Errorf("解析URL失败: %v", err)
-	}
-
-	dialer := websocket.DefaultDialer
-	dialer.HandshakeTimeout = 10 * time.Second
-	headers := buildNodeHandshakeHeaders(w.secret, w.version, cfg.Http, cfg.Tls, cfg.Socks)
-
-	conn, _, err := dialer.Dial(u.String(), headers)
-	if err != nil {
-		return fmt.Errorf("连接WebSocket失败: %v", err)
-	}
-
-	// 如果在连接过程中已经有连接了，关闭新连接
-	if w.conn != nil && w.connected {
-		conn.Close()
+	var failures []string
+	for _, address := range addresses {
+		currentURL, err := buildNodeWebSocketURL(address)
+		if err != nil {
+			w.failController(address, err)
+			failures = append(failures, address+": "+err.Error())
+			continue
+		}
+		u, err := url.Parse(currentURL)
+		if err != nil {
+			w.failController(address, err)
+			failures = append(failures, address+": "+err.Error())
+			continue
+		}
+		dialer := *websocket.DefaultDialer
+		dialer.HandshakeTimeout = 10 * time.Second
+		headers := buildNodeHandshakeHeaders(w.secret, w.version, cfg.Http, cfg.Tls, cfg.Socks)
+		conn, _, err := dialer.Dial(u.String(), headers)
+		if err != nil {
+			w.failController(address, err)
+			failures = append(failures, address+": "+err.Error())
+			continue
+		}
+		if w.conn != nil && w.connected {
+			conn.Close()
+			return nil
+		}
+		w.conn = conn
+		w.connected = true
+		w.connectionFailureRecorded = false
+		w.addr = address
+		w.url = currentURL
+		if w.controllers != nil {
+			w.controllers.Succeed(address)
+		}
+		w.conn.SetCloseHandler(func(code int, text string) error {
+			w.recordConnectionFailure(fmt.Errorf("WebSocket closed: code=%d reason=%s", code, text))
+			return nil
+		})
+		fmt.Printf("✅ WebSocket连接建立成功 controller=%s (http=%d, tls=%d, socks=%d)\n", address, cfg.Http, cfg.Tls, cfg.Socks)
 		return nil
 	}
+	return fmt.Errorf("所有控制器WebSocket连接失败: %s", strings.Join(failures, "; "))
+}
 
-	w.conn = conn
-	w.connected = true
+func (w *WebSocketReporter) failController(address string, err error) {
+	if w.controllers != nil {
+		w.controllers.Fail(address, err)
+	}
+}
 
-	// 设置关闭处理器来检测连接状态
-	w.conn.SetCloseHandler(func(code int, text string) error {
-		w.connMutex.Lock()
-		w.connected = false
-		w.connMutex.Unlock()
-		return nil
-	})
-
-	fmt.Printf("✅ WebSocket连接建立成功 (http=%d, tls=%d, socks=%d)\n", cfg.Http, cfg.Tls, cfg.Socks)
-	return nil
+func (w *WebSocketReporter) recordConnectionFailure(err error) {
+	w.connMutex.Lock()
+	address := w.addr
+	shouldRecord := !w.connectionFailureRecorded && w.ctx.Err() == nil
+	w.connectionFailureRecorded = true
+	w.connected = false
+	w.connMutex.Unlock()
+	if shouldRecord {
+		w.failController(address, err)
+	}
 }
 
 // handleConnection 处理WebSocket连接
@@ -409,6 +429,12 @@ func (w *WebSocketReporter) collectSystemInfo() SystemInfo {
 		BytesTransmitted: networkStats.BytesTransmitted,
 		CPUUsage:         cpuInfo.Usage,
 		MemoryUsage:      memoryInfo.Usage,
+		ControllerStatuses: func() []controller.Status {
+			if w.controllers == nil {
+				return nil
+			}
+			return w.controllers.Status()
+		}(),
 	}
 }
 
@@ -456,7 +482,7 @@ func (w *WebSocketReporter) sendSystemInfo(sysInfo SystemInfo) error {
 	w.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 
 	if err := w.conn.WriteMessage(websocket.TextMessage, messageData); err != nil {
-		w.connected = false // 标记连接已断开
+		go w.recordConnectionFailure(err)
 		return fmt.Errorf("写入消息失败: %v", err)
 	}
 
@@ -487,9 +513,7 @@ func (w *WebSocketReporter) receiveMessages() {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					fmt.Printf("❌ WebSocket读取消息错误: %v\n", err)
 				}
-				w.connMutex.Lock()
-				w.connected = false
-				w.connMutex.Unlock()
+				w.recordConnectionFailure(err)
 				return
 			}
 
@@ -895,7 +919,29 @@ func restoreGostConfigFile(backup gostConfigFileBackup) error {
 }
 
 func (w *WebSocketReporter) fetchAndOverwriteFullConfig() (int, error) {
-	baseURL, err := buildSecureControlBaseURL(w.addr)
+	addresses := []string{w.addr}
+	if w.controllers != nil {
+		addresses = w.controllers.Candidates()
+	}
+	var failures []string
+	for _, address := range addresses {
+		count, err := w.fetchFullConfigFrom(address)
+		if err != nil {
+			w.failController(address, err)
+			failures = append(failures, address+": "+err.Error())
+			continue
+		}
+		w.addr = address
+		if w.controllers != nil {
+			w.controllers.Succeed(address)
+		}
+		return count, nil
+	}
+	return 0, fmt.Errorf("所有控制器全量配置拉取失败: %s", strings.Join(failures, "; "))
+}
+
+func (w *WebSocketReporter) fetchFullConfigFrom(address string) (int, error) {
+	baseURL, err := buildSecureControlBaseURL(address)
 	if err != nil {
 		return 0, err
 	}
@@ -1231,11 +1277,12 @@ func updateLocalConfigJSON(httpVal int, tlsVal int, socksVal int) error {
 
 	// 读取现有配置
 	type LocalConfig struct {
-		Addr   string `json:"addr"`
-		Secret string `json:"secret"`
-		Http   int    `json:"http"`
-		Tls    int    `json:"tls"`
-		Socks  int    `json:"socks"`
+		Addr        string   `json:"addr"`
+		Controllers []string `json:"controllers,omitempty"`
+		Secret      string   `json:"secret"`
+		Http        int      `json:"http"`
+		Tls         int      `json:"tls"`
+		Socks       int      `json:"socks"`
 	}
 
 	var cfg LocalConfig
@@ -1347,7 +1394,7 @@ func (w *WebSocketReporter) sendResponse(response CommandResponse) {
 	w.conn.SetWriteDeadline(time.Now().Add(timeout))
 	if err := w.conn.WriteMessage(websocket.TextMessage, messageData); err != nil {
 		fmt.Printf("❌ 发送响应失败: %v\n", err)
-		w.connected = false
+		go w.recordConnectionFailure(err)
 	}
 }
 
@@ -1423,19 +1470,29 @@ func getMemoryInfo() MemoryInfo {
 
 // StartWebSocketReporterWithConfig 使用配置字段启动WebSocket报告器
 func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
-
-	// 构建初始 WebSocket URL
-	fullURL, err := buildNodeWebSocketURL(addr)
+	pool, err := controller.New([]string{addr})
 	if err != nil {
 		fmt.Printf("❌ 启动WebSocket报告器失败: %v\n", err)
 		return nil
 	}
+	return StartWebSocketReporterWithPool(pool, secret, http, tls, socks, version)
+}
 
-	fmt.Printf("🔗 WebSocket连接URL: %s\n", fullURL)
-
+func StartWebSocketReporterWithPool(pool *controller.Pool, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
+	addresses := pool.Candidates()
+	if len(addresses) == 0 {
+		fmt.Printf("❌ 启动WebSocket报告器失败: 无可用控制器\n")
+		return nil
+	}
+	fullURL, err := buildNodeWebSocketURL(addresses[0])
+	if err != nil {
+		fmt.Printf("❌ 启动WebSocket报告器失败: %v\n", err)
+		return nil
+	}
+	fmt.Printf("🔗 WebSocket初始连接URL: %s\n", fullURL)
 	reporter := NewWebSocketReporter(fullURL, secret)
-	// 保存 addr, secret, version 供重连时使用
-	reporter.addr = addr
+	reporter.addr = addresses[0]
+	reporter.controllers = pool
 	reporter.secret = secret
 	reporter.version = version
 	reporter.Start()

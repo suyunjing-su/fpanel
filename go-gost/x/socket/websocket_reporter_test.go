@@ -5,11 +5,108 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/go-gost/x/config"
+	"github.com/go-gost/x/controller"
+	"github.com/gorilla/websocket"
 )
+
+func TestWebSocketConnectFallsBackAndPromotesController(t *testing.T) {
+	primary := httptest.NewServer(nil)
+	primary.Close()
+	upgrader := websocket.Upgrader{}
+	connected := make(chan struct{}, 1)
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		connected <- struct{}{}
+		defer connection.Close()
+		<-r.Context().Done()
+	}))
+	defer backup.Close()
+	pool, err := controller.New([]string{primary.URL, backup.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporter := NewWebSocketReporter("", "secret")
+	reporter.controllers = pool
+	reporter.addr = primary.URL
+	reporter.version = "test"
+	defer reporter.Stop()
+	if err := reporter.connect(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-connected:
+	case <-time.After(time.Second):
+		t.Fatal("backup WebSocket was not connected")
+	}
+	if got := pool.Candidates(); !reflect.DeepEqual(got, []string{backup.URL, primary.URL}) {
+		t.Fatalf("controllers were not promoted: %#v", got)
+	}
+	statuses := pool.Status()
+	if statuses[0].ConsecutiveFailures != 1 || !statuses[1].Active {
+		t.Fatalf("unexpected controller statuses: %#v", statuses)
+	}
+}
+
+func TestSystemInfoIncludesControllerDiagnostics(t *testing.T) {
+	pool, err := controller.New([]string{"https://primary.example.com", "https://backup.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Fail("https://primary.example.com", errors.New("unavailable"))
+	pool.Succeed("https://backup.example.com")
+	reporter := NewWebSocketReporter("", "")
+	defer reporter.Stop()
+	reporter.controllers = pool
+	info := reporter.collectSystemInfo()
+	if !reflect.DeepEqual(info.ControllerStatuses, pool.Status()) {
+		t.Fatalf("controller diagnostics missing from system info: %#v", info.ControllerStatuses)
+	}
+}
+
+func TestUpdateLocalConfigPreservesControllers(t *testing.T) {
+	oldDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldDirectory)
+	content := `{"addr":"https://primary.example.com","controllers":["https://primary.example.com","https://backup.example.com"],"secret":"secret"}`
+	if err := os.WriteFile(filepath.Join("config.json"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateLocalConfigJSON(1, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile("config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Controllers []string `json:"controllers"`
+		HTTP        int      `json:"http"`
+		SOCKS       int      `json:"socks"`
+	}
+	if err := json.Unmarshal(updated, &config); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(config.Controllers, []string{"https://primary.example.com", "https://backup.example.com"}) || config.HTTP != 1 || config.SOCKS != 1 {
+		t.Fatalf("local configuration was corrupted: %s", updated)
+	}
+}
 
 func TestPreprocessDurationFields(t *testing.T) {
 	reporter := &WebSocketReporter{}

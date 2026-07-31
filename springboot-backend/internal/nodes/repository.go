@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -13,28 +14,38 @@ import (
 	"time"
 )
 
+type ControllerStatus struct {
+	Address             string `json:"address"`
+	Active              bool   `json:"active"`
+	ConsecutiveFailures int    `json:"consecutiveFailures"`
+	LastSuccessAt       int64  `json:"lastSuccessAt"`
+	LastFailureAt       int64  `json:"lastFailureAt"`
+	LastError           string `json:"lastError"`
+}
+
 type Node struct {
-	ID               int64   `json:"id"`
-	Name             string  `json:"name"`
-	IP               string  `json:"ip"`
-	ServerIP         string  `json:"serverIp"`
-	PortStart        int     `json:"portSta"`
-	PortEnd          int     `json:"portEnd"`
-	Port             string  `json:"port"`
-	Version          string  `json:"version"`
-	HTTP             int     `json:"http"`
-	TLS              int     `json:"tls"`
-	Socks            int     `json:"socks"`
-	Status           int     `json:"status"`
-	Uptime           uint64  `json:"uptime,omitempty"`
-	BytesReceived    uint64  `json:"bytes_received,omitempty"`
-	BytesTransmitted uint64  `json:"bytes_transmitted,omitempty"`
-	CPUUsage         float64 `json:"cpu_usage,omitempty"`
-	MemoryUsage      float64 `json:"memory_usage,omitempty"`
-	MaxBandwidthMbps int     `json:"maxBandwidthMbps"`
-	InterfaceName    string  `json:"interfaceName"`
-	TCPListenAddr    string  `json:"tcpListenAddr"`
-	UDPListenAddr    string  `json:"udpListenAddr"`
+	ID               int64              `json:"id"`
+	Name             string             `json:"name"`
+	IP               string             `json:"ip"`
+	ServerIP         string             `json:"serverIp"`
+	PortStart        int                `json:"portSta"`
+	PortEnd          int                `json:"portEnd"`
+	Port             string             `json:"port"`
+	Version          string             `json:"version"`
+	HTTP             int                `json:"http"`
+	TLS              int                `json:"tls"`
+	Socks            int                `json:"socks"`
+	Status           int                `json:"status"`
+	Uptime           uint64             `json:"uptime,omitempty"`
+	BytesReceived    uint64             `json:"bytes_received,omitempty"`
+	BytesTransmitted uint64             `json:"bytes_transmitted,omitempty"`
+	CPUUsage         float64            `json:"cpu_usage,omitempty"`
+	MemoryUsage      float64            `json:"memory_usage,omitempty"`
+	MaxBandwidthMbps int                `json:"maxBandwidthMbps"`
+	InterfaceName    string             `json:"interfaceName"`
+	TCPListenAddr    string             `json:"tcpListenAddr"`
+	UDPListenAddr    string             `json:"udpListenAddr"`
+	Controllers      []ControllerStatus `json:"controllers"`
 }
 
 type CreateRequest struct {
@@ -61,7 +72,7 @@ type Repository struct{ db *sql.DB }
 func NewRepository(db *sql.DB) *Repository { return &Repository{db: db} }
 
 func (r *Repository) List(ctx context.Context) ([]Node, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr FROM nodes ORDER BY id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr,controller_statuses FROM nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -69,8 +80,12 @@ func (r *Repository) List(ctx context.Context) ([]Node, error) {
 	result := make([]Node, 0)
 	for rows.Next() {
 		var node Node
-		if err := rows.Scan(&node.ID, &node.Name, &node.IP, &node.ServerIP, &node.PortStart, &node.PortEnd, &node.Version, &node.HTTP, &node.TLS, &node.Socks, &node.Status, &node.Uptime, &node.BytesReceived, &node.BytesTransmitted, &node.CPUUsage, &node.MemoryUsage, &node.MaxBandwidthMbps, &node.InterfaceName, &node.TCPListenAddr, &node.UDPListenAddr); err != nil {
+		var controllerStatuses string
+		if err := rows.Scan(&node.ID, &node.Name, &node.IP, &node.ServerIP, &node.PortStart, &node.PortEnd, &node.Version, &node.HTTP, &node.TLS, &node.Socks, &node.Status, &node.Uptime, &node.BytesReceived, &node.BytesTransmitted, &node.CPUUsage, &node.MemoryUsage, &node.MaxBandwidthMbps, &node.InterfaceName, &node.TCPListenAddr, &node.UDPListenAddr, &controllerStatuses); err != nil {
 			return nil, fmt.Errorf("scan node: %w", err)
+		}
+		if err := json.Unmarshal([]byte(controllerStatuses), &node.Controllers); err != nil {
+			return nil, fmt.Errorf("decode node controller diagnostics: %w", err)
 		}
 		node.Port = fmt.Sprintf("%d-%d", node.PortStart, node.PortEnd)
 		result = append(result, node)
@@ -79,9 +94,16 @@ func (r *Repository) List(ctx context.Context) ([]Node, error) {
 }
 func (r *Repository) Get(ctx context.Context, id int64) (Node, error) {
 	var n Node
-	err := r.db.QueryRowContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr FROM nodes WHERE id=?`, id).Scan(&n.ID, &n.Name, &n.IP, &n.ServerIP, &n.PortStart, &n.PortEnd, &n.Version, &n.HTTP, &n.TLS, &n.Socks, &n.Status, &n.Uptime, &n.BytesReceived, &n.BytesTransmitted, &n.CPUUsage, &n.MemoryUsage, &n.MaxBandwidthMbps, &n.InterfaceName, &n.TCPListenAddr, &n.UDPListenAddr)
+	var controllerStatuses string
+	err := r.db.QueryRowContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr,controller_statuses FROM nodes WHERE id=?`, id).Scan(&n.ID, &n.Name, &n.IP, &n.ServerIP, &n.PortStart, &n.PortEnd, &n.Version, &n.HTTP, &n.TLS, &n.Socks, &n.Status, &n.Uptime, &n.BytesReceived, &n.BytesTransmitted, &n.CPUUsage, &n.MemoryUsage, &n.MaxBandwidthMbps, &n.InterfaceName, &n.TCPListenAddr, &n.UDPListenAddr, &controllerStatuses)
+	if err != nil {
+		return n, err
+	}
+	if err := json.Unmarshal([]byte(controllerStatuses), &n.Controllers); err != nil {
+		return n, fmt.Errorf("decode node controller diagnostics: %w", err)
+	}
 	n.Port = fmt.Sprintf("%d-%d", n.PortStart, n.PortEnd)
-	return n, err
+	return n, nil
 }
 func (r *Repository) Create(ctx context.Context, req CreateRequest) (int64, error) {
 	var err error
@@ -156,8 +178,11 @@ func (r *Repository) SetConnectionState(ctx context.Context, id int64, status in
 	_, err := r.db.ExecContext(ctx, `UPDATE nodes SET status=?,version=?,http=?,tls=?,socks=?,updated_at=? WHERE id=?`, status, version, httpFlag, tlsFlag, socksFlag, time.Now().UnixMilli(), id)
 	return err
 }
-func (r *Repository) SetTelemetry(ctx context.Context, id int64, uptime, received, transmitted uint64, cpu, memory float64) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE nodes SET uptime=?,bytes_received=?,bytes_transmitted=?,cpu_usage=?,memory_usage=?,updated_at=? WHERE id=?`, uptime, received, transmitted, cpu, memory, time.Now().UnixMilli(), id)
+func (r *Repository) SetTelemetry(ctx context.Context, id int64, uptime, received, transmitted uint64, cpu, memory float64, controllerStatuses string) error {
+	if !json.Valid([]byte(controllerStatuses)) {
+		return errors.New("invalid controller diagnostics")
+	}
+	_, err := r.db.ExecContext(ctx, `UPDATE nodes SET uptime=?,bytes_received=?,bytes_transmitted=?,cpu_usage=?,memory_usage=?,controller_statuses=?,updated_at=? WHERE id=?`, uptime, received, transmitted, cpu, memory, controllerStatuses, time.Now().UnixMilli(), id)
 	return err
 }
 func (r *Repository) Delete(ctx context.Context, id int64) error {

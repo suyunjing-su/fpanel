@@ -79,7 +79,14 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := &session{nodeID: identity.id, conn: conn, cipher: cipher, wait: make(map[string]chan CommandResponse), onTelemetry: func(info SystemInfo) {
-		_ = h.nodes.SetTelemetry(r.Context(), identity.id, info.Uptime, info.BytesReceived, info.BytesTransmitted, info.CPUUsage, info.MemoryUsage)
+		statuses, err := json.Marshal(info.ControllerStatuses)
+		if err != nil {
+			h.log.Warn("failed to encode controller diagnostics", "node_id", identity.id, "error", err)
+			return
+		}
+		if err := h.nodes.SetTelemetry(r.Context(), identity.id, info.Uptime, info.BytesReceived, info.BytesTransmitted, info.CPUUsage, info.MemoryUsage, string(statuses)); err != nil {
+			h.log.Warn("failed to persist node telemetry", "node_id", identity.id, "error", err)
+		}
 	}}
 	h.replace(identity.id, s)
 	defer h.remove(identity.id, s)
@@ -153,7 +160,7 @@ func (s *session) readLoop(log *slog.Logger) {
 			continue
 		}
 		var telemetry SystemInfo
-		if json.Unmarshal(plain, &telemetry) == nil && telemetry.MemoryUsage != 0 {
+		if json.Unmarshal(plain, &telemetry) == nil && (telemetry.Uptime != 0 || telemetry.BytesReceived != 0 || telemetry.BytesTransmitted != 0 || telemetry.CPUUsage != 0 || telemetry.MemoryUsage != 0 || telemetry.ControllerStatuses != nil) {
 			if s.onTelemetry != nil {
 				s.onTelemetry(telemetry)
 			}

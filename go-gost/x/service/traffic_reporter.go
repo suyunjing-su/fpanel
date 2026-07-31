@@ -12,13 +12,13 @@ import (
 
 	"github.com/go-gost/core/observer/stats"
 	"github.com/go-gost/x/config"
+	"github.com/go-gost/x/controller"
 	"github.com/go-gost/x/internal/util/crypto"
 	"github.com/go-gost/x/registry"
 )
 
-var httpReportURL string
-var configReportURL string
-var httpAESCrypto *crypto.AESCrypto // 新增：HTTP上报加密器
+var httpControllerPool *controller.Pool
+var httpAESCrypto *crypto.AESCrypto
 var httpAuthHeaderValue string
 
 func buildSecureHTTPBaseURL(addr string) (string, error) {
@@ -62,24 +62,24 @@ type TrafficReportItem struct {
 }
 
 func SetHTTPReportURL(addr string, secret string) {
-	baseURL, err := buildSecureHTTPBaseURL(addr)
+	pool, err := controller.New([]string{addr})
 	if err != nil {
 		fmt.Printf("❌ 构建HTTP上报地址失败: %v\n", err)
-		httpReportURL = ""
-		configReportURL = ""
-		httpAuthHeaderValue = ""
+		httpControllerPool = nil
 		return
 	}
+	SetHTTPReportControllers(pool, secret)
+}
 
-	httpReportURL = baseURL + "/flow/upload"
-	configReportURL = baseURL + "/flow/config"
+func SetHTTPReportControllers(pool *controller.Pool, secret string) {
+	httpControllerPool = pool
 	if strings.TrimSpace(secret) != "" {
 		httpAuthHeaderValue = "Bearer " + secret
 	} else {
 		httpAuthHeaderValue = ""
 	}
 
-	// 创建 AES 加密器
+	var err error
 	httpAESCrypto, err = crypto.NewAESCrypto(secret)
 	if err != nil {
 		fmt.Printf("❌ 创建 HTTP AES 加密器失败: %v\n", err)
@@ -121,53 +121,13 @@ func sendBatchTrafficReport(ctx context.Context, reportItems []TrafficReportItem
 		requestBody = jsonData
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", httpReportURL, bytes.NewBuffer(requestBody))
-	if err != nil {
-		return false, fmt.Errorf("创建HTTP请求失败: %v", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "GOST-Traffic-Reporter/1.0")
-	if httpAuthHeaderValue != "" {
-		req.Header.Set("Authorization", httpAuthHeaderValue)
-	}
-
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("发送HTTP请求失败: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("HTTP响应错误: %d %s", resp.StatusCode, resp.Status)
-	}
-
-	// 读取响应内容
-	var responseBytes bytes.Buffer
-	_, err = responseBytes.ReadFrom(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("读取响应内容失败: %v", err)
-	}
-
-	responseText := strings.TrimSpace(responseBytes.String())
-
-	// 检查响应是否为"ok"
-	if responseText == "ok" {
-		return true, nil
-	} else {
-		return false, fmt.Errorf("服务器响应: %s (期望: ok)", responseText)
-	}
+	return postReport(ctx, "/flow/upload", requestBody, "GOST-Traffic-Reporter/1.0", 5*time.Second)
 }
-
 
 // sendConfigReport 发送配置报告到HTTP接口
 func sendConfigReport(ctx context.Context) (bool, error) {
-	if configReportURL == "" {
-		return false, fmt.Errorf("配置上报URL未设置")
+	if httpControllerPool == nil {
+		return false, fmt.Errorf("配置上报控制器未设置")
 	}
 
 	// 获取配置数据
@@ -201,52 +161,63 @@ func sendConfigReport(ctx context.Context) (bool, error) {
 		requestBody = configData
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", configReportURL, bytes.NewBuffer(requestBody))
-	if err != nil {
-		return false, fmt.Errorf("创建HTTP请求失败: %v", err)
+	return postReport(ctx, "/flow/config", requestBody, "Config-Reporter/1.0", 10*time.Second)
+}
+
+func postReport(ctx context.Context, path string, requestBody []byte, userAgent string, timeout time.Duration) (bool, error) {
+	if httpControllerPool == nil {
+		return false, fmt.Errorf("HTTP上报控制器未设置")
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Config-Reporter/1.0")
-	if httpAuthHeaderValue != "" {
-		req.Header.Set("Authorization", httpAuthHeaderValue)
-	}
-
-	client := &http.Client{
-		Timeout: 10 * time.Second, // 配置上报可以稍长一些
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("发送HTTP请求失败: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("HTTP响应错误: %d %s", resp.StatusCode, resp.Status)
-	}
-
-	// 读取响应内容
-	var responseBytes bytes.Buffer
-	_, err = responseBytes.ReadFrom(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("读取响应内容失败: %v", err)
-	}
-
-	responseText := strings.TrimSpace(responseBytes.String())
-
-	// 检查响应是否为"ok"
-	if responseText == "ok" {
+	var failures []string
+	for _, address := range httpControllerPool.Candidates() {
+		baseURL, err := buildSecureHTTPBaseURL(address)
+		if err != nil {
+			httpControllerPool.Fail(address, err)
+			failures = append(failures, address+": "+err.Error())
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, bytes.NewReader(requestBody))
+		if err != nil {
+			httpControllerPool.Fail(address, err)
+			failures = append(failures, address+": "+err.Error())
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", userAgent)
+		if httpAuthHeaderValue != "" {
+			req.Header.Set("Authorization", httpAuthHeaderValue)
+		}
+		resp, err := (&http.Client{Timeout: timeout}).Do(req)
+		if err != nil {
+			httpControllerPool.Fail(address, err)
+			failures = append(failures, address+": "+err.Error())
+			continue
+		}
+		var responseBytes bytes.Buffer
+		_, readErr := responseBytes.ReadFrom(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			httpControllerPool.Fail(address, readErr)
+			failures = append(failures, address+": "+readErr.Error())
+			continue
+		}
+		responseText := strings.TrimSpace(responseBytes.String())
+		if resp.StatusCode != http.StatusOK || responseText != "ok" {
+			err = fmt.Errorf("HTTP响应异常: %d %s", resp.StatusCode, responseText)
+			httpControllerPool.Fail(address, err)
+			failures = append(failures, address+": "+err.Error())
+			continue
+		}
+		httpControllerPool.Succeed(address)
 		return true, nil
-	} else {
-		return false, fmt.Errorf("服务器响应: %s (期望: ok)", responseText)
 	}
+	return false, fmt.Errorf("所有控制器上报失败: %s", strings.Join(failures, "; "))
 }
 
 // StartConfigReporter 启动配置定时上报器（每10分钟上报一次）
 func StartConfigReporter(ctx context.Context) {
-	if configReportURL == "" {
-		fmt.Printf("⚠️ 配置上报URL未设置，跳过定时上报\n")
+	if httpControllerPool == nil {
+		fmt.Printf("⚠️ 配置上报控制器未设置，跳过定时上报\n")
 		return
 	}
 

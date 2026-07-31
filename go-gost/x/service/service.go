@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -54,22 +53,13 @@ var needWrap = false
 
 // SetProtocolBlock sets protocol blocking switches and recomputes wrapper need
 func SetProtocolBlock(httpOn int, tlsOn int, socksOn int) {
-    isHttp = httpOn
-    isTls = tlsOn
-    isSocks = socksOn
-    needWrap = isTls+isSocks+isHttp > 0
+	isHttp = httpOn
+	isTls = tlsOn
+	isSocks = socksOn
+	needWrap = isTls+isSocks+isHttp > 0
 }
 
 type Option func(opts *options)
-
-func init() {
-	_, err := LoadConfig("config.json")
-	fmt.Println("config.json loaded")
-	if err != nil {
-		log.Fatal(err)
-	}
-	needWrap = isTls+isSocks+isHttp > 0
-}
 
 func AdmissionOption(admission admission.Admission) Option {
 	return func(opts *options) {
@@ -403,12 +393,12 @@ func (s *defaultService) observeStats(ctx context.Context) {
 						TotalErrs:    st.Get(stats.KindTotalErrs),
 					},
 				}
-				
+
 				// 将流量累积到全局管理器，而不是立即上报
 				if outputBytes > 0 || inputBytes > 0 {
 					globalManager := GetGlobalTrafficManager()
 					globalManager.AddTraffic(s.name, int64(outputBytes), int64(inputBytes))
-					
+
 					// 立即重置流量计数（因为已经记录到全局管理器中）
 					if xstats, ok := st.(*xstats.Stats); ok {
 						xstats.ResetTraffic(st.Get(stats.KindInputBytes)-inputBytes, st.Get(stats.KindOutputBytes)-outputBytes)

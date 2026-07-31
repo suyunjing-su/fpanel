@@ -8,12 +8,22 @@ import (
 	"github.com/suyunjing-su/fpanel/backend/internal/nodehub/crypto"
 )
 
+type ControllerStatus struct {
+	Address             string `json:"address"`
+	Active              bool   `json:"active"`
+	ConsecutiveFailures int    `json:"consecutiveFailures"`
+	LastSuccessAt       int64  `json:"lastSuccessAt"`
+	LastFailureAt       int64  `json:"lastFailureAt"`
+	LastError           string `json:"lastError"`
+}
+
 type SystemInfo struct {
-	Uptime           uint64  `json:"uptime"`
-	BytesReceived    uint64  `json:"bytes_received"`
-	BytesTransmitted uint64  `json:"bytes_transmitted"`
-	CPUUsage         float64 `json:"cpu_usage"`
-	MemoryUsage      float64 `json:"memory_usage"`
+	Uptime             uint64             `json:"uptime"`
+	BytesReceived      uint64             `json:"bytes_received"`
+	BytesTransmitted   uint64             `json:"bytes_transmitted"`
+	CPUUsage           float64            `json:"cpu_usage"`
+	MemoryUsage        float64            `json:"memory_usage"`
+	ControllerStatuses []ControllerStatus `json:"controllers"`
 }
 
 type CommandMessage struct {

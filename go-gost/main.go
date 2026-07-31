@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/go-gost/core/logger"
+	"github.com/go-gost/x/controller"
 	xlogger "github.com/go-gost/x/logger"
 	"github.com/go-gost/x/service"
 	"github.com/go-gost/x/socket"
@@ -38,6 +39,7 @@ var (
 	trace        bool
 	apiAddr      string
 	metricsAddr  string
+	printVersion bool
 )
 
 func init() {
@@ -84,9 +86,7 @@ func worker(id int, args []string, ctx *context.Context, ret *int) {
 	}
 }
 
-func init() {
-	var printVersion bool
-
+func configureFlags() {
 	flag.Var(&services, "L", "service list")
 	flag.Var(&nodes, "F", "chain node list")
 	flag.StringVar(&cfgFile, "C", "", "configuration file")
@@ -96,16 +96,16 @@ func init() {
 	flag.BoolVar(&trace, "DD", false, "trace mode")
 	flag.StringVar(&apiAddr, "api", "", "api service address")
 	flag.StringVar(&metricsAddr, "metrics", "", "metrics service address")
-	flag.Parse()
-
-	if printVersion {
-		fmt.Fprintf(os.Stdout, "gost %s (%s %s/%s)\n",
-			version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-		os.Exit(0)
-	}
 }
 
 func main() {
+	configureFlags()
+	flag.Parse()
+	if printVersion {
+		fmt.Fprintf(os.Stdout, "gost %s (%s %s/%s)\n",
+			version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		return
+	}
 	// 加载配置文件
 	config, err := LoadConfig("config.json")
 	if err != nil {
@@ -114,9 +114,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ 配置加载成功 - addr: %s\n", config.Addr)
+	fmt.Printf("✅ 配置加载成功 - controllers: %s\n", strings.Join(config.Controllers, ", "))
+	controllerPool, err := controller.New(config.Controllers)
+	if err != nil {
+		fmt.Printf("❌ 控制器配置无效: %v\n", err)
+		os.Exit(1)
+	}
 
-	if err := syncFullConfigFromDashboard(config.Addr, config.Secret); err != nil {
+	if err := syncFullConfigFromDashboard(controllerPool, config.Secret); err != nil {
 		fmt.Printf("❌ 拉取全量配置失败: %v\n", err)
 		os.Exit(1)
 	}
@@ -125,13 +130,14 @@ func main() {
 	log := xlogger.NewLogger()
 	logger.SetDefault(log)
 
-	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, "3.0.2")
+	service.SetProtocolBlock(config.Http, config.Tls, config.Socks)
+	wsReporter := socket.StartWebSocketReporterWithPool(controllerPool, config.Secret, config.Http, config.Tls, config.Socks, "3.0.2")
 	if wsReporter == nil {
 		fmt.Println("❌ WebSocket报告器启动失败，请检查配置地址是否包含协议(http/https/ws/wss)")
 		os.Exit(1)
 	}
 	defer wsReporter.Stop()
-	service.SetHTTPReportURL(config.Addr, config.Secret)
+	service.SetHTTPReportControllers(controllerPool, config.Secret)
 
 	p := &program{}
 	if err := svc.Run(p); err != nil {

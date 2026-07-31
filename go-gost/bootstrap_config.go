@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/go-gost/x/controller"
 )
 
 func buildSecureControlBaseURL(addr string) (string, error) {
@@ -44,7 +46,21 @@ func buildSecureControlBaseURL(addr string) (string, error) {
 	return "", fmt.Errorf("server address must include scheme: http://, https://, ws:// or wss://")
 }
 
-func syncFullConfigFromDashboard(addr string, secret string) error {
+func syncFullConfigFromDashboard(pool *controller.Pool, secret string) error {
+	var failures []string
+	for _, addr := range pool.Candidates() {
+		if err := fetchFullConfig(addr, secret); err != nil {
+			pool.Fail(addr, err)
+			failures = append(failures, addr+": "+err.Error())
+			continue
+		}
+		pool.Succeed(addr)
+		return nil
+	}
+	return fmt.Errorf("all controllers failed: %s", strings.Join(failures, "; "))
+}
+
+func fetchFullConfig(addr string, secret string) error {
 	baseURL, err := buildSecureControlBaseURL(addr)
 	if err != nil {
 		return err

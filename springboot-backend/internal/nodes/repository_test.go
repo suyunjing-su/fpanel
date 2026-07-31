@@ -64,6 +64,40 @@ func TestLegacyNodeRequestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestControllerDiagnosticsRoundTrip(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "nodes.db"), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+	id, err := repository.Create(context.Background(), CreateRequest{
+		Name:      "edge",
+		ServerIP:  "edge.example.com",
+		PortStart: 1000,
+		PortEnd:   2000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses := `[{"address":"https://primary.example.com","active":true,"consecutiveFailures":2,"lastFailureAt":123,"lastError":"unavailable"}]`
+	if err := repository.SetTelemetry(context.Background(), id, 10, 20, 30, 4.5, 6.7, statuses); err != nil {
+		t.Fatal(err)
+	}
+	node, err := repository.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Uptime != 10 || len(node.Controllers) != 1 || node.Controllers[0].ConsecutiveFailures != 2 || node.Controllers[0].LastError != "unavailable" {
+		t.Fatalf("controller diagnostics did not round trip: %#v", node)
+	}
+	if err := repository.SetTelemetry(context.Background(), id, 0, 0, 0, 0, 0, "invalid"); err == nil {
+		t.Fatal("invalid controller diagnostics were accepted")
+	}
+}
+
 func TestRejectsInvalidLegacyPortRange(t *testing.T) {
 	_, err := normalizeRequest(CreateRequest{ServerIP: "edge.example.com", Port: "2000-1000"})
 	if err != nil {

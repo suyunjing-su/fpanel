@@ -12,7 +12,6 @@ import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
 import { Accordion, AccordionItem } from "@heroui/accordion";
 import toast from 'react-hot-toast';
-import axios from 'axios';
 
 
 import { 
@@ -23,7 +22,17 @@ import {
   deleteNode,
   getNodeInstallCommand
 } from "@/api";
+import axios from 'axios';
 import { useBatchDeleteSelection } from "@/hooks/useBatchDeleteSelection";
+
+interface ControllerStatus {
+  address: string;
+  active: boolean;
+  consecutiveFailures: number;
+  lastSuccessAt: number;
+  lastFailureAt: number;
+  lastError: string;
+}
 
 interface Node {
   id: number;
@@ -40,6 +49,7 @@ interface Node {
   tls?: number;  // 0 关 1 开
   socks?: number; // 0 关 1 开
   status: number; // 1: 在线, 0: 离线
+  controllers: ControllerStatus[];
   connectionStatus: 'online' | 'offline';
   systemInfo?: {
     cpuUsage: number;
@@ -108,11 +118,8 @@ export default function NodePage() {
 
   useEffect(() => {
     loadNodes();
-    initWebSocket();
-    
-    return () => {
-      closeWebSocket();
-    };
+    const refreshTimer = setInterval(loadNodes, 10000);
+    return () => clearInterval(refreshTimer);
   }, []);
 
   // 加载节点列表
@@ -124,7 +131,16 @@ export default function NodePage() {
         const latestNodeList = res.data.map((node: any) => ({
           ...node,
           connectionStatus: node.status === 1 ? 'online' : 'offline',
-          systemInfo: null,
+          controllers: Array.isArray(node.controllers) ? node.controllers : [],
+          systemInfo: node.status === 1 ? {
+            cpuUsage: Number(node.cpu_usage) || 0,
+            memoryUsage: Number(node.memory_usage) || 0,
+            uploadTraffic: Number(node.bytes_transmitted) || 0,
+            downloadTraffic: Number(node.bytes_received) || 0,
+            uploadSpeed: 0,
+            downloadSpeed: 0,
+            uptime: Number(node.uptime) || 0
+          } : null,
           copyLoading: false
         }));
         setNodeList(latestNodeList);
@@ -270,6 +286,7 @@ export default function NodePage() {
             return {
               ...node,
               connectionStatus: 'online',
+              controllers: Array.isArray(systemInfo.controllers) ? systemInfo.controllers : node.controllers,
               systemInfo: {
                 cpuUsage: parseFloat(systemInfo.cpu_usage) || 0,
                 memoryUsage: parseFloat(systemInfo.memory_usage) || 0,
@@ -848,6 +865,30 @@ export default function NodePage() {
                       <span className="text-default-600">版本</span>
                       <span className="text-xs">{node.version || '未知'}</span>
                     </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-default-600">控制器</span>
+                      {node.controllers.length > 0 ? (
+                        <Chip
+                          color={node.controllers.some((controller) => controller.active && controller.consecutiveFailures === 0) ? 'success' : 'danger'}
+                          variant="flat"
+                          size="sm"
+                          title={node.controllers.map((controller) => `${controller.address}${controller.lastError ? `: ${controller.lastError}` : ''}`).join('\n')}
+                        >
+                          {node.controllers.find((controller) => controller.active)?.address || '不可用'}
+                        </Chip>
+                      ) : (
+                        <span className="text-xs text-default-400">等待遥测</span>
+                      )}
+                    </div>
+                    {node.controllers.some((controller) => controller.consecutiveFailures > 0) && (
+                      <div className="rounded-md border border-warning-200 bg-warning-50 px-2 py-1.5 text-xs text-warning-700 dark:border-warning-300/20 dark:bg-warning-100/10 dark:text-warning-400">
+                        {node.controllers.filter((controller) => controller.consecutiveFailures > 0).map((controller) => (
+                          <div key={controller.address} className="truncate" title={controller.lastError}>
+                            {controller.address}：连续失败 {controller.consecutiveFailures} 次
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex justify-between text-sm">
                       <span className="text-default-600">开机时间</span>
                       <span className="text-xs">
