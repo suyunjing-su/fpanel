@@ -1,5 +1,4 @@
 # flux-panel转发面板 哆啦A梦转发面板
-此仓库为[bqlpfy/flux-panel](https://github.com/bqlpfy/flux-panel)的 fork
 
 本项目基于 [go-gost/gost](https://github.com/go-gost/gost) 和 [go-gost/x](https://github.com/go-gost/x) 两个开源库，实现了转发面板。
 ---
