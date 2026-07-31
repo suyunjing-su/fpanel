@@ -20,10 +20,11 @@ type Rule struct {
 }
 
 type CreateRequest struct {
-	Name     string `json:"name"`
-	Speed    int    `json:"speed"`
-	TunnelID int64  `json:"tunnelId"`
-	Status   int    `json:"status"`
+	Name       string `json:"name"`
+	Speed      int    `json:"speed"`
+	TunnelID   int64  `json:"tunnelId"`
+	TunnelName string `json:"tunnelName"`
+	Status     int    `json:"status"`
 }
 
 type UpdateRequest struct {
