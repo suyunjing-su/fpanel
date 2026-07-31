@@ -1,7 +1,9 @@
 package nodes
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -9,6 +11,79 @@ import (
 
 	"github.com/suyunjing-su/fpanel/backend/internal/database"
 )
+
+func TestNullableBandwidthRoundTrip(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "nodes.db"), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+	var request CreateRequest
+	decoder := json.NewDecoder(bytes.NewBufferString(`{"id":null,"name":"edge","serverIp":"edge.example.com","port":"1000-2000","maxBandwidthMbps":null}`))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		t.Fatalf("decode create request: %v", err)
+	}
+	id, err := repository.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var storedBandwidth int
+	if err := db.QueryRow("SELECT max_bandwidth_mbps FROM nodes WHERE id=?", id).Scan(&storedBandwidth); err != nil {
+		t.Fatal(err)
+	}
+	if storedBandwidth != 0 {
+		t.Fatalf("stored unlimited bandwidth = %d, want 0", storedBandwidth)
+	}
+	node, err := repository.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.MaxBandwidthMbps != nil {
+		t.Fatalf("public unlimited bandwidth = %v, want nil", *node.MaxBandwidthMbps)
+	}
+
+	bandwidth := 500
+	if err := repository.Update(context.Background(), UpdateRequest{ID: id, CreateRequest: CreateRequest{
+		Name:             "edge",
+		ServerIP:         "edge.example.com",
+		PortStart:        1000,
+		PortEnd:          2000,
+		MaxBandwidthMbps: &bandwidth,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	node, err = repository.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.MaxBandwidthMbps == nil || *node.MaxBandwidthMbps != 500 {
+		t.Fatalf("public limited bandwidth = %v, want 500", node.MaxBandwidthMbps)
+	}
+
+	zero := 0
+	negative := -1
+	tooLarge := 1000001
+	for _, value := range []*int{&zero, &negative, &tooLarge} {
+		invalid := request
+		invalid.MaxBandwidthMbps = value
+		if _, err := repository.Create(context.Background(), invalid); err == nil {
+			t.Fatalf("invalid bandwidth %d was accepted", *value)
+		}
+	}
+
+	nonNilID := int64(9)
+	request.ID = &nonNilID
+	if _, err := repository.Create(context.Background(), request); err == nil {
+		t.Fatal("non-null create id was accepted")
+	}
+}
+
+func intPointer(value int) *int { return &value }
 
 func TestLegacyNodeRequestRoundTrip(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -23,7 +98,7 @@ func TestLegacyNodeRequestRoundTrip(t *testing.T) {
 		Name:             "edge",
 		ServerIP:         "edge.example.com",
 		Port:             "1000-2000",
-		MaxBandwidthMbps: 1000,
+		MaxBandwidthMbps: intPointer(1000),
 		InterfaceName:    "eth1",
 		TCPListenAddr:    "0.0.0.0",
 		UDPListenAddr:    "[::]",

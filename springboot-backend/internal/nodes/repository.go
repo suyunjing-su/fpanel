@@ -52,7 +52,7 @@ type Node struct {
 	BytesTransmitted uint64             `json:"bytes_transmitted,omitempty"`
 	CPUUsage         float64            `json:"cpu_usage,omitempty"`
 	MemoryUsage      float64            `json:"memory_usage,omitempty"`
-	MaxBandwidthMbps int                `json:"maxBandwidthMbps"`
+	MaxBandwidthMbps *int               `json:"maxBandwidthMbps"`
 	InterfaceName    string             `json:"interfaceName"`
 	TCPListenAddr    string             `json:"tcpListenAddr"`
 	UDPListenAddr    string             `json:"udpListenAddr"`
@@ -61,6 +61,7 @@ type Node struct {
 }
 
 type CreateRequest struct {
+	ID               *int64 `json:"id"`
 	Name             string `json:"name"`
 	IP               string `json:"ip"`
 	ServerIP         string `json:"serverIp"`
@@ -70,7 +71,7 @@ type CreateRequest struct {
 	HTTP             int    `json:"http"`
 	TLS              int    `json:"tls"`
 	Socks            int    `json:"socks"`
-	MaxBandwidthMbps int    `json:"maxBandwidthMbps"`
+	MaxBandwidthMbps *int   `json:"maxBandwidthMbps"`
 	InterfaceName    string `json:"interfaceName"`
 	TCPListenAddr    string `json:"tcpListenAddr"`
 	UDPListenAddr    string `json:"udpListenAddr"`
@@ -99,6 +100,7 @@ func (r *Repository) List(ctx context.Context) ([]Node, error) {
 		if err := json.Unmarshal([]byte(controllerStatuses), &node.Controllers); err != nil {
 			return nil, fmt.Errorf("decode node controller diagnostics: %w", err)
 		}
+		normalizePublicBandwidth(&node)
 		node.Port = fmt.Sprintf("%d-%d", node.PortStart, node.PortEnd)
 		result = append(result, node)
 	}
@@ -114,10 +116,14 @@ func (r *Repository) Get(ctx context.Context, id int64) (Node, error) {
 	if err := json.Unmarshal([]byte(controllerStatuses), &n.Controllers); err != nil {
 		return n, fmt.Errorf("decode node controller diagnostics: %w", err)
 	}
+	normalizePublicBandwidth(&n)
 	n.Port = fmt.Sprintf("%d-%d", n.PortStart, n.PortEnd)
 	return n, nil
 }
 func (r *Repository) Create(ctx context.Context, req CreateRequest) (int64, error) {
+	if req.ID != nil {
+		return 0, errors.New("node id must be omitted when creating a node")
+	}
 	var err error
 	req, err = normalizeRequest(req)
 	if err != nil {
@@ -131,7 +137,8 @@ func (r *Repository) Create(ctx context.Context, req CreateRequest) (int64, erro
 		return 0, err
 	}
 	now := time.Now().UnixMilli()
-	res, err := r.db.ExecContext(ctx, `INSERT INTO nodes(name,ip,server_ip,port_start,port_end,secret,http,tls,socks,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, req.Name, req.IP, req.ServerIP, req.PortStart, req.PortEnd, secret, req.HTTP, req.TLS, req.Socks, req.MaxBandwidthMbps, strings.TrimSpace(req.InterfaceName), normalizeListenAddr(req.TCPListenAddr), normalizeListenAddr(req.UDPListenAddr), now, now)
+	bandwidth := bandwidthValue(req.MaxBandwidthMbps)
+	res, err := r.db.ExecContext(ctx, `INSERT INTO nodes(name,ip,server_ip,port_start,port_end,secret,http,tls,socks,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, req.Name, req.IP, req.ServerIP, req.PortStart, req.PortEnd, secret, req.HTTP, req.TLS, req.Socks, bandwidth, strings.TrimSpace(req.InterfaceName), normalizeListenAddr(req.TCPListenAddr), normalizeListenAddr(req.UDPListenAddr), now, now)
 	if err != nil {
 		return 0, fmt.Errorf("create node: %w", err)
 	}
@@ -149,7 +156,8 @@ func (r *Repository) Update(ctx context.Context, req UpdateRequest) error {
 	if err := validate(req.CreateRequest); err != nil {
 		return err
 	}
-	res, err := r.db.ExecContext(ctx, `UPDATE nodes SET name=?,ip=?,server_ip=?,port_start=?,port_end=?,http=?,tls=?,socks=?,max_bandwidth_mbps=?,interface_name=?,tcp_listen_addr=?,udp_listen_addr=?,updated_at=? WHERE id=?`, req.Name, req.IP, req.ServerIP, req.PortStart, req.PortEnd, req.HTTP, req.TLS, req.Socks, req.MaxBandwidthMbps, strings.TrimSpace(req.InterfaceName), normalizeListenAddr(req.TCPListenAddr), normalizeListenAddr(req.UDPListenAddr), time.Now().UnixMilli(), req.ID)
+	bandwidth := bandwidthValue(req.MaxBandwidthMbps)
+	res, err := r.db.ExecContext(ctx, `UPDATE nodes SET name=?,ip=?,server_ip=?,port_start=?,port_end=?,http=?,tls=?,socks=?,max_bandwidth_mbps=?,interface_name=?,tcp_listen_addr=?,udp_listen_addr=?,updated_at=? WHERE id=?`, req.Name, req.IP, req.ServerIP, req.PortStart, req.PortEnd, req.HTTP, req.TLS, req.Socks, bandwidth, strings.TrimSpace(req.InterfaceName), normalizeListenAddr(req.TCPListenAddr), normalizeListenAddr(req.UDPListenAddr), time.Now().UnixMilli(), req.ID)
 	if err != nil {
 		return fmt.Errorf("update node: %w", err)
 	}
@@ -245,8 +253,8 @@ func validate(req CreateRequest) error {
 	if req.PortStart < 1 || req.PortStart > 65535 || req.PortEnd < req.PortStart || req.PortEnd > 65535 {
 		return errors.New("invalid node port range")
 	}
-	if req.MaxBandwidthMbps < 0 {
-		return errors.New("maximum bandwidth cannot be negative")
+	if req.MaxBandwidthMbps != nil && (*req.MaxBandwidthMbps <= 0 || *req.MaxBandwidthMbps > 1000000) {
+		return errors.New("maximum bandwidth must be between 1 and 1000000 Mbps")
 	}
 	for _, v := range []int{req.HTTP, req.TLS, req.Socks} {
 		if v != 0 && v != 1 {
@@ -283,6 +291,19 @@ func validHost(value string) bool {
 	}
 	return true
 }
+func bandwidthValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func normalizePublicBandwidth(node *Node) {
+	if node.MaxBandwidthMbps != nil && *node.MaxBandwidthMbps == 0 {
+		node.MaxBandwidthMbps = nil
+	}
+}
+
 func normalizeListenAddr(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
