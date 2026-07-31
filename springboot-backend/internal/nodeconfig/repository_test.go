@@ -7,9 +7,61 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/suyunjing-su/fpanel/backend/internal/database"
 )
+
+func TestBuildTOTTransportMetadata(t *testing.T) {
+	db := openTestDatabase(t)
+	execFixture(t, db, `INSERT INTO users(id,username,password_hash,role,expires_at,status,created_at,updated_at) VALUES(1,'admin','hash','admin',0,1,1,1)`)
+	execFixture(t, db, `INSERT INTO nodes(id,name,ip,server_ip,port_start,port_end,secret,status,tcp_listen_addr,udp_listen_addr,created_at,updated_at) VALUES
+		(1,'entry','10.0.0.1','203.0.113.1',10000,20000,'entry-secret',1,'0.0.0.0','[::]',1,1),
+		(2,'relay','10.0.0.2','203.0.113.2',10000,20000,'relay-secret',1,'0.0.0.0','[::]',1,1),
+		(3,'exit','10.0.0.3','203.0.113.3',10000,20000,'exit-secret',1,'0.0.0.0','[::]',1,1)`)
+	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,tot_enabled,tot_secret,tot_path_count,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp,created_at,updated_at) VALUES(1,'tot',2,1,1,1,1,'tot-secret-0123456789',3,4096,64,50,8,500,2000,5000,60000,1,1,1)`)
+	execFixture(t, db, `INSERT INTO tunnel_nodes(id,tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol) VALUES
+		(1,1,1,1,7000,'fifo',0,'tcp'),
+		(2,1,2,2,7100,'fifo',1,'tcp'),
+		(3,1,3,3,7200,'round',0,'tcp')`)
+	execFixture(t, db, `INSERT INTO forwards(id,user_id,name,tunnel_id,remote_addr,strategy,status,sort_index,created_at,updated_at) VALUES(1,1,'forward',1,'192.0.2.1:443','fifo',1,0,1,1)`)
+	execFixture(t, db, `INSERT INTO forward_ports(forward_id,node_id,port) VALUES(1,1,10000)`)
+
+	document, err := NewRepository(db).Build(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := namedItem(document.Chains, "chains_1")
+	if chain == nil {
+		t.Fatalf("missing TOT chain: %#v", document.Chains)
+	}
+	hops := chain["hops"].([]map[string]any)
+	dialer := hops[0]["nodes"].([]map[string]any)[0]["dialer"].(map[string]any)
+	if dialer["type"] != "tot" {
+		t.Fatalf("unexpected TOT dialer: %#v", dialer)
+	}
+	dialerMetadata := dialer["metadata"].(map[string]any)
+	if dialerMetadata["secret"] != "tot-secret-0123456789" || dialerMetadata["pathCount"] != 3 || dialerMetadata["window"] != 64 {
+		t.Fatalf("incomplete TOT dialer metadata: %#v", dialerMetadata)
+	}
+
+	document, err = NewRepository(db).Build(context.Background(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := namedItem(document.Services, "1_relay_tcp")
+	if service == nil {
+		t.Fatalf("missing TOT relay service: %#v", document.Services)
+	}
+	listener := service["listener"].(map[string]any)
+	if listener["type"] != "tot" {
+		t.Fatalf("unexpected TOT listener: %#v", listener)
+	}
+	listenerMetadata := listener["metadata"].(map[string]any)
+	if listenerMetadata["secret"] != "tot-secret-0123456789" || listenerMetadata["mptcp"] != true || listenerMetadata["idleTTL"] != 60*time.Second {
+		t.Fatalf("incomplete TOT listener metadata: %#v", listenerMetadata)
+	}
+}
 
 func TestBuildHybridTunnelWithUserPolicies(t *testing.T) {
 	db := openTestDatabase(t)

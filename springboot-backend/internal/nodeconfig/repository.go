@@ -38,9 +38,21 @@ type nodeRecord struct {
 }
 
 type tunnelRecord struct {
-	ID     int64
-	Type   int
-	Status int
+	ID              int64
+	Type            int
+	Status          int
+	TOTEnabled      bool
+	TOTSecret       string
+	TOTPathCount    int
+	TOTMaxPayload   int
+	TOTWindow       int
+	TOTRetransmitMS int
+	TOTMaxRetries   int
+	TOTRecoveryMS   int
+	TOTHandshakeMS  int
+	TOTClockSkewMS  int
+	TOTIdleTTLMS    int
+	TOTMPTCP        bool
 }
 
 type tunnelNode struct {
@@ -200,7 +212,7 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 		}
 		if currentNode.ChainType == 2 || currentNode.ChainType == 3 {
 			for _, trafficProtocol := range trafficProtocols([]*tunnelNode{currentNode}) {
-				service := buildRelayService(current, currentNode, topology, trafficProtocol)
+				service := buildRelayService(current, currentNode, tunnel, topology, trafficProtocol)
 				addNamed(&document.Services, serviceNames, service)
 			}
 		}
@@ -246,7 +258,7 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 				nameSuffix = fmt.Sprintf("user_%d", forward.UserTunnelID)
 			}
 			for _, trafficProtocol := range pathTrafficProtocols(paths) {
-				chain := buildPathChain(current, forward.TunnelID, nameSuffix, trafficProtocol, paths)
+				chain := buildPathChain(current, tunnel, nameSuffix, trafficProtocol, paths)
 				name, _ := chain["name"].(string)
 				if _, exists := customChains[name]; !exists {
 					addNamed(&document.Chains, chainNames, chain)
@@ -335,7 +347,7 @@ func (r *Repository) loadNode(ctx context.Context, nodeID int64) (nodeRecord, er
 
 func (r *Repository) loadTopology(ctx context.Context, nodeID int64) (map[int64]tunnelRecord, map[int64][]*tunnelNode, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id,t.type,t.status,tn.id,tn.chain_type,tn.node_id,COALESCE(tn.port,0),COALESCE(tn.strategy,'fifo'),COALESCE(tn.hop_index,0),COALESCE(tn.protocol,'tcp'),COALESCE(tn.flow_quota_bytes,0),COALESCE(tn.speed_limit_mbps,0),tn.ingress_bytes,tn.egress_bytes,tn.health_status,tn.bandwidth_overloaded,tn.last_latency_ms,tn.group_priority,tn.group_backup,tn.group_max_fails,tn.group_fail_timeout_ms,n.server_ip,n.status,n.interface_name,n.tcp_listen_addr,n.udp_listen_addr
+		SELECT t.id,t.type,t.status,t.tot_enabled,t.tot_secret,t.tot_path_count,t.tot_max_payload,t.tot_window,t.tot_retransmit_interval_ms,t.tot_max_retries,t.tot_recovery_period_ms,t.tot_handshake_timeout_ms,t.tot_max_clock_skew_ms,t.tot_idle_ttl_ms,t.tot_mptcp,tn.id,tn.chain_type,tn.node_id,COALESCE(tn.port,0),COALESCE(tn.strategy,'fifo'),COALESCE(tn.hop_index,0),COALESCE(tn.protocol,'tcp'),COALESCE(tn.flow_quota_bytes,0),COALESCE(tn.speed_limit_mbps,0),tn.ingress_bytes,tn.egress_bytes,tn.health_status,tn.bandwidth_overloaded,tn.last_latency_ms,tn.group_priority,tn.group_backup,tn.group_max_fails,tn.group_fail_timeout_ms,n.server_ip,n.status,n.interface_name,n.tcp_listen_addr,n.udp_listen_addr
 		FROM tunnels t
 		JOIN tunnel_nodes tn ON tn.tunnel_id=t.id
 		JOIN nodes n ON n.id=tn.node_id
@@ -351,7 +363,7 @@ func (r *Repository) loadTopology(ctx context.Context, nodeID int64) (map[int64]
 		var tunnel tunnelRecord
 		var item tunnelNode
 		var latency sql.NullInt64
-		if err := rows.Scan(&tunnel.ID, &tunnel.Type, &tunnel.Status, &item.ID, &item.ChainType, &item.NodeID, &item.Port, &item.Strategy, &item.HopIndex, &item.Protocol, &item.FlowQuotaBytes, &item.SpeedLimitMbps, &item.IngressBytes, &item.EgressBytes, &item.HealthStatus, &item.BandwidthOverloaded, &latency, &item.GroupPriority, &item.GroupBackup, &item.GroupMaxFails, &item.GroupFailTimeoutMS, &item.Node.ServerIP, &item.Node.Status, &item.Node.InterfaceName, &item.Node.TCPListenAddr, &item.Node.UDPListenAddr); err != nil {
+		if err := rows.Scan(&tunnel.ID, &tunnel.Type, &tunnel.Status, &tunnel.TOTEnabled, &tunnel.TOTSecret, &tunnel.TOTPathCount, &tunnel.TOTMaxPayload, &tunnel.TOTWindow, &tunnel.TOTRetransmitMS, &tunnel.TOTMaxRetries, &tunnel.TOTRecoveryMS, &tunnel.TOTHandshakeMS, &tunnel.TOTClockSkewMS, &tunnel.TOTIdleTTLMS, &tunnel.TOTMPTCP, &item.ID, &item.ChainType, &item.NodeID, &item.Port, &item.Strategy, &item.HopIndex, &item.Protocol, &item.FlowQuotaBytes, &item.SpeedLimitMbps, &item.IngressBytes, &item.EgressBytes, &item.HealthStatus, &item.BandwidthOverloaded, &latency, &item.GroupPriority, &item.GroupBackup, &item.GroupMaxFails, &item.GroupFailTimeoutMS, &item.Node.ServerIP, &item.Node.Status, &item.Node.InterfaceName, &item.Node.TCPListenAddr, &item.Node.UDPListenAddr); err != nil {
 			return nil, nil, fmt.Errorf("scan node topology: %w", err)
 		}
 		item.TunnelID = tunnel.ID
@@ -695,7 +707,7 @@ func filterExitPolicies(items []*tunnelNode, policies []exitPolicy) []*tunnelNod
 	return result
 }
 
-func buildPathChain(current nodeRecord, tunnelID int64, suffix, trafficProtocol string, path [][]*tunnelNode) map[string]any {
+func buildPathChain(current nodeRecord, tunnel tunnelRecord, suffix, trafficProtocol string, path [][]*tunnelNode) map[string]any {
 	if len(path) == 0 {
 		return nil
 	}
@@ -720,7 +732,7 @@ func buildPathChain(current nodeRecord, tunnelID int64, suffix, trafficProtocol 
 				"name":      fmt.Sprintf("node_%d", index+1),
 				"addr":      joinHostPort(item.Node.ServerIP, item.Port, item.Protocol, trafficProtocol),
 				"connector": map[string]any{"type": "relay"},
-				"dialer":    transportConfig(item.Protocol, trafficProtocol, false),
+				"dialer":    transportConfig(item.Protocol, trafficProtocol, false, tunnel),
 			}
 			if item.GroupPriority > 0 {
 				node["matcher"] = map[string]any{"priority": item.GroupPriority}
@@ -734,7 +746,7 @@ func buildPathChain(current nodeRecord, tunnelID int64, suffix, trafficProtocol 
 			nodes = append(nodes, node)
 		}
 		hops = append(hops, map[string]any{
-			"name": fmt.Sprintf("hop_%d_%d", tunnelID, hopIndex+1),
+			"name": fmt.Sprintf("hop_%d_%d", tunnel.ID, hopIndex+1),
 			"selector": map[string]any{
 				"strategy":    normalizeStrategy(candidates[0].Strategy),
 				"maxFails":    1,
@@ -744,17 +756,17 @@ func buildPathChain(current nodeRecord, tunnelID int64, suffix, trafficProtocol 
 		})
 	}
 	return map[string]any{
-		"name": chainName(tunnelID, suffix, trafficProtocol, pathHasHybrid(path)),
+		"name": chainName(tunnel.ID, suffix, trafficProtocol, pathHasHybrid(path)),
 		"hops": hops,
 	}
 }
 
-func buildRelayService(current nodeRecord, item *tunnelNode, _ []*tunnelNode, trafficProtocol string) map[string]any {
+func buildRelayService(current nodeRecord, item *tunnelNode, tunnel tunnelRecord, _ []*tunnelNode, trafficProtocol string) map[string]any {
 	service := map[string]any{
 		"name":     relayServiceName(item.TunnelID, item.Protocol, trafficProtocol),
 		"addr":     joinListenAddr(current, item.Port, item.Protocol, trafficProtocol),
 		"handler":  map[string]any{"type": "relay"},
-		"listener": transportConfig(item.Protocol, trafficProtocol, true),
+		"listener": transportConfig(item.Protocol, trafficProtocol, true, tunnel),
 	}
 	if item.ChainType == 3 && strings.TrimSpace(current.InterfaceName) != "" {
 		service["metadata"] = map[string]any{"interface": current.InterfaceName}
@@ -884,7 +896,27 @@ func planNeedsSniffing(plan endpointPlan) bool {
 	return false
 }
 
-func transportConfig(protocol, trafficProtocol string, listener bool) map[string]any {
+func transportConfig(protocol, trafficProtocol string, listener bool, tunnel tunnelRecord) map[string]any {
+	if tunnel.TOTEnabled && strings.TrimSpace(tunnel.TOTSecret) != "" {
+		metadata := map[string]any{
+			"secret":             tunnel.TOTSecret,
+			"maxPayload":         tunnel.TOTMaxPayload,
+			"window":             tunnel.TOTWindow,
+			"retransmitInterval": time.Duration(tunnel.TOTRetransmitMS) * time.Millisecond,
+			"maxRetries":         tunnel.TOTMaxRetries,
+			"handshakeTimeout":   time.Duration(tunnel.TOTHandshakeMS) * time.Millisecond,
+			"maxClockSkew":       time.Duration(tunnel.TOTClockSkewMS) * time.Millisecond,
+		}
+		if listener {
+			metadata["backlog"] = 128
+			metadata["idleTTL"] = time.Duration(tunnel.TOTIdleTTLMS) * time.Millisecond
+			metadata["mptcp"] = tunnel.TOTMPTCP
+		} else {
+			metadata["pathCount"] = tunnel.TOTPathCount
+			metadata["recoveryPeriod"] = time.Duration(tunnel.TOTRecoveryMS) * time.Millisecond
+		}
+		return map[string]any{"type": "tot", "metadata": metadata}
+	}
 	normalized := normalizeProtocol(protocol)
 	transport := transportType(normalized, trafficProtocol)
 	value := map[string]any{"type": transport}

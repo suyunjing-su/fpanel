@@ -334,6 +334,28 @@ func run() error {
 		}
 		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
 	})
+	mux.HandleFunc("POST /api/v1/tunnel/tot/rotate-secret", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r) {
+			forbidden(w)
+			return
+		}
+		var request struct {
+			ID int64 `json:"id"`
+		}
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		if err := tunnelRepo.RotateTOTSecret(r.Context(), request.ID); err != nil {
+			status := 400
+			if errors.Is(err, sql.ErrNoRows) {
+				status = 404
+			}
+			httpapi.WriteJSON(w, status, httpapi.Failure(status, err.Error()))
+			return
+		}
+		refreshQueue.Wake()
+		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
+	})
 	mux.HandleFunc("POST /api/v1/tunnel/delete", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
 			forbidden(w)

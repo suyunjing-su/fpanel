@@ -18,7 +18,8 @@ import {
   updateTunnel, 
   deleteTunnel,
   getNodeList,
-  diagnoseTunnel
+  diagnoseTunnel,
+  rotateTunnelTOTSecret
 } from "@/api";
 import { useBatchDeleteSelection } from "@/hooks/useBatchDeleteSelection";
 
@@ -37,6 +38,20 @@ const CHAIN_PROTOCOL_OPTIONS = [
   { key: 'udp+kcp', label: 'UDP+KCP' },
   { key: 'mptcp', label: 'MPTCP' }
 ] as const;
+
+const DEFAULT_TOT_CONFIG: TOTConfig = {
+  enabled: false,
+  pathCount: 2,
+  maxPayload: 32768,
+  window: 256,
+  retransmitIntervalMs: 300,
+  maxRetries: 20,
+  recoveryPeriodMs: 1000,
+  handshakeTimeoutMs: 5000,
+  maxClockSkewMs: 30000,
+  idleTtlMs: 300000,
+  mptcp: false
+};
 
 const normalizeProtocol = (protocol?: string): string => {
   if (!protocol) return DEFAULT_CHAIN_PROTOCOL;
@@ -62,6 +77,22 @@ interface Tunnel {
   trafficRatio: number;
   status: number;
   createdTime: string;
+  tot?: TOTConfig;
+}
+
+interface TOTConfig {
+  enabled: boolean;
+  secretConfigured?: boolean;
+  pathCount: number;
+  maxPayload: number;
+  window: number;
+  retransmitIntervalMs: number;
+  maxRetries: number;
+  recoveryPeriodMs: number;
+  handshakeTimeoutMs: number;
+  maxClockSkewMs: number;
+  idleTtlMs: number;
+  mptcp: boolean;
 }
 
 interface Node {
@@ -81,6 +112,7 @@ interface TunnelForm {
   trafficRatio: number;
   inIp: string; // 入口IP
   status: number;
+  tot: TOTConfig;
 }
 
 interface DiagnosisResult {
@@ -147,7 +179,8 @@ export default function TunnelPage() {
     flow: 1,
     trafficRatio: 1.0,
     inIp: '',
-    status: 1
+    status: 1,
+    tot: { ...DEFAULT_TOT_CONFIG }
   });
   
   // 表单验证错误
@@ -264,7 +297,8 @@ export default function TunnelPage() {
       flow: 1,
       trafficRatio: 1.0,
       inIp: '',
-      status: 1
+      status: 1,
+      tot: { ...DEFAULT_TOT_CONFIG }
     });
     setErrors({});
     setModalOpen(true);
@@ -293,12 +327,28 @@ export default function TunnelPage() {
       flow: tunnel.flow,
       trafficRatio: tunnel.trafficRatio,
       inIp: tunnel.inIp ? tunnel.inIp.split(',').map(ip => ip.trim()).join('\n') : '',
-      status: tunnel.status
+      status: tunnel.status,
+      tot: { ...DEFAULT_TOT_CONFIG, ...(tunnel.tot || {}) }
     });
     setErrors({});
     setModalOpen(true);
   };
 
+  const handleRotateTOTSecret = async (tunnel: Tunnel) => {
+    if (!window.confirm(`确定轮换隧道“${tunnel.name}”的 TOT 密钥吗？轮换后现有连接将无法继续使用。`)) return;
+    try {
+      const response = await rotateTunnelTOTSecret(tunnel.id);
+      if (response.code === 0) {
+        toast.success('TOT 密钥已轮换，节点配置正在刷新');
+        await loadData();
+      } else {
+        toast.error(response.msg || 'TOT 密钥轮换失败');
+      }
+    } catch (error) {
+      console.error('TOT 密钥轮换失败:', error);
+      toast.error('TOT 密钥轮换失败');
+    }
+  };
   // 删除隧道
   const handleDelete = (tunnel: Tunnel) => {
     setTunnelToDelete(tunnel);
@@ -715,6 +765,7 @@ export default function TunnelPage() {
                           >
                             {typeDisplay.text}
                           </Chip>
+                          {tunnel.tot?.enabled && <Chip color="success" variant="flat" size="sm" className="text-xs">TOT</Chip>}
                          
                         </div>
                         </div>
@@ -816,6 +867,16 @@ export default function TunnelPage() {
                         }
                       >
                         诊断
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color="secondary"
+                        onPress={() => handleRotateTOTSecret(tunnel)}
+                        className="flex-1 min-h-8"
+                        isDisabled={!tunnel.tot?.enabled}
+                      >
+                        轮换密钥
                       </Button>
                       <Button
                         size="sm"
@@ -1215,12 +1276,39 @@ export default function TunnelPage() {
                       </>
                     )}
 
-                    {/* 隧道转发时显示出口配置 */}
+                    <Divider />
+                    <div className="space-y-3 rounded-lg border border-default-200 p-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="font-semibold">TOT 多线路传输</h3>
+                          <p className="text-xs text-default-500">为该隧道启用可靠多路径传输；密钥不会在管理 API 中返回。</p>
+                        </div>
+                        <Button size="sm" variant={form.tot.enabled ? "solid" : "bordered"} color={form.tot.enabled ? "success" : "default"} onPress={() => setForm(prev => ({ ...prev, tot: { ...prev.tot, enabled: !prev.tot.enabled } }))}>
+                          {form.tot.enabled ? "已启用" : "未启用"}
+                        </Button>
+                      </div>
+                      {form.tot.enabled && (
+                        <>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <Input label="线路数" type="number" value={String(form.tot.pathCount)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, pathCount: Number(e.target.value) || 0 } }))} />
+                            <Input label="分片字节" type="number" value={String(form.tot.maxPayload)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, maxPayload: Number(e.target.value) || 0 } }))} />
+                            <Input label="发送窗口" type="number" value={String(form.tot.window)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, window: Number(e.target.value) || 0 } }))} />
+                            <Input label="最大重试" type="number" value={String(form.tot.maxRetries)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, maxRetries: Number(e.target.value) || 0 } }))} />
+                          </div>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <Input label="重传间隔(ms)" type="number" value={String(form.tot.retransmitIntervalMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, retransmitIntervalMs: Number(e.target.value) || 0 } }))} />
+                            <Input label="恢复间隔(ms)" type="number" value={String(form.tot.recoveryPeriodMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, recoveryPeriodMs: Number(e.target.value) || 0 } }))} />
+                            <Input label="握手超时(ms)" type="number" value={String(form.tot.handshakeTimeoutMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, handshakeTimeoutMs: Number(e.target.value) || 0 } }))} />
+                            <Input label="空闲回收(ms)" type="number" value={String(form.tot.idleTtlMs)} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, idleTtlMs: Number(e.target.value) || 0 } }))} />
+                          </div>
+                          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.tot.mptcp} onChange={e => setForm(prev => ({ ...prev, tot: { ...prev.tot, mptcp: e.target.checked } }))} />启用内核 MPTCP 监听</label>
+                          {isEdit && <p className="text-xs text-default-500">密钥状态：{form.tot.secretConfigured ? "已配置" : "未配置"}；如需轮换请使用隧道卡片上的轮换按钮。</p>}
+                        </>
+                      )}
+                    </div>
+
                     {form.type === 2 && (
                       <>
-                        <Divider />
-                        <h3 className="text-lg font-semibold">出口配置</h3>
-
                         <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                           {/* 节点选择 - 移动端100%，桌面端50% */}
                           <div className="col-span-1 md:col-span-2">

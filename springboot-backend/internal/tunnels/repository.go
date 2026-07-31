@@ -2,7 +2,9 @@ package tunnels
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,6 +16,16 @@ import (
 const (
 	bytesPerGB int64 = 1024 * 1024 * 1024
 	maxQuotaGB int64 = 8_589_934_591
+
+	defaultTOTPathCount            = 2
+	defaultTOTMaxPayload           = 32 * 1024
+	defaultTOTWindow               = 256
+	defaultTOTRetransmitIntervalMS = 300
+	defaultTOTMaxRetries           = 20
+	defaultTOTRecoveryPeriodMS     = 1000
+	defaultTOTHandshakeTimeoutMS   = 5000
+	defaultTOTMaxClockSkewMS       = 30000
+	defaultTOTIdleTTLMS            = 300000
 )
 
 type NodeSpec struct {
@@ -43,6 +55,37 @@ type Tunnel struct {
 	TrafficRatio float64      `json:"trafficRatio"`
 	Status       int          `json:"status"`
 	CreatedTime  int64        `json:"createdTime"`
+	TOT          TOTConfig    `json:"tot"`
+}
+
+type TOTConfig struct {
+	Enabled              bool `json:"enabled"`
+	SecretConfigured     bool `json:"secretConfigured"`
+	PathCount            int  `json:"pathCount"`
+	MaxPayload           int  `json:"maxPayload"`
+	Window               int  `json:"window"`
+	RetransmitIntervalMS int  `json:"retransmitIntervalMs"`
+	MaxRetries           int  `json:"maxRetries"`
+	RecoveryPeriodMS     int  `json:"recoveryPeriodMs"`
+	HandshakeTimeoutMS   int  `json:"handshakeTimeoutMs"`
+	MaxClockSkewMS       int  `json:"maxClockSkewMs"`
+	IdleTTLMS            int  `json:"idleTtlMs"`
+	MPTCP                bool `json:"mptcp"`
+}
+
+type totRuntimeConfig struct {
+	Enabled              bool
+	Secret               string
+	PathCount            int
+	MaxPayload           int
+	Window               int
+	RetransmitIntervalMS int
+	MaxRetries           int
+	RecoveryPeriodMS     int
+	HandshakeTimeoutMS   int
+	MaxClockSkewMS       int
+	IdleTTLMS            int
+	MPTCP                bool
 }
 
 type CreateRequest struct {
@@ -55,6 +98,7 @@ type CreateRequest struct {
 	TrafficRatio float64      `json:"trafficRatio"`
 	InIP         string       `json:"inIp"`
 	Status       int          `json:"status"`
+	TOT          TOTConfig    `json:"tot"`
 }
 
 type UpdateRequest struct {
@@ -109,7 +153,7 @@ func NewRepository(db *sql.DB, nodeRepo *nodes.Repository) *Repository {
 }
 
 func (r *Repository) List(ctx context.Context) ([]Tunnel, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,name,type,flow,traffic_ratio,in_ip,status,created_at FROM tunnels ORDER BY id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,name,type,flow,traffic_ratio,in_ip,status,created_at,tot_enabled,tot_secret,tot_path_count,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp FROM tunnels ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list tunnels: %w", err)
 	}
@@ -117,9 +161,12 @@ func (r *Repository) List(ctx context.Context) ([]Tunnel, error) {
 	result := make([]Tunnel, 0)
 	for rows.Next() {
 		var tunnel Tunnel
-		if err := rows.Scan(&tunnel.ID, &tunnel.Name, &tunnel.Type, &tunnel.Flow, &tunnel.TrafficRatio, &tunnel.InIP, &tunnel.Status, &tunnel.CreatedTime); err != nil {
+		var raw totRuntimeConfig
+		if err := rows.Scan(&tunnel.ID, &tunnel.Name, &tunnel.Type, &tunnel.Flow, &tunnel.TrafficRatio, &tunnel.InIP, &tunnel.Status, &tunnel.CreatedTime,
+			&raw.Enabled, &raw.Secret, &raw.PathCount, &raw.MaxPayload, &raw.Window, &raw.RetransmitIntervalMS, &raw.MaxRetries, &raw.RecoveryPeriodMS, &raw.HandshakeTimeoutMS, &raw.MaxClockSkewMS, &raw.IdleTTLMS, &raw.MPTCP); err != nil {
 			return nil, fmt.Errorf("scan tunnel: %w", err)
 		}
+		tunnel.TOT = raw.public()
 		if err := r.loadNodes(ctx, &tunnel); err != nil {
 			return nil, err
 		}
@@ -130,12 +177,15 @@ func (r *Repository) List(ctx context.Context) ([]Tunnel, error) {
 
 func (r *Repository) Get(ctx context.Context, id int64) (Tunnel, error) {
 	var tunnel Tunnel
-	err := r.db.QueryRowContext(ctx, `SELECT id,name,type,flow,traffic_ratio,in_ip,status,created_at FROM tunnels WHERE id=?`, id).Scan(
+	var raw totRuntimeConfig
+	err := r.db.QueryRowContext(ctx, `SELECT id,name,type,flow,traffic_ratio,in_ip,status,created_at,tot_enabled,tot_secret,tot_path_count,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp FROM tunnels WHERE id=?`, id).Scan(
 		&tunnel.ID, &tunnel.Name, &tunnel.Type, &tunnel.Flow, &tunnel.TrafficRatio, &tunnel.InIP, &tunnel.Status, &tunnel.CreatedTime,
+		&raw.Enabled, &raw.Secret, &raw.PathCount, &raw.MaxPayload, &raw.Window, &raw.RetransmitIntervalMS, &raw.MaxRetries, &raw.RecoveryPeriodMS, &raw.HandshakeTimeoutMS, &raw.MaxClockSkewMS, &raw.IdleTTLMS, &raw.MPTCP,
 	)
 	if err != nil {
 		return tunnel, err
 	}
+	tunnel.TOT = raw.public()
 	return tunnel, r.loadNodes(ctx, &tunnel)
 }
 
@@ -158,9 +208,14 @@ func (r *Repository) Create(ctx context.Context, request CreateRequest) (int64, 
 			return 0, err
 		}
 	}
+	tot := normalizeTOT(request.TOT)
+	secret, err := newTOTSecret()
+	if err != nil {
+		return 0, err
+	}
 	now := time.Now().UnixMilli()
-	result, err := transaction.ExecContext(ctx, `INSERT INTO tunnels(name,type,flow,traffic_ratio,in_ip,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`,
-		strings.TrimSpace(request.Name), request.Type, request.Flow, request.TrafficRatio, inIP, normalizeStatus(request.Status), now, now)
+	result, err := transaction.ExecContext(ctx, `INSERT INTO tunnels(name,type,flow,traffic_ratio,in_ip,status,tot_enabled,tot_secret,tot_path_count,tot_max_payload,tot_window,tot_retransmit_interval_ms,tot_max_retries,tot_recovery_period_ms,tot_handshake_timeout_ms,tot_max_clock_skew_ms,tot_idle_ttl_ms,tot_mptcp,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		strings.TrimSpace(request.Name), request.Type, request.Flow, request.TrafficRatio, inIP, normalizeStatus(request.Status), boolInt(tot.Enabled), secret, tot.PathCount, tot.MaxPayload, tot.Window, tot.RetransmitIntervalMS, tot.MaxRetries, tot.RecoveryPeriodMS, tot.HandshakeTimeoutMS, tot.MaxClockSkewMS, tot.IdleTTLMS, boolInt(tot.MPTCP), now, now)
 	if err != nil {
 		return 0, fmt.Errorf("create tunnel: %w", err)
 	}
@@ -199,8 +254,9 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest) error {
 			return err
 		}
 	}
-	result, err := transaction.ExecContext(ctx, `UPDATE tunnels SET name=?,type=?,flow=?,traffic_ratio=?,in_ip=?,status=?,updated_at=? WHERE id=?`,
-		strings.TrimSpace(request.Name), request.Type, request.Flow, request.TrafficRatio, inIP, normalizeStatus(request.Status), time.Now().UnixMilli(), request.ID)
+	tot := normalizeTOT(request.TOT)
+	result, err := transaction.ExecContext(ctx, `UPDATE tunnels SET name=?,type=?,flow=?,traffic_ratio=?,in_ip=?,status=?,tot_enabled=?,tot_path_count=?,tot_max_payload=?,tot_window=?,tot_retransmit_interval_ms=?,tot_max_retries=?,tot_recovery_period_ms=?,tot_handshake_timeout_ms=?,tot_max_clock_skew_ms=?,tot_idle_ttl_ms=?,tot_mptcp=?,updated_at=? WHERE id=?`,
+		strings.TrimSpace(request.Name), request.Type, request.Flow, request.TrafficRatio, inIP, normalizeStatus(request.Status), boolInt(tot.Enabled), tot.PathCount, tot.MaxPayload, tot.Window, tot.RetransmitIntervalMS, tot.MaxRetries, tot.RecoveryPeriodMS, tot.HandshakeTimeoutMS, tot.MaxClockSkewMS, tot.IdleTTLMS, boolInt(tot.MPTCP), time.Now().UnixMilli(), request.ID)
 	if err != nil {
 		return fmt.Errorf("update tunnel: %w", err)
 	}
@@ -211,6 +267,24 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest) error {
 		return err
 	}
 	return transaction.Commit()
+}
+
+func (r *Repository) RotateTOTSecret(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return errors.New("tunnel id must be positive")
+	}
+	secret, err := newTOTSecret()
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE tunnels SET tot_secret=?,updated_at=? WHERE id=?`, secret, time.Now().UnixMilli(), id)
+	if err != nil {
+		return fmt.Errorf("rotate TOT secret: %w", err)
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (r *Repository) Delete(ctx context.Context, id int64) error {
@@ -389,6 +463,27 @@ func validate(request CreateRequest) error {
 	if request.Type == 2 && len(request.OutNodeID) == 0 {
 		return errors.New("at least one exit node is required")
 	}
+	if request.TOT.Enabled {
+		tot := normalizeTOT(request.TOT)
+		if tot.PathCount < 1 || tot.PathCount > 16 {
+			return errors.New("TOT path count must be between 1 and 16")
+		}
+		if tot.MaxPayload < 1024 || tot.MaxPayload > 1024*1024 {
+			return errors.New("TOT maximum payload must be between 1024 and 1048576 bytes")
+		}
+		if tot.Window < 1 || tot.Window > 65536 {
+			return errors.New("TOT window must be between 1 and 65536 frames")
+		}
+		if tot.RetransmitIntervalMS < 10 || tot.RetransmitIntervalMS > 60000 || tot.MaxRetries < 1 || tot.MaxRetries > 1000 {
+			return errors.New("invalid TOT retransmission settings")
+		}
+		if tot.RecoveryPeriodMS < 100 || tot.RecoveryPeriodMS > 300000 || tot.HandshakeTimeoutMS < 100 || tot.HandshakeTimeoutMS > 60000 {
+			return errors.New("invalid TOT recovery or handshake timeout")
+		}
+		if tot.MaxClockSkewMS < 1000 || tot.MaxClockSkewMS > 300000 || tot.IdleTTLMS < 1000 || tot.IdleTTLMS > 86400000 {
+			return errors.New("invalid TOT clock skew or idle timeout")
+		}
+	}
 	seen := map[int64]bool{}
 	all := append([]NodeSpec{}, request.InNodeID...)
 	for _, group := range request.ChainNodes {
@@ -551,6 +646,69 @@ func (r *Repository) loadNodes(ctx context.Context, tunnel *Tunnel) error {
 		}
 	}
 	return rows.Err()
+}
+
+func (raw totRuntimeConfig) public() TOTConfig {
+	return TOTConfig{
+		Enabled:              raw.Enabled,
+		SecretConfigured:     strings.TrimSpace(raw.Secret) != "",
+		PathCount:            raw.PathCount,
+		MaxPayload:           raw.MaxPayload,
+		Window:               raw.Window,
+		RetransmitIntervalMS: raw.RetransmitIntervalMS,
+		MaxRetries:           raw.MaxRetries,
+		RecoveryPeriodMS:     raw.RecoveryPeriodMS,
+		HandshakeTimeoutMS:   raw.HandshakeTimeoutMS,
+		MaxClockSkewMS:       raw.MaxClockSkewMS,
+		IdleTTLMS:            raw.IdleTTLMS,
+		MPTCP:                raw.MPTCP,
+	}
+}
+
+func normalizeTOT(value TOTConfig) TOTConfig {
+	if value.PathCount == 0 {
+		value.PathCount = defaultTOTPathCount
+	}
+	if value.MaxPayload == 0 {
+		value.MaxPayload = defaultTOTMaxPayload
+	}
+	if value.Window == 0 {
+		value.Window = defaultTOTWindow
+	}
+	if value.RetransmitIntervalMS == 0 {
+		value.RetransmitIntervalMS = defaultTOTRetransmitIntervalMS
+	}
+	if value.MaxRetries == 0 {
+		value.MaxRetries = defaultTOTMaxRetries
+	}
+	if value.RecoveryPeriodMS == 0 {
+		value.RecoveryPeriodMS = defaultTOTRecoveryPeriodMS
+	}
+	if value.HandshakeTimeoutMS == 0 {
+		value.HandshakeTimeoutMS = defaultTOTHandshakeTimeoutMS
+	}
+	if value.MaxClockSkewMS == 0 {
+		value.MaxClockSkewMS = defaultTOTMaxClockSkewMS
+	}
+	if value.IdleTTLMS == 0 {
+		value.IdleTTLMS = defaultTOTIdleTTLMS
+	}
+	return value
+}
+
+func newTOTSecret() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate TOT secret: %w", err)
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func normalizeStatus(value int) int {

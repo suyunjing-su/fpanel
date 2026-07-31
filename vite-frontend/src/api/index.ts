@@ -72,6 +72,7 @@ export const updateTunnel = (data: any) => Network.post("/tunnel/update", data);
 export const deleteTunnel = (id: number) => Network.post("/tunnel/delete", { id });
 export const batchDeleteTunnels = (ids: number[]) => Network.post<BatchDeleteResult>("/tunnel/batch-delete", { ids });
 export const diagnoseTunnel = (tunnelId: number) => Network.post("/tunnel/diagnose", { tunnelId });
+export const rotateTunnelTOTSecret = (id: number) => Network.post("/tunnel/tot/rotate-secret", { id });
 
 // 用户隧道权限管理操作 - 全部使用POST请求
 export const assignUserTunnel = (data: any) => Network.post("/tunnel/user/assign", data);
