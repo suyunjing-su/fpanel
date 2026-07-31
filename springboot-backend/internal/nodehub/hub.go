@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +31,7 @@ type session struct {
 	nodeID      int64
 	conn        *websocket.Conn
 	cipher      *crypto.Cipher
+	readTimeout time.Duration
 	write       sync.Mutex
 	mu          sync.Mutex
 	closed      bool
@@ -78,7 +78,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		return
 	}
-	s := &session{nodeID: identity.id, conn: conn, cipher: cipher, wait: make(map[string]chan CommandResponse), onTelemetry: func(info SystemInfo) {
+	s := &session{nodeID: identity.id, conn: conn, cipher: cipher, readTimeout: 35 * time.Second, wait: make(map[string]chan CommandResponse), onTelemetry: func(info SystemInfo) {
 		statuses, err := json.Marshal(info.ControllerStatuses)
 		if err != nil {
 			h.log.Warn("failed to encode controller diagnostics", "node_id", identity.id, "error", err)
@@ -99,7 +99,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}}
 	h.replace(identity.id, s)
 	defer h.remove(identity.id, s)
-	h.markOnline(r.Context(), identity.id, r.URL.Query())
+	h.markOnline(r.Context(), identity.id, r)
 	s.readLoop(h.log)
 }
 
@@ -138,26 +138,44 @@ func (h *Hub) remove(id int64, current *session) {
 	}
 }
 
-func (h *Hub) markOnline(ctx context.Context, id int64, query url.Values) {
-	version := query.Get("version")
-	httpFlag, _ := strconv.Atoi(query.Get("http"))
-	tlsFlag, _ := strconv.Atoi(query.Get("tls"))
-	socksFlag, _ := strconv.Atoi(query.Get("socks"))
+func connectionMetadata(r *http.Request) (string, int, int, int) {
+	value := func(header, query string) string {
+		if current := strings.TrimSpace(r.Header.Get(header)); current != "" {
+			return current
+		}
+		return strings.TrimSpace(r.URL.Query().Get(query))
+	}
+	flag := func(header, query string) int {
+		parsed, _ := strconv.Atoi(value(header, query))
+		return parsed
+	}
+	return value("X-Flux-Version", "version"), flag("X-Flux-Http", "http"), flag("X-Flux-Tls", "tls"), flag("X-Flux-Socks", "socks")
+}
+
+func (h *Hub) markOnline(ctx context.Context, id int64, r *http.Request) {
+	version, httpFlag, tlsFlag, socksFlag := connectionMetadata(r)
 	if err := h.nodes.SetConnectionState(ctx, id, 1, version, httpFlag, tlsFlag, socksFlag); err != nil {
 		h.log.Warn("failed to mark node online", "node_id", id, "error", err)
 	}
 }
 
+func (s *session) renewReadDeadline() error {
+	return s.conn.SetReadDeadline(time.Now().Add(s.readTimeout))
+}
+
 func (s *session) readLoop(log *slog.Logger) {
 	defer s.close()
 	s.conn.SetReadLimit(16 << 20)
-	_ = s.conn.SetReadDeadline(time.Now().Add(35 * time.Second))
+	_ = s.renewReadDeadline()
 	s.conn.SetPongHandler(func(string) error {
-		return s.conn.SetReadDeadline(time.Now().Add(35 * time.Second))
+		return s.renewReadDeadline()
 	})
 	for {
 		messageType, payload, err := s.conn.ReadMessage()
 		if err != nil {
+			return
+		}
+		if err := s.renewReadDeadline(); err != nil {
 			return
 		}
 		if messageType != websocket.TextMessage {
