@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bqlpfy/flux-panel/backend/internal/auth"
-	"github.com/bqlpfy/flux-panel/backend/internal/observability"
+	"github.com/suyunjing-su/fpanel/backend/internal/auth"
+	"github.com/suyunjing-su/fpanel/backend/internal/observability"
 )
 
 type contextKey string

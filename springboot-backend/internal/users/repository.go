@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bqlpfy/flux-panel/backend/internal/auth"
+	"github.com/suyunjing-su/fpanel/backend/internal/auth"
 )
 
 type User struct {

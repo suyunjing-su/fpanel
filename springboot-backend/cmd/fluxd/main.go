@@ -11,16 +11,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bqlpfy/flux-panel/backend/internal/auth"
-	"github.com/bqlpfy/flux-panel/backend/internal/config"
-	"github.com/bqlpfy/flux-panel/backend/internal/database"
-	"github.com/bqlpfy/flux-panel/backend/internal/httpapi"
-	"github.com/bqlpfy/flux-panel/backend/internal/nodehub"
-	"github.com/bqlpfy/flux-panel/backend/internal/nodes"
-	"github.com/bqlpfy/flux-panel/backend/internal/observability"
-	"github.com/bqlpfy/flux-panel/backend/internal/siteconfig"
-	"github.com/bqlpfy/flux-panel/backend/internal/tunnels"
-	"github.com/bqlpfy/flux-panel/backend/internal/users"
+	"github.com/suyunjing-su/fpanel/backend/internal/auth"
+	"github.com/suyunjing-su/fpanel/backend/internal/config"
+	"github.com/suyunjing-su/fpanel/backend/internal/database"
+	"github.com/suyunjing-su/fpanel/backend/internal/forwards"
+	"github.com/suyunjing-su/fpanel/backend/internal/httpapi"
+	"github.com/suyunjing-su/fpanel/backend/internal/nodehub"
+	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
+	"github.com/suyunjing-su/fpanel/backend/internal/observability"
+	"github.com/suyunjing-su/fpanel/backend/internal/siteconfig"
+	"github.com/suyunjing-su/fpanel/backend/internal/tunnels"
+	"github.com/suyunjing-su/fpanel/backend/internal/users"
 )
 
 func main() {
@@ -52,6 +53,7 @@ func run() error {
 	configRepo := siteconfig.NewRepository(db)
 	userRepo := users.NewRepository(db)
 	tunnelRepo := tunnels.NewRepository(db, nodeRepo)
+	forwardRepo := forwards.NewRepository(db, nodeRepo, tunnelRepo)
 	metrics := observability.NewMetrics()
 	mux := http.NewServeMux()
 
@@ -386,6 +388,119 @@ func run() error {
 		httpapi.WriteJSON(w, 200, httpapi.Success(value))
 	})
 
+	mux.HandleFunc("POST /api/v1/forward/list", func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := httpapi.IdentityFromContext(r.Context())
+		if !ok {
+			httpapi.WriteJSON(w, 401, httpapi.Failure(401, "未登录或token已过期"))
+			return
+		}
+		value, err := forwardRepo.List(r.Context(), identity.UserID, identity.RoleID == 0)
+		if err != nil {
+			httpapi.WriteJSON(w, 500, httpapi.Failure(500, "转发查询失败"))
+			return
+		}
+		httpapi.WriteJSON(w, 200, httpapi.Success(value))
+	})
+	mux.HandleFunc("POST /api/v1/forward/create", func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := httpapi.IdentityFromContext(r.Context())
+		if !ok {
+			httpapi.WriteJSON(w, 401, httpapi.Failure(401, "未登录或token已过期"))
+			return
+		}
+		var request forwards.CreateRequest
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		id, err := forwardRepo.Create(r.Context(), request, identity.UserID, identity.RoleID == 0)
+		if err != nil {
+			badRequest(w, err)
+			return
+		}
+		httpapi.WriteJSON(w, 200, httpapi.Success(map[string]any{"id": id}))
+	})
+	mux.HandleFunc("POST /api/v1/forward/update", func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := httpapi.IdentityFromContext(r.Context())
+		if !ok {
+			httpapi.WriteJSON(w, 401, httpapi.Failure(401, "未登录或token已过期"))
+			return
+		}
+		var request forwards.UpdateRequest
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		if err := forwardRepo.Update(r.Context(), request, identity.UserID, identity.RoleID == 0); err != nil {
+			badRequest(w, err)
+			return
+		}
+		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
+	})
+	mux.HandleFunc("POST /api/v1/forward/delete", func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := httpapi.IdentityFromContext(r.Context())
+		if !ok {
+			httpapi.WriteJSON(w, 401, httpapi.Failure(401, "未登录或token已过期"))
+			return
+		}
+		var request struct {
+			ID int64 `json:"id"`
+		}
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		if err := forwardRepo.Delete(r.Context(), request.ID, identity.UserID, identity.RoleID == 0); err != nil {
+			status := 500
+			if errors.Is(err, sql.ErrNoRows) {
+				status = 404
+			}
+			httpapi.WriteJSON(w, status, httpapi.Failure(status, "转发删除失败"))
+			return
+		}
+		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
+	})
+	mux.HandleFunc("POST /api/v1/forward/force-delete", func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := httpapi.IdentityFromContext(r.Context())
+		if !ok {
+			httpapi.WriteJSON(w, 401, httpapi.Failure(401, "未登录或token已过期"))
+			return
+		}
+		var request struct {
+			ID int64 `json:"id"`
+		}
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		if err := forwardRepo.Delete(r.Context(), request.ID, identity.UserID, identity.RoleID == 0); err != nil {
+			status := 500
+			if errors.Is(err, sql.ErrNoRows) {
+				status = 404
+			}
+			httpapi.WriteJSON(w, status, httpapi.Failure(status, "转发删除失败"))
+			return
+		}
+		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
+	})
+	mux.HandleFunc("POST /api/v1/forward/pause", func(w http.ResponseWriter, r *http.Request) { setForwardStatus(w, r, forwardRepo, 0) })
+	mux.HandleFunc("POST /api/v1/forward/resume", func(w http.ResponseWriter, r *http.Request) { setForwardStatus(w, r, forwardRepo, 1) })
+	mux.HandleFunc("POST /api/v1/forward/update-order", func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := httpapi.IdentityFromContext(r.Context())
+		if !ok {
+			httpapi.WriteJSON(w, 401, httpapi.Failure(401, "未登录或token已过期"))
+			return
+		}
+		var request struct {
+			Forwards []struct {
+				ID    int64 `json:"id"`
+				Index int   `json:"inx"`
+			} `json:"forwards"`
+		}
+		if !httpapi.DecodeJSON(w, r, &request) {
+			return
+		}
+		if err := forwardRepo.Reorder(r.Context(), identity.UserID, identity.RoleID == 0, request.Forwards); err != nil {
+			badRequest(w, err)
+			return
+		}
+		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
+	})
 	mux.HandleFunc("POST /api/v1/node/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
 			forbidden(w)

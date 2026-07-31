@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bqlpfy/flux-panel/backend/internal/nodehub/crypto"
+	"github.com/suyunjing-su/fpanel/backend/internal/nodehub/crypto"
 )
 
 type SystemInfo struct {

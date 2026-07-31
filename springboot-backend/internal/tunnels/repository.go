@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bqlpfy/flux-panel/backend/internal/nodes"
+	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
 )
 
 type NodeSpec struct {

@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bqlpfy/flux-panel/backend/internal/nodehub/crypto"
-	"github.com/bqlpfy/flux-panel/backend/internal/nodes"
+	"github.com/suyunjing-su/fpanel/backend/internal/nodehub/crypto"
+	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
 	"github.com/gorilla/websocket"
 )
 

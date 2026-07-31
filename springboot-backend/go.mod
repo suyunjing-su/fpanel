@@ -1,4 +1,4 @@
-module github.com/bqlpfy/flux-panel/backend
+module github.com/suyunjing-su/fpanel/backend
 
 go 1.23
 
