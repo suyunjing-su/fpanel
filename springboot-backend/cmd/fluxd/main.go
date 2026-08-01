@@ -17,6 +17,7 @@ import (
 	"github.com/suyunjing-su/fpanel/backend/internal/database"
 	"github.com/suyunjing-su/fpanel/backend/internal/forwards"
 	"github.com/suyunjing-su/fpanel/backend/internal/httpapi"
+	"github.com/suyunjing-su/fpanel/backend/internal/maintenance"
 	"github.com/suyunjing-su/fpanel/backend/internal/nodeconfig"
 	"github.com/suyunjing-su/fpanel/backend/internal/nodehub"
 	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
@@ -74,6 +75,7 @@ func run() error {
 	refreshQueue.Start(workerCtx)
 	tunnelhealth.NewExpiryWorker(db, refreshQueue, log).Start(workerCtx)
 	tunnelhealth.NewWorker(db, healthRepo, hub, refreshQueue, log).Start(workerCtx)
+	maintenance.NewWorker(db, refreshQueue, log).Start(workerCtx)
 	metrics := observability.NewMetrics(db)
 	mux := http.NewServeMux()
 

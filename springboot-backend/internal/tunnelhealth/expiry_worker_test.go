@@ -11,7 +11,7 @@ import (
 	"github.com/suyunjing-su/fpanel/backend/internal/database"
 )
 
-func TestExpiryWorkerEnqueuesEachExpiryVersionOnce(t *testing.T) {
+func TestExpiryWorkerDisablesSubjectsAndForwardsOnce(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "expiry.db"), logger)
 	if err != nil {
@@ -19,7 +19,7 @@ func TestExpiryWorkerEnqueuesEachExpiryVersionOnce(t *testing.T) {
 	}
 	defer db.Close()
 	ctx := context.Background()
-	execExpiryFixture(t, db, `INSERT INTO users(id,username,password_hash,role,expires_at,status,created_at,updated_at) VALUES(1,'user','hash','user',1000,1,1,1)`)
+	execExpiryFixture(t, db, `INSERT INTO users(id,username,password_hash,role,token_version,expires_at,status,created_at,updated_at) VALUES(1,'user','hash','user',1,1000,1,1,1)`)
 	execExpiryFixture(t, db, `INSERT INTO nodes(id,name,ip,server_ip,port_start,port_end,secret,status,created_at,updated_at) VALUES(1,'entry','10.0.0.1','203.0.113.1',1000,2000,'secret',1,1,1)`)
 	execExpiryFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,created_at,updated_at) VALUES(1,'direct',1,1,1,1,1,1)`)
 	execExpiryFixture(t, db, `INSERT INTO tunnel_nodes(id,tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol) VALUES(1,1,1,1,7000,'fifo',0,'tcp')`)
@@ -32,30 +32,33 @@ func TestExpiryWorkerEnqueuesEachExpiryVersionOnce(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("user expiration was not processed: changed=%v err=%v", changed, err)
 	}
-	assertExpiryGeneration(t, db, 1)
+	assertExpiryState(t, db, "users", 1, 0)
+	assertExpiryState(t, db, "forwards", 1, 0)
+	var tokenVersion int
+	if err := db.QueryRow(`SELECT token_version FROM users WHERE id=1`).Scan(&tokenVersion); err != nil {
+		t.Fatal(err)
+	}
+	if tokenVersion != 2 {
+		t.Fatalf("expired user token version=%d", tokenVersion)
+	}
 	changed, err = worker.processAt(ctx, 1500)
 	if err != nil || changed {
 		t.Fatalf("same expiration was processed twice: changed=%v err=%v", changed, err)
 	}
-	assertExpiryGeneration(t, db, 1)
+	if err := db.QueryRow(`SELECT token_version FROM users WHERE id=1`).Scan(&tokenVersion); err != nil || tokenVersion != 2 {
+		t.Fatalf("token version changed during duplicate processing: value=%d err=%v", tokenVersion, err)
+	}
 
+	execExpiryFixture(t, db, `UPDATE forwards SET status=1 WHERE id=1`)
 	changed, err = worker.processAt(ctx, 2500)
 	if err != nil || !changed {
 		t.Fatalf("user tunnel expiration was not processed: changed=%v err=%v", changed, err)
 	}
-	assertExpiryGeneration(t, db, 2)
-
-	execExpiryFixture(t, db, `UPDATE users SET expires_at=3000 WHERE id=1`)
-	changed, err = worker.processAt(ctx, 3500)
-	if err != nil || !changed {
-		t.Fatalf("updated expiration version was not processed: changed=%v err=%v", changed, err)
-	}
-	var processedExpiry int64
-	if err := db.QueryRow(`SELECT expires_at FROM runtime_expiry_states WHERE subject_type='user' AND subject_id=1`).Scan(&processedExpiry); err != nil {
-		t.Fatal(err)
-	}
-	if processedExpiry != 3000 {
-		t.Fatalf("unexpected processed expiry %d", processedExpiry)
+	assertExpiryState(t, db, "user_tunnels", 1, 0)
+	assertExpiryState(t, db, "forwards", 1, 0)
+	var refreshes int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM node_config_refreshes WHERE node_id=1`).Scan(&refreshes); err != nil || refreshes != 1 {
+		t.Fatalf("entry node refresh count=%d err=%v", refreshes, err)
 	}
 }
 
@@ -88,14 +91,14 @@ func TestForwardQuotaTriggersRefreshAcrossTunnels(t *testing.T) {
 	}
 }
 
-func assertExpiryGeneration(t *testing.T, db interface{ QueryRow(string, ...any) *sql.Row }, expected int64) {
+func assertExpiryState(t *testing.T, db interface{ QueryRow(string, ...any) *sql.Row }, table string, id int64, expected int) {
 	t.Helper()
-	var generation int64
-	if err := db.QueryRow(`SELECT generation FROM node_config_refreshes WHERE node_id=1`).Scan(&generation); err != nil {
+	var status int
+	if err := db.QueryRow(`SELECT status FROM `+table+` WHERE id=?`, id).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if generation != expected {
-		t.Fatalf("unexpected refresh generation %d, want %d", generation, expected)
+	if status != expected {
+		t.Fatalf("%s %d status=%d want=%d", table, id, status, expected)
 	}
 }
 

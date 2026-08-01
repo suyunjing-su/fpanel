@@ -137,9 +137,14 @@ func (r *Repository) UpdatePassword(ctx context.Context, id int64, newUsername, 
 func (r *Repository) FindIdentity(ctx context.Context, id int64) (Identity, error) {
 	var identity Identity
 	var username string
+	var status int
+	var expiresAt int64
 	if err := r.db.QueryRowContext(ctx, `SELECT username, role, status, expires_at, token_version
-		FROM users WHERE id = ?`, id).Scan(&username, &identity.Role, new(int), new(int64), &identity.TokenVersion); err != nil {
+		FROM users WHERE id = ?`, id).Scan(&username, &identity.Role, &status, &expiresAt, &identity.TokenVersion); err != nil {
 		return Identity{}, fmt.Errorf("find user: %w", err)
+	}
+	if status != 1 || (expiresAt > 0 && expiresAt <= nowMillis()) {
+		return Identity{}, errors.New("identity is inactive")
 	}
 	identity.UserID = id
 	identity.Username = username

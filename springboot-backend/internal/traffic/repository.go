@@ -97,9 +97,6 @@ func (r *Repository) Record(ctx context.Context, nodeID int64, items []ReportIte
 			refreshUsers[refreshUserID] = struct{}{}
 		}
 	}
-	if _, err := transaction.ExecContext(ctx, "DELETE FROM statistics_flows WHERE recorded_at<?", now-48*60*60*1000); err != nil {
-		return nil, fmt.Errorf("cleanup traffic statistics: %w", err)
-	}
 	for userID := range refreshUsers {
 		rows, err := transaction.QueryContext(ctx, "SELECT DISTINCT tunnel_id FROM forwards WHERE user_id=?", userID)
 		if err != nil {
@@ -253,9 +250,6 @@ func (r *Repository) recordItem(ctx context.Context, transaction *sql.Tx, nodeID
 			return 0, false, 0, err
 		}
 		refresh = policyRefresh
-	}
-	if _, err := transaction.ExecContext(ctx, "INSERT INTO statistics_flows(user_id,flow,total_flow,recorded_at) VALUES(?,?,?,?)", userID, flow, total, now); err != nil {
-		return 0, false, 0, fmt.Errorf("record traffic statistics: %w", err)
 	}
 	tunnelRefresh, userRefresh, err := r.enforceQuotas(ctx, transaction, forwardID, userID, userTunnelID, tunnelID, now)
 	if err != nil {
