@@ -78,6 +78,8 @@ func run() error {
 	tunnelhealth.NewExpiryWorker(db, refreshQueue, log).Start(workerCtx)
 	tunnelhealth.NewWorker(db, healthRepo, hub, refreshQueue, log).Start(workerCtx)
 	maintenance.NewWorker(db, refreshQueue, log).Start(workerCtx)
+	checkpointWorker := database.NewCheckpointWorker(db, log)
+	checkpointWorker.Start(workerCtx)
 	metrics := observability.NewMetrics(db)
 	mux := http.NewServeMux()
 
@@ -647,16 +649,34 @@ func run() error {
 	}()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	var serveErr error
 	select {
-	case err := <-serverErr:
-		return fmt.Errorf("serve HTTP: %w", err)
+	case serveErr = <-serverErr:
+		log.Error("flux control plane server stopped unexpectedly", "error", serveErr)
 	case signal := <-stop:
 		log.Info("shutdown signal received", "signal", signal.String())
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown HTTP server: %w", err)
+	if serveErr == nil {
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("shutdown HTTP server: %w", err)
+		}
+	}
+	stopWorkers()
+	if err := checkpointWorker.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("stop SQLite checkpoint worker: %w", err)
+	}
+	result, err := database.Checkpoint(shutdownCtx, db, database.CheckpointTruncate)
+	if err != nil {
+		return fmt.Errorf("final SQLite checkpoint: %w", err)
+	}
+	if result.Busy {
+		return errors.New("final SQLite checkpoint remained busy")
+	}
+	log.Info("final SQLite WAL checkpoint completed", "wal_frames", result.WALFrames, "checkpointed_frames", result.CheckpointedFrames)
+	if serveErr != nil {
+		return fmt.Errorf("serve HTTP: %w", serveErr)
 	}
 	log.Info("flux control plane stopped")
 	return nil
