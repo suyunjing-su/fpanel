@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/suyunjing-su/fpanel/backend/internal/audit"
 	"github.com/suyunjing-su/fpanel/backend/internal/auth"
 	"github.com/suyunjing-su/fpanel/backend/internal/captcha"
 	"github.com/suyunjing-su/fpanel/backend/internal/config"
@@ -56,6 +57,7 @@ func run() error {
 
 	jwtManager := auth.New(cfg.JWTSecret, cfg.TokenTTL)
 	authRepo := auth.NewRepository(db)
+	auditRepo := audit.NewRepository(db)
 	nodeRepo := nodes.NewRepository(db)
 	nodeConfigRepo := nodeconfig.NewRepository(db)
 	hub := nodehub.New(log, nodeRepo)
@@ -122,6 +124,7 @@ func run() error {
 	registerOpenAPIRoutes(mux, authRepo)
 	registerNodeToolsRoutes(mux, nodeRepo, tunnelRepo, forwardRepo, configRepo, hub, isAdmin)
 	registerRuntimeControlRoutes(mux, runtimeControlRepo, refreshQueue, isAdmin)
+	registerAuditRoutes(mux, auditRepo, isAdmin)
 	mux.HandleFunc("POST /api/v1/tunnel/failure-event/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
 			forbidden(w)
@@ -634,7 +637,7 @@ func run() error {
 		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
 	})
 
-	server := &http.Server{Addr: cfg.Address, Handler: httpapi.Middleware(log, metrics, jwtManager, cfg.AllowedOrigins, mux, authRepo), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
+	server := &http.Server{Addr: cfg.Address, Handler: httpapi.Middleware(log, metrics, jwtManager, cfg.AllowedOrigins, mux, authRepo, auditRepo), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Info("flux control plane started", "address", cfg.Address)

@@ -11,14 +11,24 @@ import UserPage from "@/pages/user";
 import ProfilePage from "@/pages/profile";
 import LimitPage from "@/pages/limit";
 import ConfigPage from "@/pages/config";
+import AuditPage from "@/pages/audit";
 import { SettingsPage } from "@/pages/settings";
 
 import AdminLayout from "@/layouts/admin";
 import H5Layout from "@/layouts/h5";
 import H5SimpleLayout from "@/layouts/h5-simple";
 
-import { disableDevBypassSession, enableDevBypassSession, isLoggedIn } from "@/utils/auth";
-import { formatPanelTitle, getCachedConfig, getPanelPageTitle, siteConfig } from "@/config/site";
+import {
+  disableDevBypassSession,
+  enableDevBypassSession,
+  isLoggedIn,
+} from "@/utils/auth";
+import {
+  formatPanelTitle,
+  getCachedConfig,
+  getPanelPageTitle,
+  siteConfig,
+} from "@/config/site";
 
 // 检测是否为H5模式
 const useH5Mode = () => {
@@ -27,11 +37,14 @@ const useH5Mode = () => {
     // 检测移动设备或小屏幕
     const isMobile = window.innerWidth <= 768;
     // 检测是否为移动端浏览器
-    const isMobileBrowser = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    const isMobileBrowser =
+      /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        navigator.userAgent,
+      );
     // 检测URL参数是否包含h5模式
     const urlParams = new URLSearchParams(window.location.search);
-    const isH5Param = urlParams.get('h5') === 'true';
-    
+    const isH5Param = urlParams.get("h5") === "true";
+
     return isMobile || isMobileBrowser || isH5Param;
   };
 
@@ -42,32 +55,43 @@ const useH5Mode = () => {
       // 检测移动设备或小屏幕
       const isMobile = window.innerWidth <= 768;
       // 检测是否为移动端浏览器
-      const isMobileBrowser = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      const isMobileBrowser =
+        /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+          navigator.userAgent,
+        );
       // 检测URL参数是否包含h5模式
       const urlParams = new URLSearchParams(window.location.search);
-      const isH5Param = urlParams.get('h5') === 'true';
-      
+      const isH5Param = urlParams.get("h5") === "true";
+
       setIsH5(isMobile || isMobileBrowser || isH5Param);
     };
 
-    window.addEventListener('resize', checkH5Mode);
-    
-    return () => window.removeEventListener('resize', checkH5Mode);
+    window.addEventListener("resize", checkH5Mode);
+
+    return () => window.removeEventListener("resize", checkH5Mode);
   }, []);
 
   return isH5;
 };
 
 // 简化的路由保护组件 - 使用 React Router 导航避免循环
-const ProtectedRoute = ({ children, useSimpleLayout = false, skipLayout = false }: { children: React.ReactNode, useSimpleLayout?: boolean, skipLayout?: boolean }) => {
+const ProtectedRoute = ({
+  children,
+  useSimpleLayout = false,
+  skipLayout = false,
+}: {
+  children: React.ReactNode;
+  useSimpleLayout?: boolean;
+  skipLayout?: boolean;
+}) => {
   const authenticated = isLoggedIn();
   const isH5 = useH5Mode();
   const navigate = useNavigate();
-  
+
   useEffect(() => {
     if (!authenticated) {
       // 使用 React Router 导航，避免无限跳转
-      navigate('/', { replace: true });
+      navigate("/", { replace: true });
     }
   }, [authenticated, navigate]);
 
@@ -93,23 +117,22 @@ const ProtectedRoute = ({ children, useSimpleLayout = false, skipLayout = false 
   } else {
     Layout = AdminLayout;
   }
-  
+
   return <Layout>{children}</Layout>;
 };
-
 
 // 登录页面路由组件 - 已登录则重定向到dashboard
 const LoginRoute = () => {
   const authenticated = isLoggedIn();
   const navigate = useNavigate();
-  
+
   useEffect(() => {
     if (authenticated) {
       // 使用 React Router 导航，避免无限跳转
-      navigate('/dashboard', { replace: true });
+      navigate("/dashboard", { replace: true });
     }
   }, [authenticated, navigate]);
-  
+
   if (authenticated) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-100 dark:bg-black">
@@ -117,7 +140,7 @@ const LoginRoute = () => {
       </div>
     );
   }
-  
+
   return <IndexPage />;
 };
 
@@ -131,20 +154,20 @@ function App() {
     }
 
     const params = new URLSearchParams(window.location.search);
-    const bypass = params.get('dev-bypass');
+    const bypass = params.get("dev-bypass");
 
-    if (bypass === '1') {
+    if (bypass === "1") {
       enableDevBypassSession();
-      navigate('/dashboard', { replace: true });
+      navigate("/dashboard", { replace: true });
     }
 
-    if (bypass === '0') {
+    if (bypass === "0") {
       disableDevBypassSession();
-      localStorage.removeItem('token');
-      localStorage.removeItem('role_id');
-      localStorage.removeItem('admin');
-      localStorage.removeItem('name');
-      navigate('/', { replace: true });
+      localStorage.removeItem("token");
+      localStorage.removeItem("role_id");
+      localStorage.removeItem("admin");
+      localStorage.removeItem("name");
+      navigate("/", { replace: true });
     }
   }, [navigate]);
 
@@ -152,11 +175,11 @@ function App() {
   useEffect(() => {
     const currentPageTitle = getPanelPageTitle(location.pathname);
     document.title = formatPanelTitle(currentPageTitle, siteConfig.name);
-    
+
     // 异步检查是否有配置更新
     const checkTitleUpdate = async () => {
       try {
-        const cachedAppName = await getCachedConfig('app_name');
+        const cachedAppName = await getCachedConfig("app_name");
         if (cachedAppName) {
           const nextTitle = formatPanelTitle(currentPageTitle, cachedAppName);
           if (nextTitle !== document.title) {
@@ -164,7 +187,7 @@ function App() {
           }
         }
       } catch (error) {
-        console.warn('检查标题更新失败:', error);
+        console.warn("检查标题更新失败:", error);
       }
     };
 
@@ -177,82 +200,87 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={<LoginRoute />} />
-      <Route 
-        path="/change-password" 
+      <Route
+        path="/change-password"
         element={
           <ProtectedRoute skipLayout={true}>
             <ChangePasswordPage />
           </ProtectedRoute>
-        } 
+        }
       />
-      <Route 
-        path="/dashboard" 
+      <Route
+        path="/dashboard"
         element={
           <ProtectedRoute>
             <DashboardPage />
           </ProtectedRoute>
-        } 
+        }
       />
-      <Route 
-        path="/forward" 
+      <Route
+        path="/forward"
         element={
           <ProtectedRoute>
             <ForwardPage />
           </ProtectedRoute>
-        } 
+        }
       />
-      <Route 
-        path="/tunnel" 
+      <Route
+        path="/tunnel"
         element={
           <ProtectedRoute>
             <TunnelPage />
           </ProtectedRoute>
-        } 
+        }
       />
-      <Route 
-        path="/node" 
+      <Route
+        path="/node"
         element={
           <ProtectedRoute>
             <NodePage />
           </ProtectedRoute>
-        } 
+        }
       />
-      <Route 
-        path="/user" 
+      <Route
+        path="/user"
         element={
           <ProtectedRoute useSimpleLayout={true}>
             <UserPage />
           </ProtectedRoute>
-        } 
+        }
       />
-      <Route 
-        path="/profile" 
+      <Route
+        path="/profile"
         element={
           <ProtectedRoute>
             <ProfilePage />
           </ProtectedRoute>
-        } 
+        }
       />
-      <Route 
-        path="/limit" 
+      <Route
+        path="/limit"
         element={
           <ProtectedRoute useSimpleLayout={true}>
             <LimitPage />
           </ProtectedRoute>
-        } 
+        }
       />
-      <Route 
-        path="/config" 
+      <Route
+        path="/config"
         element={
           <ProtectedRoute useSimpleLayout={true}>
             <ConfigPage />
           </ProtectedRoute>
-        } 
+        }
       />
-      <Route 
-        path="/settings" 
-        element={<SettingsPage />}
+      <Route
+        path="/audit"
+        element={
+          <ProtectedRoute useSimpleLayout={true}>
+            <AuditPage />
+          </ProtectedRoute>
+        }
       />
+      <Route path="/settings" element={<SettingsPage />} />
     </Routes>
   );
 }

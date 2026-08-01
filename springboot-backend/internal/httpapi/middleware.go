@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suyunjing-su/fpanel/backend/internal/audit"
 	"github.com/suyunjing-su/fpanel/backend/internal/auth"
 	"github.com/suyunjing-su/fpanel/backend/internal/observability"
 )
@@ -48,8 +49,13 @@ func Failure(code int, message string) APIResponse {
 	return APIResponse{Code: code, Msg: message, TS: time.Now().UnixMilli(), Data: nil}
 }
 
-func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.Manager, allowedOrigins []string, handler http.Handler, identityStores ...IdentityStore) http.Handler {
-	handler = authenticatePublicRoutes(manager, handler, identityStores...)
+func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.Manager, allowedOrigins []string, handler http.Handler, identityStore IdentityStore, auditRecorders ...audit.Recorder) http.Handler {
+	var auditRecorder audit.Recorder
+	if len(auditRecorders) > 0 {
+		auditRecorder = auditRecorders[0]
+	}
+	handler = auditRequests(log, auditRecorder, handler)
+	handler = authenticatePublicRoutes(manager, handler, identityStore)
 	return requestID(log, metrics, cors(allowedOrigins, securityHeaders(recoverPanic(log, handler))))
 }
 
@@ -71,6 +77,67 @@ func authenticatePublicRoutes(manager *auth.Manager, next http.Handler, identity
 		}
 		authenticateWithStore(manager, next, identityStore).ServeHTTP(w, r)
 	})
+}
+
+func auditRequests(log *slog.Logger, recorder audit.Recorder, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if recorder == nil || !isAuditedMutation(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		var recovered any
+		defer func() {
+			if value := recover(); value != nil {
+				recovered = value
+				rw.status = http.StatusInternalServerError
+			}
+			var actorID *int64
+			if identity, ok := IdentityFromContext(r.Context()); ok {
+				value := identity.UserID
+				actorID = &value
+			}
+			remoteAddr := r.RemoteAddr
+			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+				remoteAddr = host
+			}
+			outcome := "success"
+			if rw.status >= http.StatusBadRequest {
+				outcome = "failure"
+			}
+			event := audit.Event{
+				ActorID:      actorID,
+				Action:       strings.ToLower(r.Method),
+				ResourceType: strings.TrimPrefix(r.URL.Path, "/api/v1/"),
+				Outcome:      outcome,
+				RequestID:    requestIDFromContext(r.Context()),
+				RemoteAddr:   remoteAddr,
+				Detail:       fmt.Sprintf("status=%d", rw.status),
+				CreatedAt:    time.Now().UnixMilli(),
+			}
+			if err := recorder.Record(context.WithoutCancel(r.Context()), event); err != nil {
+				log.Warn("failed to record audit event", "error", err, "path", r.URL.Path)
+			}
+			if recovered != nil {
+				panic(recovered)
+			}
+		}()
+		next.ServeHTTP(rw, r)
+	})
+}
+
+func isAuditedMutation(r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodOptions || !strings.HasPrefix(r.URL.Path, "/api/v1/") || strings.HasPrefix(r.URL.Path, "/api/v1/captcha/") || strings.HasPrefix(r.URL.Path, "/api/v1/open_api/") {
+		return false
+	}
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	action := path[strings.LastIndex(path, "/")+1:]
+	switch action {
+	case "create", "update", "delete", "update-single", "reset", "updatePassword", "batch-delete", "rotate-secret", "assign", "remove", "force-delete", "pause", "resume", "update-order":
+		return true
+	default:
+		return false
+	}
 }
 
 func requestID(log *slog.Logger, metrics *observability.Metrics, next http.Handler) http.Handler {
@@ -147,15 +214,23 @@ func randomRequestID() string {
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (w *statusWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
 	w.status = status
+	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(status)
 }
 
 func (w *statusWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
 	return w.ResponseWriter.Write(body)
 }
 

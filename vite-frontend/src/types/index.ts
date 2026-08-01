@@ -78,6 +78,29 @@ export interface SpeedLimit {
   downloadSpeed: number;
 }
 
+export interface AuditEvent {
+  id: number;
+  actorId: number | null;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  outcome: "success" | "failure";
+  requestId: string;
+  remoteAddr: string;
+  detail: string;
+  createdAt: number;
+}
+
+export interface AuditPage {
+  items: AuditEvent[];
+  total: number;
+}
+
+export interface AuditListRequest {
+  page: number;
+  pageSize: number;
+}
+
 export interface Pagination {
   current: number;
   size: number;
