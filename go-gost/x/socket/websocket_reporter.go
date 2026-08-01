@@ -1732,9 +1732,15 @@ func probeTransport(transport, target string, timeout time.Duration) error {
 			return err
 		}
 		defer conn.Close()
-		_ = conn.SetDeadline(time.Now().Add(timeout))
+		if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
 		if _, err = conn.Write([]byte("flux-udp-ping")); err != nil {
 			return err
+		}
+		buffer := make([]byte, 64*1024)
+		if _, err = conn.Read(buffer); err != nil {
+			return fmt.Errorf("UDP target did not respond: %w", err)
 		}
 		return nil
 	case "quic":

@@ -294,6 +294,33 @@ func TestPortProbeRejectsOversizedBatch(t *testing.T) {
 	}
 }
 
+func TestTransportPingUDPRequiresResponse(t *testing.T) {
+	server, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	go func() {
+		buffer := make([]byte, 64)
+		n, address, err := server.ReadFromUDP(buffer)
+		if err == nil {
+			_, _ = server.WriteToUDP(buffer[:n], address)
+		}
+	}()
+	if err := probeTransport("udp", server.LocalAddr().String(), 200*time.Millisecond); err != nil {
+		t.Fatalf("UDP echo probe failed: %v", err)
+	}
+
+	silent, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	if err := probeTransport("udp", silent.LocalAddr().String(), 30*time.Millisecond); err == nil {
+		t.Fatal("UDP probe accepted a target without a response")
+	}
+}
+
 func TestTcpPingHostUsesOverallTimeoutAndNextEndpointGetsFreshContext(t *testing.T) {
 	lookup := func(context.Context, string) ([]string, error) {
 		return nil, errors.New("lookup should not be called for IP addresses")
