@@ -12,7 +12,6 @@ import {
   ModalFooter,
 } from "@heroui/modal";
 import { Chip } from "@heroui/chip";
-import { Switch } from "@heroui/switch";
 import { Spinner } from "@heroui/spinner";
 import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
@@ -104,7 +103,6 @@ export default function NodePage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
   const [protocolDisabled, setProtocolDisabled] = useState(false);
-  const [protocolDisabledReason, setProtocolDisabledReason] = useState("");
   const [form, setForm] = useState<NodeForm>({
     id: null,
     name: "",
@@ -399,7 +397,6 @@ export default function NodePage() {
     setDialogVisible(true);
     resetForm();
     setProtocolDisabled(true);
-    setProtocolDisabledReason("节点未在线，等待节点上线后再设置");
   };
 
   // 编辑节点
@@ -422,9 +419,6 @@ export default function NodePage() {
     });
     const offline = node.connectionStatus !== "online";
     setProtocolDisabled(offline);
-    setProtocolDisabledReason(
-      offline ? "节点未在线，等待节点上线后再设置" : "",
-    );
     setDialogVisible(true);
   };
 
@@ -506,10 +500,16 @@ export default function NodePage() {
       const apiCall = isEdit ? updateNode : createNode;
       const trimmedBandwidth = form.maxBandwidthMbps.trim();
       const data = {
-        ...form,
+        id: isEdit ? form.id : null,
+        name: form.name,
+        serverIp: form.serverIp,
+        port: form.port,
         maxBandwidthMbps: trimmedBandwidth
           ? parseInt(trimmedBandwidth, 10)
           : null,
+        tcpListenAddr: form.tcpListenAddr,
+        udpListenAddr: form.udpListenAddr,
+        interfaceName: form.interfaceName,
       };
 
       const res = await apiCall(data);
@@ -1163,157 +1163,43 @@ export default function NodePage() {
                         }
                       />
                     </div>
-                    {/* 屏蔽协议 */}
+                    {/* Node-reported protocol capabilities */}
                     <div>
                       <div className="text-sm font-medium text-default-700 mb-2">
-                        屏蔽协议
+                        节点协议能力
                       </div>
                       <div className="text-xs text-default-500 mb-2">
-                        开启开关以屏蔽对应协议
+                        以下状态由在线节点上报，不能在面板中直接修改；如需变更，请更新节点本地配置并重新连接。
                       </div>
-                      {protocolDisabled && (
-                        <Alert
-                          color="warning"
-                          variant="flat"
-                          description={
-                            protocolDisabledReason || "等待节点上线后再设置"
-                          }
-                          className="mb-2"
-                        />
-                      )}
-                      <div
-                        className={`grid grid-cols-1 sm:grid-cols-3 gap-3 bg-default-50 dark:bg-default-100 p-3 rounded-md border border-default-200 dark:border-default-100/30 ${protocolDisabled ? "opacity-70" : ""}`}
-                      >
-                        {/* HTTP tile */}
-                        <div className="px-3 py-3 rounded-lg bg-white dark:bg-default-50 border border-default-200 dark:border-default-100/30 hover:border-primary-200 transition-colors">
-                          <div className="flex items-center gap-2 mb-2">
-                            <svg
-                              className="w-4 h-4 text-default-500"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <rect x="2" y="4" width="20" height="16" rx="2" />
-                              <path d="M2 10h20" />
-                            </svg>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-default-50 dark:bg-default-100 p-3 rounded-md border border-default-200 dark:border-default-100/30">
+                        {[
+                          ["HTTP", form.http],
+                          ["TLS", form.tls],
+                          ["SOCKS", form.socks],
+                        ].map(([protocol, enabled]) => (
+                          <div
+                            key={protocol}
+                            className="px-3 py-3 rounded-lg bg-white dark:bg-default-50 border border-default-200 dark:border-default-100/30"
+                          >
                             <div className="text-sm font-medium text-default-700">
-                              HTTP
+                              {protocol}
+                            </div>
+                            <div className="mt-1 text-xs text-default-500">
+                              {protocolDisabled
+                                ? "等待节点上报"
+                                : enabled === 1
+                                  ? "节点已开启"
+                                  : "节点已关闭"}
                             </div>
                           </div>
-                          <div className="flex items-center justify-between">
-                            <div className="text-xs text-default-500">
-                              禁用/启用
-                            </div>
-                            <Switch
-                              size="sm"
-                              isSelected={form.http === 1}
-                              isDisabled={protocolDisabled}
-                              onValueChange={(v) =>
-                                setForm((prev) => ({
-                                  ...prev,
-                                  http: v ? 1 : 0,
-                                }))
-                              }
-                            />
-                          </div>
-                          <div className="mt-1 text-xs text-default-400">
-                            {form.http === 1 ? "已开启" : "已关闭"}
-                          </div>
-                        </div>
-
-                        {/* TLS tile */}
-                        <div className="px-3 py-3 rounded-lg bg-white dark:bg-default-50 border border-default-200 dark:border-default-100/30 hover:border-primary-200 transition-colors">
-                          <div className="flex items-center gap-2 mb-2">
-                            <svg
-                              className="w-4 h-4 text-default-500"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <path d="M6 10V7a6 6 0 1 1 12 0v3" />
-                              <rect
-                                x="4"
-                                y="10"
-                                width="16"
-                                height="10"
-                                rx="2"
-                              />
-                            </svg>
-                            <div className="text-sm font-medium text-default-700">
-                              TLS
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <div className="text-xs text-default-500">
-                              禁用/启用
-                            </div>
-                            <Switch
-                              size="sm"
-                              isSelected={form.tls === 1}
-                              isDisabled={protocolDisabled}
-                              onValueChange={(v) =>
-                                setForm((prev) => ({ ...prev, tls: v ? 1 : 0 }))
-                              }
-                            />
-                          </div>
-                          <div className="mt-1 text-xs text-default-400">
-                            {form.tls === 1 ? "已开启" : "已关闭"}
-                          </div>
-                        </div>
-
-                        {/* SOCKS tile */}
-                        <div className="px-3 py-3 rounded-lg bg-white dark:bg-default-50 border border-default-200 dark:border-default-100/30 hover:border-primary-200 transition-colors">
-                          <div className="flex items-center gap-2 mb-2">
-                            <svg
-                              className="w-4 h-4 text-default-500"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                              <polyline points="7 10 12 15 17 10" />
-                              <line x1="12" y1="15" x2="12" y2="3" />
-                            </svg>
-                            <div className="text-sm font-medium text-default-700">
-                              SOCKS
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <div className="text-xs text-default-500">
-                              禁用/启用
-                            </div>
-                            <Switch
-                              size="sm"
-                              isSelected={form.socks === 1}
-                              isDisabled={protocolDisabled}
-                              onValueChange={(v) =>
-                                setForm((prev) => ({
-                                  ...prev,
-                                  socks: v ? 1 : 0,
-                                }))
-                              }
-                            />
-                          </div>
-                          <div className="mt-1 text-xs text-default-400">
-                            {form.socks === 1 ? "已开启" : "已关闭"}
-                          </div>
-                        </div>
+                        ))}
                       </div>
                     </div>
 
                     <Alert
-                      color="danger"
+                      color="primary"
                       variant="flat"
-                      description="请不要在出口节点执行屏蔽协议，否则可能影响转发；屏蔽协议仅需在入口节点执行。"
+                      description="协议能力来自节点本地 GOST 配置。面板只负责展示在线状态，不会将心跳快照误写回节点配置。"
                     />
                   </div>
                 </AccordionItem>

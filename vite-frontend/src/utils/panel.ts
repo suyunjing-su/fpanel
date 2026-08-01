@@ -1,103 +1,175 @@
+const PANEL_ADDRESSES_KEY = "flux-panel-addresses";
 
-
-
-// 获取面板地址列表
-export async function getPanelAddresses(callback: string = "setPanelAddresses"){
-    if ((window as any).JsInterface && (window as any).JsInterface.getPanelAddresses) {
-        (window as any).JsInterface.getPanelAddresses(callback);
-    } else if ((window as any).webkit && (window as any).webkit.messageHandlers) {
-        (window as any).webkit.messageHandlers.getPanelAddresses.postMessage(callback);
-    }
-
+export interface PanelAddress {
+  name: string;
+  address: string;
+  inx: boolean;
 }
 
-// 保存面板地址
-export async function savePanelAddress(name: string, address: string){
-    if ((window as any).JsInterface) {
-        (window as any).JsInterface.savePanelAddress(name, address);
-    } else if ((window as any).webkit && (window as any).webkit.messageHandlers) {
-        (window as any).webkit.messageHandlers.savePanelAddress.postMessage({ name, address });
-    }
-}
-
-// 设置当前面板地址
-export async function setCurrentPanelAddress(name: string) {
-    if ((window as any).JsInterface) {
-        (window as any).JsInterface.setCurrentPanelAddress(name);
-    } else if ((window as any).webkit && (window as any).webkit.messageHandlers) {
-        (window as any).webkit.messageHandlers.setCurrentPanelAddress.postMessage({ name });
-    }
-}
-
-// 删除面板地址
-export async function deletePanelAddress(name: string){
-    if ((window as any).JsInterface) {
-        (window as any).JsInterface.deletePanelAddress(name);
-    } else if ((window as any).webkit && (window as any).webkit.messageHandlers) {
-        (window as any).webkit.messageHandlers.deletePanelAddress.postMessage({ name });
-    }
-}
-
-export function isWebViewFunc(){
-  if((window as any).JsInterface !== undefined && (window as any).JsInterface.getPanelAddresses !== undefined) {
-    return true;
-  }else if((window as any).webkit && (window as any).webkit.messageHandlers && (window as any).webkit.messageHandlers.getPanelAddresses !== undefined) {
-    return true;
-  }else {
-    return false;
+function readPanelAddresses(): PanelAddress[] {
+  try {
+    const value = window.localStorage.getItem(PANEL_ADDRESSES_KEY);
+    if (!value) return [];
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is PanelAddress =>
+        typeof item === "object" &&
+        item !== null &&
+        typeof (item as PanelAddress).name === "string" &&
+        typeof (item as PanelAddress).address === "string" &&
+        typeof (item as PanelAddress).inx === "boolean",
+    );
+  } catch {
+    return [];
   }
 }
 
-// 验证面板地址格式
+function writePanelAddresses(addresses: PanelAddress[]): void {
+  window.localStorage.setItem(PANEL_ADDRESSES_KEY, JSON.stringify(addresses));
+}
+
+export function getBrowserPanelAddresses(): PanelAddress[] {
+  return readPanelAddresses();
+}
+
+export function getCurrentBrowserPanelAddress(): string | null {
+  return readPanelAddresses().find((item) => item.inx)?.address || null;
+}
+
+export async function getPanelAddresses(
+  callback = "setPanelAddresses",
+): Promise<void> {
+  const bridge = (window as Window & { JsInterface?: Record<string, unknown> })
+    .JsInterface;
+  if (bridge && typeof bridge.getPanelAddresses === "function") {
+    bridge.getPanelAddresses(callback);
+    return;
+  }
+  const webkit = (
+    window as Window & {
+      webkit?: {
+        messageHandlers?: Record<
+          string,
+          { postMessage: (value: unknown) => void }
+        >;
+      };
+    }
+  ).webkit;
+  if (webkit?.messageHandlers?.getPanelAddresses) {
+    webkit.messageHandlers.getPanelAddresses.postMessage(callback);
+    return;
+  }
+  const setter = (window as unknown as Record<string, unknown>)[callback];
+  if (typeof setter === "function") {
+    (setter as (addresses: PanelAddress[]) => void)(readPanelAddresses());
+  }
+}
+
+export async function savePanelAddress(
+  name: string,
+  address: string,
+): Promise<void> {
+  const bridge = (window as Window & { JsInterface?: Record<string, unknown> })
+    .JsInterface;
+  if (bridge && typeof bridge.savePanelAddress === "function") {
+    bridge.savePanelAddress(name, address);
+    return;
+  }
+  const webkit = (
+    window as Window & {
+      webkit?: {
+        messageHandlers?: Record<
+          string,
+          { postMessage: (value: unknown) => void }
+        >;
+      };
+    }
+  ).webkit;
+  if (webkit?.messageHandlers?.savePanelAddress) {
+    webkit.messageHandlers.savePanelAddress.postMessage({ name, address });
+    return;
+  }
+  const addresses = readPanelAddresses();
+  const existing = addresses.find((item) => item.name === name);
+  const next = addresses.filter((item) => item.name !== name);
+  next.push({ name, address, inx: existing?.inx ?? next.length === 0 });
+  writePanelAddresses(next);
+}
+
+export async function setCurrentPanelAddress(name: string): Promise<void> {
+  const bridge = (window as Window & { JsInterface?: Record<string, unknown> })
+    .JsInterface;
+  if (bridge && typeof bridge.setCurrentPanelAddress === "function") {
+    bridge.setCurrentPanelAddress(name);
+    return;
+  }
+  const webkit = (
+    window as Window & {
+      webkit?: {
+        messageHandlers?: Record<
+          string,
+          { postMessage: (value: unknown) => void }
+        >;
+      };
+    }
+  ).webkit;
+  if (webkit?.messageHandlers?.setCurrentPanelAddress) {
+    webkit.messageHandlers.setCurrentPanelAddress.postMessage({ name });
+    return;
+  }
+  writePanelAddresses(
+    readPanelAddresses().map((item) => ({ ...item, inx: item.name === name })),
+  );
+}
+
+export async function deletePanelAddress(name: string): Promise<void> {
+  const bridge = (window as Window & { JsInterface?: Record<string, unknown> })
+    .JsInterface;
+  if (bridge && typeof bridge.deletePanelAddress === "function") {
+    bridge.deletePanelAddress(name);
+    return;
+  }
+  const webkit = (
+    window as Window & {
+      webkit?: {
+        messageHandlers?: Record<
+          string,
+          { postMessage: (value: unknown) => void }
+        >;
+      };
+    }
+  ).webkit;
+  if (webkit?.messageHandlers?.deletePanelAddress) {
+    webkit.messageHandlers.deletePanelAddress.postMessage({ name });
+    return;
+  }
+  const remaining = readPanelAddresses().filter((item) => item.name !== name);
+  if (remaining.length > 0 && !remaining.some((item) => item.inx)) {
+    remaining[0].inx = true;
+  }
+  writePanelAddresses(remaining);
+}
+
+export function isWebViewFunc(): boolean {
+  const windowWithBridge = window as Window & {
+    JsInterface?: { getPanelAddresses?: unknown };
+    webkit?: { messageHandlers?: { getPanelAddresses?: unknown } };
+  };
+  return (
+    typeof windowWithBridge.JsInterface?.getPanelAddresses === "function" ||
+    typeof windowWithBridge.webkit?.messageHandlers?.getPanelAddresses ===
+      "object"
+  );
+}
+
 export function validatePanelAddress(address: string): boolean {
   try {
-    // 基本格式检查：必须以 http:// 或 https:// 开头
-    if (!address.startsWith('http://') && !address.startsWith('https://')) {
-      return false;
-    }
-
-    // 使用URL构造函数验证完整URL格式
     const url = new URL(address);
-    
-    // 检查主机名不能为空
-    if (!url.hostname || url.hostname.trim() === '') {
-      return false;
-    }
-    
-    // 检查主机名
-    const hostname = url.hostname;
-    
-    // 支持 localhost
-    if (hostname === 'localhost') {
-      return true;
-    }
-    
-    // 支持 IPv4 地址
-    const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
-    if (ipv4Pattern.test(hostname)) {
-      const parts = hostname.split('.');
-      return parts.every(part => {
-        const num = parseInt(part);
-        return num >= 0 && num <= 255;
-      });
-    }
-    
-    // 支持 IPv6 地址
-    const ipv6Pattern = /^\[([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\]$|^\[([0-9a-fA-F]{1,4}:)*:([0-9a-fA-F]{1,4}:)*[0-9a-fA-F]{1,4}\]$/;
-    if (ipv6Pattern.test(hostname)) {
-      return true;
-    }
-    
-    // 支持域名
-    const domainPattern = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
-    if (domainPattern.test(hostname)) {
-      return true;
-    }
-    
-    return false;
-  } catch (error) {
-    // URL构造函数失败说明格式不正确
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") && !!url.hostname
+    );
+  } catch {
     return false;
   }
 }
-
