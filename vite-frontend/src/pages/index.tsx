@@ -6,7 +6,6 @@ import { useNavigate } from "react-router-dom";
 import toast from 'react-hot-toast';
 import ReCAPTCHA from 'react-google-recaptcha';
 import HCaptcha from '@hcaptcha/react-hcaptcha';
-import { isWebViewFunc } from '@/utils/panel';
 import { getCachedConfig, getPanelBrandLogo, siteConfig } from '@/config/site';
 import { login, LoginData, checkCaptcha, getCaptchaRuntime, CaptchaRuntimeConfig } from "@/api";
 
@@ -53,7 +52,6 @@ export default function IndexPage() {
   const turnstileContainerRef = useRef<HTMLDivElement>(null);
   const turnstileWidgetRef = useRef<string | null>(null);
   const geetestContainerId = 'geetest-captcha-container';
-  const [isWebView, setIsWebView] = useState(false);
   const [appName, setAppName] = useState(siteConfig.name || 'flux');
   const [loginLogo, setLoginLogo] = useState(siteConfig.app_logo || '');
   const [loginDescription, setLoginDescription] = useState(siteConfig.login_page_description || '');
@@ -71,10 +69,6 @@ export default function IndexPage() {
         turnstileWidgetRef.current = null;
       }
     };
-  }, []);
-  // 检测是否在WebView中运行
-  useEffect(() => {
-    setIsWebView(isWebViewFunc());
   }, []);
 
   useEffect(() => {
@@ -549,7 +543,7 @@ export default function IndexPage() {
           </a>
         </p>
         <p className="text-xs panel-muted mt-1">
-          v{isWebView ? siteConfig.app_version : siteConfig.version}
+          v{siteConfig.version}
         </p>
       </footer>
 

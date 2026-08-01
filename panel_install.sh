@@ -275,7 +275,6 @@ update_panel() {
 
   # 先发送 SIGTERM 信号，让应用优雅关闭
   docker stop -t 30 flux-control-plane 2>/dev/null || true
-  docker stop -t 30 springboot-backend 2>/dev/null || true
   docker stop -t 10 vite-frontend 2>/dev/null || true
   
   # 等待 WAL 文件同步

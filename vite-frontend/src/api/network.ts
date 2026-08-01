@@ -1,42 +1,14 @@
 import axios, { AxiosResponse } from "axios";
-import {
-  getCurrentBrowserPanelAddress,
-  getPanelAddresses,
-  isWebViewFunc,
-} from "@/utils/panel";
+import { getCurrentPanelAddress } from "@/utils/panel";
 import { isDevBypassEnabled } from "@/utils/auth";
 
-interface PanelAddress {
-  name: string;
-  address: string;
-  inx: boolean;
-}
-
-const setPanelAddressesFunc = (newAddress: PanelAddress[]) => {
-  newAddress.forEach((item) => {
-    if (item.inx) {
-      baseURL = `${item.address}/api/v1/`;
-      axios.defaults.baseURL = baseURL;
-    }
-  });
-};
-
-function getWebViewPanelAddress() {
-  (window as any).setAddresses = setPanelAddressesFunc;
-  getPanelAddresses("setAddresses");
-}
-
-let baseURL: string = "";
+let baseURL = "";
 
 export const reinitializeBaseURL = () => {
-  if (isWebViewFunc()) {
-    getWebViewPanelAddress();
-  } else {
-    const configuredAddress = getCurrentBrowserPanelAddress();
-    const address = configuredAddress || import.meta.env.VITE_API_BASE;
-    baseURL = address ? `${address.replace(/\/$/, "")}/api/v1/` : "/api/v1/";
-    axios.defaults.baseURL = baseURL;
-  }
+  const configuredAddress = getCurrentPanelAddress();
+  const address = configuredAddress || import.meta.env.VITE_API_BASE;
+  baseURL = address ? `${address.replace(/\/$/, "")}/api/v1/` : "/api/v1/";
+  axios.defaults.baseURL = baseURL;
 };
 
 reinitializeBaseURL();

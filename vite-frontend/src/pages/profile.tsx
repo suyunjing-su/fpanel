@@ -12,7 +12,6 @@ import {
 import { Input } from "@heroui/input";
 import { toast } from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
-import { isWebViewFunc } from "@/utils/panel";
 import { siteConfig } from "@/config/site";
 import { getPanelLabel } from "@/config/panel-navigation";
 import { updatePassword } from "@/api";
@@ -218,10 +217,7 @@ export default function ProfilePage() {
               <div className="rounded-xl border border-slate-200/80 dark:border-slate-700/70 bg-white/70 dark:bg-slate-900/60 px-3 py-2">
                 <p className="text-xs panel-muted">客户端版本</p>
                 <p className="text-sm font-semibold mt-1">
-                  v
-                  {isWebViewFunc()
-                    ? siteConfig.app_version
-                    : siteConfig.version}
+                  v{siteConfig.version}
                 </p>
               </div>
             </div>
@@ -364,7 +360,7 @@ export default function ProfilePage() {
             </a>
           </p>
           <p className="text-xs panel-muted mt-1">
-            v{isWebViewFunc() ? siteConfig.app_version : siteConfig.version}
+            v{siteConfig.version}
           </p>
         </div>
       </div>

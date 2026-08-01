@@ -5,36 +5,23 @@ import { Card, CardBody } from "@heroui/card";
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { reinitializeBaseURL } from '@/api/network';
-import { 
-  getPanelAddresses, 
-  savePanelAddress, 
-  setCurrentPanelAddress, 
-  deletePanelAddress, 
+import {
+  deletePanelAddress,
+  getPanelAddresses,
+  type PanelAddress,
+  savePanelAddress,
+  setCurrentPanelAddress,
   validatePanelAddress,
-} from '@/utils/panel';
-
-interface PanelAddress {
-  name: string;
-  address: string;   
-  inx: boolean;
-}
-
+} from "@/utils/panel";
 
 export const SettingsPage = () => {
   const navigate = useNavigate();
   const [panelAddresses, setPanelAddresses] = useState<PanelAddress[]>([]);
-  const [newName, setNewName] = useState('');
-  const [newAddress, setNewAddress] = useState('');
+  const [newName, setNewName] = useState("");
+  const [newAddress, setNewAddress] = useState("");
 
-
-  const setPanelAddressesFunc = (newAddress: PanelAddress[]) => {
-    setPanelAddresses(newAddress); 
-  }
-
-  // 加载面板地址列表
-  const loadPanelAddresses = async () => {
-    (window as any).setPanelAddresses = setPanelAddressesFunc
-    getPanelAddresses();
+  const loadPanelAddresses = () => {
+    setPanelAddresses(getPanelAddresses());
   };
 
   // 添加新面板地址
@@ -49,29 +36,26 @@ export const SettingsPage = () => {
       toast.error('地址格式不正确，请检查：\n• 必须是完整的URL格式\n• 必须以 http:// 或 https:// 开头\n• 支持域名、IPv4、IPv6 地址\n• 端口号范围：1-65535\n• 示例：http://192.168.1.100:3000');
       return;
     }
-    (window as any).setPanelAddresses = setPanelAddressesFunc
     savePanelAddress(newName.trim(), newAddress.trim());
-    setNewName('');
-    setNewAddress('');
+    setPanelAddresses(getPanelAddresses());
+    setNewName("");
+    setNewAddress("");
     toast.success('添加成功');
   };
 
-  // 设置当前面板地址
-  const setCurrentPanel = async (name: string) => {
-    (window as any).setPanelAddresses = setPanelAddressesFunc
+  const setCurrentPanel = (name: string) => {
     setCurrentPanelAddress(name);
+    setPanelAddresses(getPanelAddresses());
     reinitializeBaseURL();
   };
 
-  // 删除面板地址
-  const handleDeletePanelAddress = async (name: string) => {
-    (window as any).setPanelAddresses = setPanelAddressesFunc
+  const handleDeletePanelAddress = (name: string) => {
     deletePanelAddress(name);
+    setPanelAddresses(getPanelAddresses());
     reinitializeBaseURL();
     toast.success('删除成功');
   };
 
-  // 页面加载时获取数据
   useEffect(() => {
     loadPanelAddresses();
   }, []);
