@@ -120,8 +120,9 @@ func TestBuildHybridTunnelWithUserPolicies(t *testing.T) {
 		if service == nil {
 			t.Fatalf("hybrid exit service %s is missing: %#v", serviceName, exitDocument.Services)
 		}
-		if service["limiter"] != "relay_1_2" {
-			t.Fatalf("hybrid exit service %s has no node limiter: %#v", serviceName, service)
+		limiters, ok := service["limiters"].([]string)
+		if !ok || len(limiters) != 1 || limiters[0] != "relay_1_2" {
+			t.Fatalf("hybrid exit service %s has no relay limiter: %#v", serviceName, service)
 		}
 	}
 	relayLimiter := namedItem(exitDocument.Limiters, "relay_1_2")
@@ -131,6 +132,81 @@ func TestBuildHybridTunnelWithUserPolicies(t *testing.T) {
 	relayLimits, _ := relayLimiter["limits"].([]string)
 	if len(relayLimits) != 1 || relayLimits[0] != "$ 3MB 3MB" {
 		t.Fatalf("unexpected relay limiter: %#v", relayLimiter)
+	}
+}
+
+func TestBuildAppliesNodeBandwidthLimiterToAllServices(t *testing.T) {
+	db := openTestDatabase(t)
+	ctx := context.Background()
+	execFixture(t, db, `INSERT INTO users(id,username,password_hash,role,expires_at,status,created_at,updated_at) VALUES(1,'user','hash','user',0,1,1,1)`)
+	execFixture(t, db, `INSERT INTO nodes(id,name,ip,server_ip,port_start,port_end,secret,status,max_bandwidth_mbps,created_at,updated_at) VALUES
+		(1,'entry','10.0.0.1','203.0.113.1',10000,20000,'entry-secret',1,80,1,1),
+		(2,'exit','10.0.0.2','203.0.113.2',10000,20000,'exit-secret',1,0,1,1)`)
+	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,created_at,updated_at) VALUES(1,'mesh',2,1,1,1,1,1)`)
+	execFixture(t, db, `INSERT INTO tunnel_nodes(id,tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol) VALUES
+		(1,1,1,1,7000,'fifo',0,'tcp'),
+		(2,1,3,2,8000,'fifo',0,'tcp')`)
+	execFixture(t, db, `INSERT INTO user_tunnels(id,user_id,tunnel_id,status,created_at,updated_at) VALUES(1,1,1,1,1,1)`)
+	execFixture(t, db, `INSERT INTO user_tunnel_entry_policies(id,user_tunnel_id,tunnel_id,entry_node_id,speed_limit_mbps,status,created_at,updated_at) VALUES(1,1,1,1,16,1,1,1)`)
+	execFixture(t, db, `INSERT INTO forwards(id,user_id,name,tunnel_id,remote_addr,strategy,status,sort_index,created_at,updated_at) VALUES(1,1,'forward',1,'192.0.2.10:443','fifo',1,0,1,1)`)
+	execFixture(t, db, `INSERT INTO forward_ports(forward_id,node_id,port) VALUES(1,1,10000)`)
+
+	document, err := NewRepository(db).Build(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeLimiter := namedItem(document.Limiters, "node_1")
+	if nodeLimiter == nil {
+		t.Fatalf("missing node limiter: %#v", document.Limiters)
+	}
+	if limits, _ := nodeLimiter["limits"].([]string); len(limits) != 1 || limits[0] != "$ 10MB 10MB" {
+		t.Fatalf("unexpected node limiter: %#v", nodeLimiter)
+	}
+	if namedItem(document.Limiters, "user_entry_1_1_1") == nil {
+		t.Fatalf("missing existing policy limiter: %#v", document.Limiters)
+	}
+	for _, serviceName := range []string{"1_1_1_tcp", "1_1_1_udp"} {
+		service := namedItem(document.Services, serviceName)
+		if service == nil {
+			t.Fatalf("missing service %s", serviceName)
+		}
+		limiters, ok := service["limiters"].([]string)
+		if !ok || len(limiters) != 2 || limiters[0] != "node_1" || limiters[1] != "user_entry_1_1_1" {
+			t.Fatalf("service %s lost a limiter: %#v", serviceName, service)
+		}
+	}
+}
+
+func TestNodeBandwidthUpdateQueuesRuntimeRefresh(t *testing.T) {
+	db := openTestDatabase(t)
+	execFixture(t, db, `INSERT INTO nodes(id,name,ip,server_ip,port_start,port_end,secret,status,created_at,updated_at) VALUES
+		(1,'entry','10.0.0.1','203.0.113.1',10000,20000,'entry-secret',1,1,1),
+		(2,'exit','10.0.0.2','203.0.113.2',10000,20000,'exit-secret',1,1,1)`)
+	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,created_at,updated_at) VALUES(1,'mesh',2,1,1,1,1,1)`)
+	execFixture(t, db, `INSERT INTO tunnel_nodes(id,tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol) VALUES
+		(1,1,1,1,7000,'fifo',0,'tcp'),
+		(2,1,3,2,8000,'fifo',0,'tcp')`)
+	execFixture(t, db, `DELETE FROM node_config_refreshes`)
+	execFixture(t, db, `UPDATE nodes SET max_bandwidth_mbps=80 WHERE id=1`)
+
+	rows, err := db.QueryContext(context.Background(), `SELECT node_id FROM node_config_refreshes ORDER BY node_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != 1 || ids[1] != 2 {
+		t.Fatalf("bandwidth update did not refresh the full topology: %v", ids)
 	}
 }
 

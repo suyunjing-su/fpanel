@@ -190,7 +190,7 @@ func ParseService(cfg *config.ServiceConfig) (service.Service, error) {
 		listener.AdmissionOption(xadmission.AdmissionGroup(admissions...)),
 		listener.TrafficLimiterOption(
 			cache_limiter.NewCachedTrafficLimiter(
-				registry.TrafficLimiterRegistry().Get(cfg.Limiter),
+				composeTrafficLimiters(cfg.Limiter, cfg.Limiters),
 				cache_limiter.RefreshIntervalOption(limiterRefreshInterval),
 				cache_limiter.CleanupIntervalOption(limiterCleanupInterval),
 				cache_limiter.ScopeOption(limiterScope),

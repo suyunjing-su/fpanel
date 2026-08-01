@@ -630,6 +630,7 @@ func run() error {
 			httpapi.WriteJSON(w, status, httpapi.Failure(status, err.Error()))
 			return
 		}
+		refreshQueue.Wake()
 		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
 	})
 	mux.HandleFunc("POST /api/v1/node/delete", func(w http.ResponseWriter, r *http.Request) {

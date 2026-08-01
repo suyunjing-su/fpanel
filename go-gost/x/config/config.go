@@ -463,6 +463,7 @@ type ServiceConfig struct {
 	Resolver   string            `yaml:",omitempty" json:"resolver,omitempty"`
 	Hosts      string            `yaml:",omitempty" json:"hosts,omitempty"`
 	Limiter    string            `yaml:",omitempty" json:"limiter,omitempty"`
+	Limiters   []string          `yaml:"limiters,omitempty" json:"limiters,omitempty"`
 	CLimiter   string            `yaml:"climiter,omitempty" json:"climiter,omitempty"`
 	RLimiter   string            `yaml:"rlimiter,omitempty" json:"rlimiter,omitempty"`
 	Logger     string            `yaml:",omitempty" json:"logger,omitempty"`

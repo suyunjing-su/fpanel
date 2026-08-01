@@ -29,12 +29,13 @@ type Repository struct {
 }
 
 type nodeRecord struct {
-	ID            int64
-	ServerIP      string
-	Status        int
-	InterfaceName string
-	TCPListenAddr string
-	UDPListenAddr string
+	ID               int64
+	ServerIP         string
+	Status           int
+	InterfaceName    string
+	TCPListenAddr    string
+	UDPListenAddr    string
+	MaxBandwidthMbps int
 }
 
 type tunnelRecord struct {
@@ -203,6 +204,11 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 	limiterSpeeds := make(map[string]int)
 	connectionLimiters := make(map[string][]string)
 	admissions := make(map[string]map[string]any)
+	nodeLimiterName := ""
+	if current.MaxBandwidthMbps > 0 {
+		nodeLimiterName = fmt.Sprintf("node_%d", current.ID)
+		limiterSpeeds[nodeLimiterName] = current.MaxBandwidthMbps
+	}
 
 	for tunnelID, topology := range nodesByTunnel {
 		tunnel := tunnels[tunnelID]
@@ -220,7 +226,7 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 				limiterSpeeds[limiterName] = currentNode.SpeedLimitMbps
 			}
 			for _, trafficProtocol := range trafficProtocols([]*tunnelNode{currentNode}) {
-				service := buildRelayService(current, currentNode, tunnel, topology, trafficProtocol, limiterName)
+				service := buildRelayService(current, currentNode, tunnel, topology, trafficProtocol, limiterNames(nodeLimiterName, limiterName))
 				addNamed(&document.Services, serviceNames, service)
 			}
 		}
@@ -312,17 +318,17 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 
 		baseName := fmt.Sprintf("%d_%d_%d", forward.ID, forward.UserID, forward.UserTunnelID)
 		for _, protocol := range []string{"tcp", "udp"} {
-			service := buildForwardService(current, forward, tunnel, baseName, protocol, limiterName, connectionLimiterName, admissionName, chainNamesByTraffic[protocol], endpointPlan)
+			service := buildForwardService(current, forward, tunnel, baseName, protocol, limiterNames(nodeLimiterName, limiterName), connectionLimiterName, admissionName, chainNamesByTraffic[protocol], endpointPlan)
 			addNamed(&document.Services, serviceNames, service)
 		}
 	}
 
-	limiterNames := make([]string, 0, len(limiterSpeeds))
+	limiterNamesSorted := make([]string, 0, len(limiterSpeeds))
 	for name := range limiterSpeeds {
-		limiterNames = append(limiterNames, name)
+		limiterNamesSorted = append(limiterNamesSorted, name)
 	}
-	sort.Strings(limiterNames)
-	for _, name := range limiterNames {
+	sort.Strings(limiterNamesSorted)
+	for _, name := range limiterNamesSorted {
 		speed := formatMegabytes(limiterSpeeds[name])
 		document.Limiters = append(document.Limiters, map[string]any{
 			"name":   name,
@@ -347,8 +353,8 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 
 func (r *Repository) loadNode(ctx context.Context, nodeID int64) (nodeRecord, error) {
 	var node nodeRecord
-	err := r.db.QueryRowContext(ctx, `SELECT id,server_ip,status,interface_name,tcp_listen_addr,udp_listen_addr FROM nodes WHERE id=?`, nodeID).Scan(
-		&node.ID, &node.ServerIP, &node.Status, &node.InterfaceName, &node.TCPListenAddr, &node.UDPListenAddr,
+	err := r.db.QueryRowContext(ctx, `SELECT id,server_ip,status,interface_name,tcp_listen_addr,udp_listen_addr,max_bandwidth_mbps FROM nodes WHERE id=?`, nodeID).Scan(
+		&node.ID, &node.ServerIP, &node.Status, &node.InterfaceName, &node.TCPListenAddr, &node.UDPListenAddr, &node.MaxBandwidthMbps,
 	)
 	return node, err
 }
@@ -777,15 +783,15 @@ func buildPathChain(current nodeRecord, tunnel tunnelRecord, suffix, trafficProt
 	}
 }
 
-func buildRelayService(current nodeRecord, item *tunnelNode, tunnel tunnelRecord, _ []*tunnelNode, trafficProtocol, limiterName string) map[string]any {
+func buildRelayService(current nodeRecord, item *tunnelNode, tunnel tunnelRecord, _ []*tunnelNode, trafficProtocol string, limiterNames []string) map[string]any {
 	service := map[string]any{
 		"name":     relayServiceName(item.TunnelID, item.Protocol, trafficProtocol),
 		"addr":     joinListenAddr(current, item.Port, item.Protocol, trafficProtocol),
 		"handler":  map[string]any{"type": "relay"},
 		"listener": transportConfig(item.Protocol, trafficProtocol, true, tunnel),
 	}
-	if limiterName != "" {
-		service["limiter"] = limiterName
+	if len(limiterNames) > 0 {
+		service["limiters"] = limiterNames
 	}
 	if item.ChainType == 3 && strings.TrimSpace(current.InterfaceName) != "" {
 		service["metadata"] = map[string]any{"interface": current.InterfaceName}
@@ -793,7 +799,7 @@ func buildRelayService(current nodeRecord, item *tunnelNode, tunnel tunnelRecord
 	return service
 }
 
-func buildForwardService(current nodeRecord, forward forwardRecord, tunnel tunnelRecord, baseName, protocol, limiterName, connectionLimiterName, admissionName, chain string, plan endpointPlan) map[string]any {
+func buildForwardService(current nodeRecord, forward forwardRecord, tunnel tunnelRecord, baseName, protocol string, limiterNames []string, connectionLimiterName, admissionName, chain string, plan endpointPlan) map[string]any {
 	handler := map[string]any{"type": protocol}
 	listener := map[string]any{"type": protocol}
 	service := map[string]any{
@@ -829,8 +835,8 @@ func buildForwardService(current nodeRecord, forward forwardRecord, tunnel tunne
 			"sniffing.timeout": int64(5 * time.Second),
 		}
 	}
-	if limiterName != "" {
-		service["limiter"] = limiterName
+	if len(limiterNames) > 0 {
+		service["limiters"] = limiterNames
 	}
 	if connectionLimiterName != "" {
 		service["climiter"] = connectionLimiterName
@@ -1126,6 +1132,23 @@ func quotaReached(quota, first, second int64) bool {
 		return true
 	}
 	return first >= quota-second
+}
+
+func limiterNames(names ...string) []string {
+	result := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	return result
 }
 
 func splitValues(value string) []string {
