@@ -13,11 +13,44 @@ export const reinitializeBaseURL = () => {
 
 reinitializeBaseURL();
 
-interface ApiResponse<T = any> {
+export interface ApiResponse<T = any> {
   code: number;
   msg: string;
   data: T;
 }
+
+export interface DownloadResponse {
+  ok: boolean;
+  blob?: Blob;
+  filename?: string;
+  msg?: string;
+}
+
+const authorizationHeader = () => ({
+  Authorization: window.localStorage.getItem("token"),
+});
+
+const filenameFromDisposition = (value?: string) => {
+  const match = value?.match(/filename="?([^";]+)"?/i);
+  return match?.[1];
+};
+
+const parseBlobError = async (blob: Blob, fallback: string) => {
+  try {
+    return JSON.parse(await blob.text()) as ApiResponse;
+  } catch {
+    return { code: -1, msg: fallback, data: null } as ApiResponse;
+  }
+};
+
+const processAuthenticationFailure = (
+  status: number | undefined,
+  payload: ApiResponse,
+) => {
+  if (status === 401 || isTokenExpired(payload)) {
+    handleTokenExpired();
+  }
+};
 
 // 处理token失效的逻辑
 function handleTokenExpired() {
@@ -63,9 +96,7 @@ const Network = {
         .get(path, {
           params: data,
           timeout: 30000,
-          headers: {
-            Authorization: window.localStorage.getItem("token"),
-          },
+          headers: authorizationHeader(),
         })
         .then(function (response: AxiosResponse<ApiResponse<T>>) {
           // 检查是否token失效
@@ -95,6 +126,70 @@ const Network = {
           });
         });
     });
+  },
+
+  download: async function (
+    path: string,
+    data?: FormData,
+    timeout = 120000,
+  ): Promise<DownloadResponse> {
+    try {
+      const response = await axios.post(path, data ?? {}, {
+        timeout,
+        responseType: "blob",
+        headers: data
+          ? authorizationHeader()
+          : { ...authorizationHeader(), "Content-Type": "application/json" },
+      });
+      return {
+        ok: true,
+        blob: response.data as Blob,
+        filename:
+          filenameFromDisposition(response.headers["content-disposition"]) ||
+          "download.bin",
+      };
+    } catch (error: any) {
+      if (error.response?.data instanceof Blob) {
+        const payload = await parseBlobError(error.response.data, "下载失败");
+        processAuthenticationFailure(error.response.status, payload);
+        return { ok: false, msg: payload.msg };
+      }
+      const payload = error.response?.data as ApiResponse | undefined;
+      if (payload) {
+        processAuthenticationFailure(error.response?.status, payload);
+      }
+      return { ok: false, msg: payload?.msg || error.message || "下载失败" };
+    }
+  },
+
+  upload: function <T = any>(
+    path: string,
+    data: FormData,
+    timeout = 120000,
+  ): Promise<ApiResponse<T>> {
+    return axios
+      .post<ApiResponse<T>>(path, data, {
+        timeout,
+        headers: authorizationHeader(),
+      })
+      .then((response) => {
+        if (isTokenExpired(response.data)) {
+          handleTokenExpired();
+        }
+        return response.data;
+      })
+      .catch((error: any) => {
+        const payload = error.response?.data as ApiResponse<T> | undefined;
+        if (payload) {
+          processAuthenticationFailure(error.response?.status, payload);
+          return payload;
+        }
+        return {
+          code: -1,
+          msg: error.message || "上传失败",
+          data: null as T,
+        };
+      });
   },
 
   post: function <T = any>(

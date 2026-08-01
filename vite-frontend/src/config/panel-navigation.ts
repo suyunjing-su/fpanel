@@ -24,6 +24,11 @@ const PANEL_LABELS: Record<string, PanelLabelEntry> = {
     profile: "运行策略",
   },
   "/audit": { title: "审计日志", admin: "审计日志", profile: "审计日志" },
+  "/operations": {
+    title: "运维与恢复",
+    admin: "运维与恢复",
+    profile: "运维与恢复",
+  },
   "/profile": { title: "个人中心", h5: "我的" },
   "/change-password": { title: "修改密码" },
   "/settings": { title: "设置" },

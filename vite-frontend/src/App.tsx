@@ -13,6 +13,7 @@ import LimitPage from "@/pages/limit";
 import ConfigPage from "@/pages/config";
 import AuditPage from "@/pages/audit";
 import RuntimePolicyPage from "@/pages/runtime-policy";
+import OperationsPage from "@/pages/operations";
 import { SettingsPage } from "@/pages/settings";
 
 import AdminLayout from "@/layouts/admin";
@@ -286,6 +287,14 @@ function App() {
         element={
           <ProtectedRoute useSimpleLayout={true}>
             <RuntimePolicyPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/operations"
+        element={
+          <ProtectedRoute useSimpleLayout={true}>
+            <OperationsPage />
           </ProtectedRoute>
         }
       />

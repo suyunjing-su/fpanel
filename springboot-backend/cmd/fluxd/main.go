@@ -46,9 +46,22 @@ func run() error {
 		return fmt.Errorf("load configuration: %w", err)
 	}
 	log := observability.NewLogger(cfg.LogLevel)
+	restored, err := database.ActivatePendingRestore(context.Background(), cfg.DatabasePath)
+	if err != nil {
+		return fmt.Errorf("activate pending database restore: %w", err)
+	}
 	db, err := database.Open(context.Background(), cfg.DatabasePath, log)
+	if err != nil && restored {
+		if rollbackErr := database.RollbackRestore(cfg.DatabasePath); rollbackErr != nil {
+			return fmt.Errorf("open restored database: %v; rollback failed: %w", err, rollbackErr)
+		}
+		db, err = database.Open(context.Background(), cfg.DatabasePath, log)
+	}
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
+	}
+	if restored {
+		log.Info("pending database restore activated")
 	}
 	defer db.Close()
 	if err := auth.EnsureBootstrapAdmin(context.Background(), db, cfg.BootstrapUsername, cfg.BootstrapPassword); err != nil {
@@ -127,6 +140,8 @@ func run() error {
 	registerNodeToolsRoutes(mux, nodeRepo, tunnelRepo, forwardRepo, configRepo, hub, isAdmin)
 	registerRuntimeControlRoutes(mux, runtimeControlRepo, refreshQueue, isAdmin)
 	registerAuditRoutes(mux, auditRepo, isAdmin)
+	restart := make(chan struct{}, 1)
+	registerOperationsRoutes(mux, db, cfg.DatabasePath, restart, isAdmin)
 	mux.HandleFunc("POST /api/v1/tunnel/failure-event/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
 			forbidden(w)
@@ -655,6 +670,8 @@ func run() error {
 		log.Error("flux control plane server stopped unexpectedly", "error", serveErr)
 	case signal := <-stop:
 		log.Info("shutdown signal received", "signal", signal.String())
+	case <-restart:
+		log.Info("database restore staged; restarting control plane")
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()

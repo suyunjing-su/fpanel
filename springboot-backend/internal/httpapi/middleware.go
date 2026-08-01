@@ -133,7 +133,7 @@ func isAuditedMutation(r *http.Request) bool {
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	action := path[strings.LastIndex(path, "/")+1:]
 	switch action {
-	case "create", "update", "delete", "update-single", "reset", "updatePassword", "batch-delete", "rotate-secret", "assign", "remove", "force-delete", "pause", "resume", "update-order":
+	case "create", "update", "delete", "update-single", "reset", "restore", "backup", "support-bundle", "updatePassword", "batch-delete", "rotate-secret", "assign", "remove", "force-delete", "pause", "resume", "update-order":
 		return true
 	default:
 		return false
@@ -274,6 +274,7 @@ func cors(allowedOrigins []string, next http.Handler) http.Handler {
 			}
 		}
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, X-Request-ID")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

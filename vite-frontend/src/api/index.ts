@@ -179,6 +179,18 @@ export const updateConfig = (name: string, value: string) =>
 export const getAuditLogs = (data: AuditListRequest) =>
   Network.post<AuditPage>("/audit/list", data);
 
+export const downloadDatabaseBackup = () =>
+  Network.download("/operations/backup");
+
+export const restoreDatabaseBackup = (file: File) => {
+  const formData = new FormData();
+  formData.append("backup", file, file.name);
+  return Network.upload<{ restart: boolean }>("/operations/restore", formData);
+};
+
+export const downloadSupportBundle = () =>
+  Network.download("/operations/support-bundle");
+
 export const getEndpointGroups = () =>
   Network.post<EndpointGroup[]>("/endpoint-group/list");
 export const createEndpointGroup = (data: EndpointGroupRequest) =>
