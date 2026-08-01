@@ -136,17 +136,31 @@ func (r *Repository) CanDelete(ctx context.Context, id int64) error {
 }
 
 func (r *Repository) Delete(ctx context.Context, id int64) error {
+	_, err := r.DeleteWithName(ctx, id)
+	return err
+}
+
+func (r *Repository) DeleteWithName(ctx context.Context, id int64) (string, error) {
+	if id <= 0 {
+		return "", errors.New("speed limit id must be positive")
+	}
+	var name string
+	if err := r.db.QueryRowContext(ctx, "SELECT name FROM speed_limits WHERE id=?", id).Scan(&name); err != nil {
+		return "", err
+	}
 	if err := r.CanDelete(ctx, id); err != nil {
-		return err
+		return name, err
 	}
 	result, err := r.db.ExecContext(ctx, "DELETE FROM speed_limits WHERE id=?", id)
 	if err != nil {
-		return fmt.Errorf("delete speed limit: %w", err)
+		return name, fmt.Errorf("delete speed limit: %w", err)
 	}
-	if count, _ := result.RowsAffected(); count == 0 {
-		return sql.ErrNoRows
+	if count, err := result.RowsAffected(); err != nil {
+		return name, err
+	} else if count == 0 {
+		return name, sql.ErrNoRows
 	}
-	return nil
+	return name, nil
 }
 
 func (r *Repository) BatchDelete(ctx context.Context, ids []int64) error {

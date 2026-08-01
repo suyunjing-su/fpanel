@@ -137,15 +137,28 @@ func (r *Repository) Update(ctx context.Context, req UpdateRequest) error {
 	return nil
 }
 func (r *Repository) Delete(ctx context.Context, id int64) error {
+	_, err := r.DeleteWithName(ctx, id)
+	return err
+}
+
+func (r *Repository) DeleteWithName(ctx context.Context, id int64) (string, error) {
+	if id <= 0 {
+		return "", errors.New("user id must be positive")
+	}
+	var name string
+	if err := r.db.QueryRowContext(ctx, "SELECT username FROM users WHERE id=? AND role <> 'admin'", id).Scan(&name); err != nil {
+		return "", err
+	}
 	res, err := r.db.ExecContext(ctx, "DELETE FROM users WHERE id=? AND role <> 'admin'", id)
 	if err != nil {
-		return err
+		return name, err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
+	if count, err := res.RowsAffected(); err != nil {
+		return name, err
+	} else if count == 0 {
+		return name, sql.ErrNoRows
 	}
-	return nil
+	return name, nil
 }
 func validateCreate(r CreateRequest) error {
 	if err := validateUserFields(r); err != nil {

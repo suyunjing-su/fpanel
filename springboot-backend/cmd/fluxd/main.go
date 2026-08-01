@@ -115,6 +115,7 @@ func run() error {
 		httpapi.WriteJSON(w, http.StatusBadRequest, httpapi.Failure(http.StatusBadRequest, err.Error()))
 	}
 	registerLimitRoutes(mux, speedLimitRepo, policyRepo, tunnelRepo, refreshQueue, isAdmin)
+	registerBatchDeleteRoutes(mux, userRepo, nodeRepo, tunnelRepo, forwardRepo, refreshQueue, isAdmin)
 	registerRuntimeControlRoutes(mux, runtimeControlRepo, refreshQueue, isAdmin)
 	mux.HandleFunc("POST /api/v1/tunnel/failure-event/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {

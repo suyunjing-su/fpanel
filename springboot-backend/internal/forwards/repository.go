@@ -233,22 +233,32 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest, actorID 
 }
 
 func (r *Repository) Delete(ctx context.Context, id, userID int64, admin bool) error {
+	_, err := r.DeleteWithName(ctx, id, userID, admin)
+	return err
+}
+
+func (r *Repository) DeleteWithName(ctx context.Context, id, userID int64, admin bool) (string, error) {
+	if id <= 0 {
+		return "", errors.New("forward id must be positive")
+	}
 	var owner int64
-	if err := r.db.QueryRowContext(ctx, "SELECT user_id FROM forwards WHERE id=?", id).Scan(&owner); err != nil {
-		return err
+	var name string
+	if err := r.db.QueryRowContext(ctx, "SELECT user_id,name FROM forwards WHERE id=?", id).Scan(&owner, &name); err != nil {
+		return "", err
 	}
 	if !admin && owner != userID {
-		return errors.New("forward access denied")
+		return "", errors.New("forward access denied")
 	}
 	res, err := r.db.ExecContext(ctx, "DELETE FROM forwards WHERE id=?", id)
 	if err != nil {
-		return err
+		return name, err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
+	if count, err := res.RowsAffected(); err != nil {
+		return name, err
+	} else if count == 0 {
+		return name, sql.ErrNoRows
 	}
-	return nil
+	return name, nil
 }
 func (r *Repository) SetStatus(ctx context.Context, id, userID int64, status int, admin bool) error {
 	if status != 0 && status != 1 {

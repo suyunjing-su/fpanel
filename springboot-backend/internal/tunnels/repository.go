@@ -307,14 +307,28 @@ func (r *Repository) RotateTOTSecret(ctx context.Context, id int64) error {
 }
 
 func (r *Repository) Delete(ctx context.Context, id int64) error {
+	_, err := r.DeleteWithName(ctx, id)
+	return err
+}
+
+func (r *Repository) DeleteWithName(ctx context.Context, id int64) (string, error) {
+	if id <= 0 {
+		return "", errors.New("tunnel id must be positive")
+	}
+	var name string
+	if err := r.db.QueryRowContext(ctx, "SELECT name FROM tunnels WHERE id=?", id).Scan(&name); err != nil {
+		return "", err
+	}
 	result, err := r.db.ExecContext(ctx, "DELETE FROM tunnels WHERE id=?", id)
 	if err != nil {
-		return fmt.Errorf("delete tunnel: %w", err)
+		return name, fmt.Errorf("delete tunnel: %w", err)
 	}
-	if count, _ := result.RowsAffected(); count == 0 {
-		return sql.ErrNoRows
+	if count, err := result.RowsAffected(); err != nil {
+		return name, err
+	} else if count == 0 {
+		return name, sql.ErrNoRows
 	}
-	return nil
+	return name, nil
 }
 
 func (r *Repository) UserTunnelList(ctx context.Context, userID int64) ([]UserTunnel, error) {

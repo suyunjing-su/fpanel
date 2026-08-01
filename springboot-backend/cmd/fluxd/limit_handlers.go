@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/suyunjing-su/fpanel/backend/internal/httpapi"
@@ -90,32 +89,7 @@ func registerLimitRoutes(mux *http.ServeMux, limits *speedlimits.Repository, pol
 		wake()
 		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(nil))
 	})
-	mux.HandleFunc("POST /api/v1/speed-limit/batch-delete", func(w http.ResponseWriter, r *http.Request) {
-		if !isAdmin(r) {
-			forbidden(w)
-			return
-		}
-		var request struct {
-			IDs []int64 `json:"ids"`
-		}
-		if !httpapi.DecodeJSON(w, r, &request) {
-			return
-		}
-		seen := make(map[int64]struct{}, len(request.IDs))
-		for _, id := range request.IDs {
-			if _, exists := seen[id]; exists {
-				badRequest(w, fmt.Errorf("duplicate speed limit id %d", id))
-				return
-			}
-			seen[id] = struct{}{}
-		}
-		if err := limits.BatchDelete(r.Context(), request.IDs); err != nil {
-			badRequest(w, err)
-			return
-		}
-		wake()
-		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(map[string]any{"totalCount": len(request.IDs), "successCount": len(request.IDs), "failureCount": 0, "failures": []any{}}))
-	})
+	registerSpeedLimitBatchDelete(mux, limits, refreshes, isAdmin)
 	mux.HandleFunc("POST /api/v1/speed-limit/user-tunnel/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
 			forbidden(w)
