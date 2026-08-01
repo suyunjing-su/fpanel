@@ -89,8 +89,36 @@ func TestNodeInstallCommandUsesSiteConfigAndHiddenSecret(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Code != 0 || !strings.Contains(envelope.Data, "install.sh -a 'https://[2001:db8::10]:8443' -s 'sec'\\''ret'") {
+	if envelope.Code != 0 ||
+		!strings.Contains(envelope.Data, "curl --fail --location --retry 3 --proto '=https' --tlsv1.2") ||
+		!strings.Contains(envelope.Data, "SHA256SUMS") ||
+		!strings.Contains(envelope.Data, "sha256sum --check --ignore-missing") ||
+		!strings.Contains(envelope.Data, "bash \"$tmp/install.sh\" -a 'https://[2001:db8::10]:8443' -s 'sec'\\''ret'") {
 		t.Fatalf("unexpected command: %q", envelope.Data)
+	}
+}
+
+func TestInstallServerAddressRejectsInsecureOrAmbiguousAddresses(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "node-install-address.db"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository := siteconfig.NewRepository(db)
+	for name, values := range map[string]map[string]string{
+		"http":  {"ip": "panel.example.com", "protocol_type": "http"},
+		"path":  {"ip": "https://panel.example.com/control", "protocol_type": "https"},
+		"query": {"ip": "https://panel.example.com/?next=evil", "protocol_type": "https"},
+		"scheme": {"ip": "ftp://panel.example.com", "protocol_type": "https"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := repository.Update(context.Background(), values); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := installServerAddress(context.Background(), repository); err == nil {
+				t.Fatal("unsafe install server address was accepted")
+			}
+		})
 	}
 }
 

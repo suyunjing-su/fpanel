@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	installReleaseVersion = "3.0.26-beta"
+	installReleaseVersion = "3.0.27-beta"
 	diagnosisPingCount    = 4
 	diagnosisPingTimeout  = 5000
 	externalPingHost      = "www.google.com"
@@ -93,7 +93,7 @@ func registerNodeToolsRoutes(mux *http.ServeMux, nodeRepo *nodes.Repository, tun
 			httpapi.WriteJSON(w, http.StatusBadRequest, httpapi.Failure(http.StatusBadRequest, err.Error()))
 			return
 		}
-		command := fmt.Sprintf("curl -L https://github.com/suyunjing-su/fpanel/releases/download/%s/install.sh -o ./install.sh && chmod +x ./install.sh && ./install.sh -a %s -s %s", installReleaseVersion, shellQuote(serverAddress), shellQuote(secret))
+		command := verifiedInstallCommand(serverAddress, secret)
 		httpapi.WriteJSON(w, http.StatusOK, httpapi.Success(command))
 	})
 
@@ -158,23 +158,30 @@ func installServerAddress(ctx context.Context, configRepo *siteconfig.Repository
 	if err != nil {
 		return "", err
 	}
-	protocol = strings.ToLower(strings.TrimSpace(protocol))
-	if protocol != "https" {
-		protocol = "http"
+	if !strings.EqualFold(strings.TrimSpace(protocol), "https") {
+		return "", errors.New("节点控制面必须使用 HTTPS")
 	}
-	return protocol + "://" + stripScheme(rawHost), nil
+	return secureControlAddress(rawHost)
 }
 
-func stripScheme(value string) string {
-	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-		if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path == "/" {
-			return parsed.Host
-		}
-		return parsed.Host + strings.TrimRight(parsed.EscapedPath(), "/")
+func secureControlAddress(rawHost string) (string, error) {
+	value := strings.TrimSpace(rawHost)
+	if value == "" {
+		return "", errors.New("网站配置不能为空")
 	}
-	value = strings.TrimPrefix(value, "http://")
-	value = strings.TrimPrefix(value, "https://")
-	return strings.TrimRight(value, "/")
+	if !strings.Contains(value, "://") {
+		value = "https://" + value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", errors.New("网站配置必须是无路径、查询参数或凭据的 HTTPS 地址")
+	}
+	return "https://" + parsed.Host, nil
+}
+
+func verifiedInstallCommand(serverAddress, secret string) string {
+	baseURL := "https://github.com/suyunjing-su/fpanel/releases/download/" + installReleaseVersion
+	return fmt.Sprintf(`(tmp=$(mktemp -d) && trap 'rm -rf "$tmp"' EXIT && curl --fail --location --retry 3 --proto '=https' --tlsv1.2 %s/SHA256SUMS -o "$tmp/SHA256SUMS" && curl --fail --location --retry 3 --proto '=https' --tlsv1.2 %s/install.sh -o "$tmp/install.sh" && (cd "$tmp" && sha256sum --check --ignore-missing SHA256SUMS && test "$(awk '$2 == "install.sh" {print $1; exit}' SHA256SUMS)" = "$(sha256sum install.sh | awk '{print $1}')") && chmod 0755 "$tmp/install.sh" && bash "$tmp/install.sh" -a %s -s %s)`, shellQuote(baseURL), shellQuote(baseURL), shellQuote(serverAddress), shellQuote(secret))
 }
 
 func shellQuote(value string) string {

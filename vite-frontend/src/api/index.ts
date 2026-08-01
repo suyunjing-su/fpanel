@@ -97,6 +97,27 @@ export const diagnoseTunnel = (tunnelId: number) =>
 export const rotateTunnelTOTSecret = (id: number) =>
   Network.post("/tunnel/tot/rotate-secret", { id });
 
+export interface TunnelFailureEvent {
+  id: number;
+  tunnelId: number;
+  nodeId: number;
+  eventType: "health" | "bandwidth_overload" | string;
+  latencyMs?: number;
+  detail: string;
+  startedAt: number;
+  resolvedAt?: number;
+}
+
+export interface TunnelFailureEventQuery {
+  tunnelId?: number;
+  nodeId?: number;
+  eventType?: "health" | "bandwidth_overload";
+  activeOnly?: boolean;
+}
+
+export const listTunnelFailureEvents = (data: TunnelFailureEventQuery = {}) =>
+  Network.post<TunnelFailureEvent[]>("/tunnel/failure-event/list", data);
+
 // 用户隧道权限管理操作 - 全部使用POST请求
 export const assignUserTunnel = (data: any) =>
   Network.post("/tunnel/user/assign", data);

@@ -19,7 +19,9 @@ import {
   deleteTunnel,
   getNodeList,
   diagnoseTunnel,
-  rotateTunnelTOTSecret
+  listTunnelFailureEvents,
+  rotateTunnelTOTSecret,
+  type TunnelFailureEvent
 } from "@/api";
 import { useBatchDeleteSelection } from "@/hooks/useBatchDeleteSelection";
 
@@ -161,13 +163,19 @@ export default function TunnelPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [diagnosisModalOpen, setDiagnosisModalOpen] = useState(false);
+  const [failureEventsModalOpen, setFailureEventsModalOpen] = useState(false);
   const [syncResultModalOpen, setSyncResultModalOpen] = useState(false);
   const [isEdit, setIsEdit] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+  const [failureEventsLoading, setFailureEventsLoading] = useState(false);
+  const [failureEventsActiveOnly, setFailureEventsActiveOnly] = useState(true);
+  const [failureEventsType, setFailureEventsType] = useState<'all' | 'health' | 'bandwidth_overload'>('all');
+  const [failureEvents, setFailureEvents] = useState<TunnelFailureEvent[]>([]);
   const [tunnelToDelete, setTunnelToDelete] = useState<Tunnel | null>(null);
   const [currentDiagnosisTunnel, setCurrentDiagnosisTunnel] = useState<Tunnel | null>(null);
+  const [currentFailureEventsTunnel, setCurrentFailureEventsTunnel] = useState<Tunnel | null>(null);
   const [diagnosisResult, setDiagnosisResult] = useState<DiagnosisResult | null>(null);
   const [syncResult, setSyncResult] = useState<TunnelSyncResult | null>(null);
   
@@ -601,6 +609,63 @@ export default function TunnelPage() {
   };
 
 
+  const loadFailureEvents = async (
+    tunnel: Tunnel,
+    activeOnly = failureEventsActiveOnly,
+    eventType = failureEventsType,
+  ) => {
+    setFailureEventsLoading(true);
+    try {
+      const response = await listTunnelFailureEvents({
+        tunnelId: tunnel.id,
+        activeOnly,
+        ...(eventType === 'all' ? {} : { eventType }),
+      });
+      if (response.code === 0) {
+        setFailureEvents(response.data || []);
+      } else {
+        setFailureEvents([]);
+        toast.error(response.msg || '获取故障事件失败');
+      }
+    } catch (error) {
+      setFailureEvents([]);
+      toast.error('获取故障事件失败');
+    } finally {
+      setFailureEventsLoading(false);
+    }
+  };
+
+  const handleOpenFailureEvents = (tunnel: Tunnel) => {
+    setCurrentFailureEventsTunnel(tunnel);
+    setFailureEventsModalOpen(true);
+    void loadFailureEvents(tunnel);
+  };
+
+  const handleFailureEventsActiveOnlyChange = (activeOnly: boolean) => {
+    setFailureEventsActiveOnly(activeOnly);
+    if (currentFailureEventsTunnel) {
+      void loadFailureEvents(currentFailureEventsTunnel, activeOnly);
+    }
+  };
+
+  const handleFailureEventsTypeChange = (eventType: 'all' | 'health' | 'bandwidth_overload') => {
+    setFailureEventsType(eventType);
+    if (currentFailureEventsTunnel) {
+      void loadFailureEvents(currentFailureEventsTunnel, failureEventsActiveOnly, eventType);
+    }
+  };
+
+  const formatEventTime = (timestamp?: number) => {
+    if (!timestamp) return '-';
+    return new Date(timestamp).toLocaleString('zh-CN', { hour12: false });
+  };
+
+  const failureEventTypeLabel = (eventType: string) =>
+    eventType === 'bandwidth_overload' ? '带宽超载' : '健康故障';
+
+  const failureEventTypeColor = (eventType: string) =>
+    eventType === 'bandwidth_overload' ? 'warning' : 'danger';
+
   // 获取类型显示
   const getTypeDisplay = (type: number) => {
     switch (type) {
@@ -896,6 +961,15 @@ export default function TunnelPage() {
                         }
                       >
                         诊断
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color="warning"
+                        onPress={() => handleOpenFailureEvents(tunnel)}
+                        className="flex-1 min-h-8"
+                      >
+                        事件
                       </Button>
                       <Button
                         size="sm"
@@ -1680,6 +1754,117 @@ export default function TunnelPage() {
                     </div>
                   ) : (
                     <Alert color="default" variant="flat" title="没有可展示的同步结果" />
+                  )}
+                </ModalBody>
+                <ModalFooter>
+                  <Button variant="light" onPress={onClose}>关闭</Button>
+                </ModalFooter>
+              </>
+            )}
+          </ModalContent>
+        </Modal>
+
+        <Modal
+          isOpen={failureEventsModalOpen}
+          onOpenChange={(open) => {
+            setFailureEventsModalOpen(open);
+            if (!open) {
+              setCurrentFailureEventsTunnel(null);
+              setFailureEvents([]);
+            }
+          }}
+          size="4xl"
+          scrollBehavior="inside"
+          backdrop="blur"
+          placement="center"
+        >
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader className="flex flex-col gap-1">
+                  <h2 className="text-xl font-bold">隧道故障事件</h2>
+                  {currentFailureEventsTunnel && (
+                    <p className="text-small text-default-500">{currentFailureEventsTunnel.name} 的健康与带宽状态历史</p>
+                  )}
+                </ModalHeader>
+                <ModalBody>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                    <Select
+                      size="sm"
+                      label="事件类型"
+                      selectedKeys={[failureEventsType]}
+                      onSelectionChange={(keys) => {
+                        const value = Array.from(keys)[0] as 'all' | 'health' | 'bandwidth_overload' | undefined;
+                        handleFailureEventsTypeChange(value || 'all');
+                      }}
+                      className="w-full sm:w-48"
+                    >
+                      <SelectItem key="all">全部事件</SelectItem>
+                      <SelectItem key="health">健康故障</SelectItem>
+                      <SelectItem key="bandwidth_overload">带宽超载</SelectItem>
+                    </Select>
+                    <Select
+                      size="sm"
+                      label="状态"
+                      selectedKeys={[failureEventsActiveOnly ? 'active' : 'all']}
+                      onSelectionChange={(keys) => {
+                        const value = Array.from(keys)[0] as string | undefined;
+                        handleFailureEventsActiveOnlyChange(value !== 'all');
+                      }}
+                      className="w-full sm:w-40"
+                    >
+                      <SelectItem key="active">仅未解决</SelectItem>
+                      <SelectItem key="all">全部历史</SelectItem>
+                    </Select>
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      onPress={() => currentFailureEventsTunnel && void loadFailureEvents(currentFailureEventsTunnel)}
+                      isLoading={failureEventsLoading}
+                    >
+                      刷新
+                    </Button>
+                  </div>
+
+                  {failureEventsLoading ? (
+                    <div className="flex items-center justify-center gap-3 py-16">
+                      <Spinner size="sm" />
+                      <span className="text-default-600">正在加载故障事件...</span>
+                    </div>
+                  ) : failureEvents.length === 0 ? (
+                    <Alert color="success" variant="flat" title={failureEventsActiveOnly ? '当前没有未解决故障' : '没有匹配的故障事件'} />
+                  ) : (
+                    <div className="space-y-3">
+                      {failureEvents.map((event) => {
+                        const active = !event.resolvedAt;
+                        return (
+                          <div
+                            key={event.id}
+                            className={`rounded-xl border p-3 ${active
+                              ? 'border-danger-200 bg-danger-50/60 dark:border-danger-800 dark:bg-danger-950/20'
+                              : 'border-default-200 bg-default-50/60 dark:border-default-700 dark:bg-default-900/20'}`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <Chip size="sm" variant="flat" color={failureEventTypeColor(event.eventType) as any}>
+                                  {failureEventTypeLabel(event.eventType)}
+                                </Chip>
+                                <Chip size="sm" variant="flat" color={active ? 'danger' : 'success'}>
+                                  {active ? '未解决' : '已恢复'}
+                                </Chip>
+                              </div>
+                              <span className="text-xs text-default-500">节点 #{event.nodeId}</span>
+                            </div>
+                            <p className="mt-2 break-words text-sm text-foreground">{event.detail || '未提供详细信息'}</p>
+                            <div className="mt-3 grid gap-1 text-xs text-default-500 sm:grid-cols-3">
+                              <span>开始：{formatEventTime(event.startedAt)}</span>
+                              <span>恢复：{formatEventTime(event.resolvedAt)}</span>
+                              <span>延迟：{event.latencyMs === undefined ? '-' : `${event.latencyMs} ms`}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </ModalBody>
                 <ModalFooter>
