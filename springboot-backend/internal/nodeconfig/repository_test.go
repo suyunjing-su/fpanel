@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -275,6 +276,21 @@ func TestBuildAdvancedForwardControls(t *testing.T) {
 	if nodes[3]["addr"] != "198.51.100.5:443" {
 		t.Fatalf("legacy fallback endpoint is missing: %#v", nodes)
 	}
+	udpService := namedItem(document.Services, "1_1_0_udp")
+	udpForwarder, _ := udpService["forwarder"].(map[string]any)
+	if _, exists := udpForwarder["probePeriod"]; exists {
+		t.Fatalf("UDP forwarder retained TCP health probes: %#v", udpForwarder)
+	}
+	udpNodes, _ := udpForwarder["nodes"].([]map[string]any)
+	if len(udpNodes) != 3 {
+		t.Fatalf("UDP forwarder retained unobservable L7 route nodes: %#v", udpNodes)
+	}
+	for _, node := range udpNodes {
+		matcher, _ := node["matcher"].(map[string]any)
+		if rule, _ := matcher["rule"].(string); strings.Contains(rule, "Host(") {
+			t.Fatalf("UDP forwarder retained host matcher: %#v", node)
+		}
+	}
 	climiter := namedItem(document.CLimiters, "forward_conn_1")
 	limits, _ := climiter["limits"].([]string)
 	if len(limits) != 2 || limits[0] != "$ 100" || limits[1] != "$$ 5" {
@@ -295,6 +311,26 @@ func TestBuildAdvancedForwardControls(t *testing.T) {
 	}
 	if Equivalent(document, Document{Services: document.Services, Chains: document.Chains, Limiters: document.Limiters}) {
 		t.Fatal("advanced resource drift was ignored")
+	}
+}
+
+func TestUDPEndpointsKeepObservableRules(t *testing.T) {
+	endpoints := []routeEndpoint{
+		{Name: "client", Rule: "ClientIP(`192.0.2.1`)"},
+		{Name: "not-client", Rule: "!ClientIP(`192.0.2.2`)"},
+		{Name: "protocol", Rule: "Proto(`udp`)"},
+		{Name: "not-protocol", Rule: "!Proto(`tcp`)"},
+		{Name: "host", Rule: "Host(`example.com`)"},
+		{Name: "default"},
+	}
+	filtered := udpEndpoints(endpoints)
+	if len(filtered) != 5 {
+		t.Fatalf("unexpected UDP endpoint projection: %#v", filtered)
+	}
+	for _, endpoint := range filtered {
+		if endpoint.Name == "host" {
+			t.Fatal("UDP endpoint projection retained a host matcher")
+		}
 	}
 }
 

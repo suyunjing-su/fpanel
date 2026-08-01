@@ -800,7 +800,7 @@ func buildForwardService(current nodeRecord, forward forwardRecord, tunnel tunne
 		"addr":      joinListenHost(protocolListenAddr(current, protocol), forward.Port),
 		"handler":   handler,
 		"listener":  listener,
-		"forwarder": buildForwarder(forward.RemoteAddr, forward.Strategy, plan),
+		"forwarder": buildForwarder(forward.RemoteAddr, forward.Strategy, protocol, plan),
 	}
 	if protocol == "udp" {
 		listener["metadata"] = map[string]any{"keepAlive": true}
@@ -844,9 +844,13 @@ func buildForwardService(current nodeRecord, forward forwardRecord, tunnel tunne
 	return service
 }
 
-func buildForwarder(remoteAddr, strategy string, plan endpointPlan) map[string]any {
-	nodes := make([]map[string]any, 0, len(plan.Endpoints)+1)
-	for _, endpoint := range plan.Endpoints {
+func buildForwarder(remoteAddr, strategy, protocol string, plan endpointPlan) map[string]any {
+	endpoints := plan.Endpoints
+	if protocol == "udp" {
+		endpoints = udpEndpoints(endpoints)
+	}
+	nodes := make([]map[string]any, 0, len(endpoints)+1)
+	for _, endpoint := range endpoints {
 		node := map[string]any{
 			"name": endpoint.Name,
 			"addr": endpoint.Address,
@@ -887,16 +891,34 @@ func buildForwarder(remoteAddr, strategy string, plan endpointPlan) map[string]a
 	if plan.ProbeTimeoutMS <= 0 {
 		plan.ProbeTimeoutMS = 3000
 	}
-	return map[string]any{
-		"nodes":        nodes,
-		"probePeriod":  plan.ProbeIntervalMS * int64(time.Millisecond),
-		"probeTimeout": plan.ProbeTimeoutMS * int64(time.Millisecond),
+	forwarder := map[string]any{
+		"nodes": nodes,
 		"selector": map[string]any{
 			"strategy":    normalizeStrategy(plan.Strategy),
 			"maxFails":    plan.MaxFails,
 			"failTimeout": plan.FailTimeoutMS * int64(time.Millisecond),
 		},
 	}
+	if protocol == "tcp" {
+		forwarder["probePeriod"] = plan.ProbeIntervalMS * int64(time.Millisecond)
+		forwarder["probeTimeout"] = plan.ProbeTimeoutMS * int64(time.Millisecond)
+	}
+	return forwarder
+}
+
+func udpEndpoints(endpoints []routeEndpoint) []routeEndpoint {
+	result := make([]routeEndpoint, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		if endpoint.Rule != "" &&
+			!strings.HasPrefix(endpoint.Rule, "ClientIP(") &&
+			!strings.HasPrefix(endpoint.Rule, "!ClientIP(") &&
+			!strings.HasPrefix(endpoint.Rule, "Proto(") &&
+			!strings.HasPrefix(endpoint.Rule, "!Proto(") {
+			continue
+		}
+		result = append(result, endpoint)
+	}
+	return result
 }
 
 func planNeedsSniffing(plan endpointPlan) bool {
