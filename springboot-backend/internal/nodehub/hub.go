@@ -46,20 +46,24 @@ func New(log *slog.Logger, repository *nodes.Repository) *Hub {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  16 << 10,
 			WriteBufferSize: 16 << 10,
-			CheckOrigin:     func(*http.Request) bool { return true },
+			CheckOrigin: func(r *http.Request) bool {
+				return strings.TrimSpace(r.Header.Get("Origin")) == ""
+			},
 		},
 		sessions: make(map[int64]*session),
 	}
 }
 
+func bearerToken(r *http.Request) string {
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(authorization) <= 7 || !strings.EqualFold(authorization[:7], "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(authorization[7:])
+}
+
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	secret := r.URL.Query().Get("secret")
-	if secret == "" {
-		secret = r.Header.Get("Authorization")
-	}
-	if len(secret) > 7 && strings.HasPrefix(secret, "Bearer ") {
-		secret = strings.TrimSpace(secret[7:])
-	}
+	secret := bearerToken(r)
 	if secret == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -139,17 +143,14 @@ func (h *Hub) remove(id int64, current *session) {
 }
 
 func connectionMetadata(r *http.Request) (string, int, int, int) {
-	value := func(header, query string) string {
-		if current := strings.TrimSpace(r.Header.Get(header)); current != "" {
-			return current
-		}
-		return strings.TrimSpace(r.URL.Query().Get(query))
+	value := func(header string) string {
+		return strings.TrimSpace(r.Header.Get(header))
 	}
-	flag := func(header, query string) int {
-		parsed, _ := strconv.Atoi(value(header, query))
+	flag := func(header string) int {
+		parsed, _ := strconv.Atoi(value(header))
 		return parsed
 	}
-	return value("X-Flux-Version", "version"), flag("X-Flux-Http", "http"), flag("X-Flux-Tls", "tls"), flag("X-Flux-Socks", "socks")
+	return value("X-Flux-Version"), flag("X-Flux-Http"), flag("X-Flux-Tls"), flag("X-Flux-Socks")
 }
 
 func (h *Hub) markOnline(ctx context.Context, id int64, r *http.Request) {

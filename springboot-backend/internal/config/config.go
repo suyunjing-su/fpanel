@@ -13,6 +13,7 @@ type Config struct {
 	Address           string
 	DatabasePath      string
 	JWTSecret         string
+	MetricsToken      string
 	LogLevel          string
 	AllowedOrigins    []string
 	ShutdownTimeout   time.Duration
@@ -31,9 +32,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		Address:           env("HTTP_ADDR", ":6365"),
+		Address:           env("HTTP_ADDR", "127.0.0.1:6365"),
 		DatabasePath:      env("DB_PATH", "/app/data/gost.db"),
 		JWTSecret:         strings.TrimSpace(os.Getenv("JWT_SECRET")),
+		MetricsToken:      strings.TrimSpace(os.Getenv("METRICS_TOKEN")),
 		LogLevel:          strings.ToLower(env("LOG_LEVEL", "info")),
 		AllowedOrigins:    splitCSV(os.Getenv("ALLOWED_ORIGINS")),
 		ShutdownTimeout:   shutdownTimeout,
@@ -43,6 +45,9 @@ func Load() (Config, error) {
 	}
 	if len(cfg.JWTSecret) < 32 {
 		return Config{}, errors.New("JWT_SECRET must contain at least 32 characters")
+	}
+	if len(cfg.MetricsToken) < 32 {
+		return Config{}, errors.New("METRICS_TOKEN must contain at least 32 characters")
 	}
 	if cfg.BootstrapPassword != "" && len(cfg.BootstrapPassword) < 12 {
 		return Config{}, errors.New("BOOTSTRAP_PASSWORD must contain at least 12 characters")

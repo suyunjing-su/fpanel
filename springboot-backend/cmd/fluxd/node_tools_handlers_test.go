@@ -239,7 +239,7 @@ func TestForwardDiagnoseRouteUsesAuthenticatedIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := httpapi.Middleware(slog.New(slog.NewTextHandler(io.Discard, nil)), observability.NewMetrics(db), manager, nil, mux, auth.NewRepository(db))
+	handler := httpapi.Middleware(slog.New(slog.NewTextHandler(io.Discard, nil)), observability.NewMetrics(db), manager, "metrics-token-0123456789abcdef0123", nil, mux, auth.NewRepository(db))
 	request := authenticatedRequest(http.MethodPost, "/api/v1/forward/diagnose", `{"forwardId":1}`, token)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

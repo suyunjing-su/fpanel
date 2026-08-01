@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -49,13 +50,13 @@ func Failure(code int, message string) APIResponse {
 	return APIResponse{Code: code, Msg: message, TS: time.Now().UnixMilli(), Data: nil}
 }
 
-func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.Manager, allowedOrigins []string, handler http.Handler, identityStore IdentityStore, auditRecorders ...audit.Recorder) http.Handler {
+func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.Manager, metricsToken string, allowedOrigins []string, handler http.Handler, identityStore IdentityStore, auditRecorders ...audit.Recorder) http.Handler {
 	var auditRecorder audit.Recorder
 	if len(auditRecorders) > 0 {
 		auditRecorder = auditRecorders[0]
 	}
 	handler = auditRequests(log, auditRecorder, handler)
-	handler = authenticatePublicRoutes(manager, handler, identityStore)
+	handler = authenticatePublicRoutes(manager, metricsToken, handler, identityStore)
 	return requestID(log, metrics, cors(allowedOrigins, securityHeaders(recoverPanic(log, handler))))
 }
 
@@ -63,13 +64,22 @@ type IdentityStore interface {
 	FindIdentity(context.Context, int64) (auth.Identity, error)
 }
 
-func authenticatePublicRoutes(manager *auth.Manager, next http.Handler, identityStores ...IdentityStore) http.Handler {
+func authenticatePublicRoutes(manager *auth.Manager, metricsToken string, next http.Handler, identityStores ...IdentityStore) http.Handler {
 	var identityStore IdentityStore
 	if len(identityStores) > 0 {
 		identityStore = identityStores[0]
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" || r.URL.Path == "/metrics" || r.URL.Path == "/system-info" ||
+		if r.URL.Path == "/metrics" {
+			if !validBearerToken(r, metricsToken) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+				WriteJSON(w, http.StatusUnauthorized, Failure(http.StatusUnauthorized, "未授权"))
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" || r.URL.Path == "/system-info" ||
 			r.URL.Path == "/flow/test" || r.URL.Path == "/flow/upload" || r.URL.Path == "/flow/config" || r.URL.Path == "/flow/config/all" || r.URL.Path == "/api/v1/user/login" || r.URL.Path == "/api/v1/config/get" ||
 			strings.HasPrefix(r.URL.Path, "/api/v1/captcha/") || strings.HasPrefix(r.URL.Path, "/api/v1/open_api/") {
 			next.ServeHTTP(w, r)
@@ -77,6 +87,15 @@ func authenticatePublicRoutes(manager *auth.Manager, next http.Handler, identity
 		}
 		authenticateWithStore(manager, next, identityStore).ServeHTTP(w, r)
 	})
+}
+
+func validBearerToken(r *http.Request, expected string) bool {
+	raw := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(raw) <= 7 || !strings.EqualFold(raw[:7], "Bearer ") {
+		return false
+	}
+	actual := strings.TrimSpace(raw[7:])
+	return len(actual) == len(expected) && subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
 }
 
 func auditRequests(log *slog.Logger, recorder audit.Recorder, next http.Handler) http.Handler {

@@ -66,7 +66,7 @@ func TestAccountPackageResetAndPasswordRoutes(t *testing.T) {
 	mux := http.NewServeMux()
 	registerAccountRoutes(mux, userRepo, tunnelRepo, forwardRepo, authRepo, &batchWakeCounter{}, func(*http.Request) bool { return true })
 	manager := auth.New("0123456789abcdef0123456789abcdef", time.Hour)
-	handler := httpapi.Middleware(slog.New(slog.NewTextHandler(io.Discard, nil)), observability.NewMetrics(db), manager, nil, mux, authRepo)
+	handler := httpapi.Middleware(slog.New(slog.NewTextHandler(io.Discard, nil)), observability.NewMetrics(db), manager, "metrics-token-0123456789abcdef0123", nil, mux, authRepo)
 	token, err := manager.Issue(auth.Identity{UserID: 1, Username: "member", Role: "user", RoleID: 1, TokenVersion: 1})
 	if err != nil {
 		t.Fatal(err)

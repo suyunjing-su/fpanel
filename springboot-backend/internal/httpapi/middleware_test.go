@@ -23,6 +23,7 @@ func TestSystemInfoBypassesJWTAndPreservesHijacker(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		observability.NewMetrics(),
 		auth.New("0123456789abcdef0123456789abcdef", time.Hour),
+		"metrics-token-0123456789abcdef0123",
 		nil,
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			called = true
@@ -44,6 +45,37 @@ func TestSystemInfoBypassesJWTAndPreservesHijacker(t *testing.T) {
 	}
 }
 
+func TestMetricsRequireDedicatedBearerToken(t *testing.T) {
+	const metricsToken = "metrics-token-0123456789abcdef0123"
+	handler := Middleware(
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		observability.NewMetrics(),
+		auth.New("0123456789abcdef0123456789abcdef", time.Hour),
+		metricsToken,
+		nil,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+		nil,
+	)
+	for _, authorization := range []string{"", "Bearer wrong-token"} {
+		request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		request.Header.Set("Authorization", authorization)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("authorization %q returned %d", authorization, response.Code)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("Authorization", "Bearer "+metricsToken)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid metrics token returned %d", response.Code)
+	}
+}
+
 func TestMiddlewareAuditsOnlyRedactedMutations(t *testing.T) {
 	manager := auth.New("0123456789abcdef0123456789abcdef", time.Hour)
 	identity := auth.Identity{UserID: 42, Username: "operator", Role: "admin", RoleID: 0, TokenVersion: 3}
@@ -56,6 +88,7 @@ func TestMiddlewareAuditsOnlyRedactedMutations(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		observability.NewMetrics(),
 		manager,
+		"metrics-token-0123456789abcdef0123",
 		nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(r.URL.Path, "delete") {

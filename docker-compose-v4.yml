@@ -4,13 +4,15 @@ services:
     container_name: flux-control-plane
     restart: unless-stopped
     environment:
+      HTTP_ADDR: 0.0.0.0:6365
       DB_PATH: /app/data/gost.db
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      METRICS_TOKEN: ${METRICS_TOKEN:?METRICS_TOKEN is required}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-admin}
       BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?BOOTSTRAP_PASSWORD is required}
-    ports:
-      - "${BACKEND_PORT}:6365"
+    expose:
+      - "6365"
     volumes:
       - sqlite_data:/app/data
     networks:
@@ -23,25 +25,63 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   frontend:
     image: cloudlink2/fp-frontend:3.0.26-beta
     container_name: vite-frontend
     restart: unless-stopped
-    ports:
-      - "${FRONTEND_PORT}:80"
+    expose:
+      - "80"
     depends_on:
       backend:
         condition: service_healthy
     networks:
       - gost-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
+  ingress:
+    image: caddy:2.8.4-alpine
+    container_name: flux-ingress
+    restart: unless-stopped
+    environment:
+      PANEL_DOMAIN: ${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    networks:
+      - gost-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   sqlite_data:
     name: sqlite_data
     driver: local
-
+  caddy_data:
+    name: flux_caddy_data
+    driver: local
+  caddy_config:
+    name: flux_caddy_config
+    driver: local
 
 networks:
   gost-network:
@@ -49,4 +89,4 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/16 
+        - subnet: 172.20.0.0/16

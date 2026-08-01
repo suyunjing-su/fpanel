@@ -116,11 +116,32 @@ func TestConnectionMetadataPrefersHandshakeHeaders(t *testing.T) {
 	}
 }
 
-func TestConnectionMetadataFallsBackToQuery(t *testing.T) {
-	request := httptest.NewRequest(http.MethodGet, "/system-info?version=legacy&http=1&tls=0&socks=1", nil)
+func TestConnectionMetadataIgnoresQueryParameters(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/system-info?version=legacy&http=1&tls=1&socks=1", nil)
 	version, httpFlag, tlsFlag, socksFlag := connectionMetadata(request)
-	if version != "legacy" || httpFlag != 1 || tlsFlag != 0 || socksFlag != 1 {
-		t.Fatalf("unexpected metadata: %q %d %d %d", version, httpFlag, tlsFlag, socksFlag)
+	if version != "" || httpFlag != 0 || tlsFlag != 0 || socksFlag != 0 {
+		t.Fatalf("query metadata was accepted: %q %d %d %d", version, httpFlag, tlsFlag, socksFlag)
+	}
+}
+
+func TestNodeHandshakeRequiresBearerHeaderAndRejectsBrowserOrigins(t *testing.T) {
+	hub := New(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	queryRequest := httptest.NewRequest(http.MethodGet, "/system-info?secret=node-secret", nil)
+	if token := bearerToken(queryRequest); token != "" {
+		t.Fatalf("query secret was accepted: %q", token)
+	}
+	headerRequest := httptest.NewRequest(http.MethodGet, "/system-info", nil)
+	headerRequest.Header.Set("Authorization", "Bearer node-secret")
+	if token := bearerToken(headerRequest); token != "node-secret" {
+		t.Fatalf("bearer token=%q", token)
+	}
+	browserRequest := httptest.NewRequest(http.MethodGet, "/system-info", nil)
+	browserRequest.Header.Set("Origin", "https://attacker.example")
+	if hub.upgrader.CheckOrigin(browserRequest) {
+		t.Fatal("browser origin was accepted")
+	}
+	if !hub.upgrader.CheckOrigin(headerRequest) {
+		t.Fatal("non-browser agent request was rejected")
 	}
 }
 

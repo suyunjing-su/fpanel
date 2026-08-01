@@ -11,13 +11,7 @@ RELEASE_VERSION="3.0.26-beta"
 # 全局下载地址配置
 DOCKER_COMPOSEV4_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/docker-compose-v4.yml"
 DOCKER_COMPOSEV6_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/docker-compose-v6.yml"
-
-COUNTRY=$(curl -s https://ipinfo.io/country)
-if [ "$COUNTRY" = "CN" ]; then
-    # 拼接 URL
-    DOCKER_COMPOSEV4_URL="https://ghfast.top/${DOCKER_COMPOSEV4_URL}"
-    DOCKER_COMPOSEV6_URL="https://ghfast.top/${DOCKER_COMPOSEV6_URL}"
-fi
+CADDYFILE_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/Caddyfile"
 
 
 
@@ -167,13 +161,27 @@ upsert_env() {
 }
 
 ensure_go_control_plane_env() {
+  umask 077
   touch .env
+  chmod 600 .env
   local jwt_secret
   jwt_secret=$(grep '^JWT_SECRET=' .env | cut -d'=' -f2- || true)
   if [[ ${#jwt_secret} -lt 32 ]]; then
     jwt_secret="$(generate_random)$(generate_random)"
     upsert_env JWT_SECRET "$jwt_secret"
     echo "✅ 已将 JWT 密钥升级为 Go 控制面要求的安全长度"
+  fi
+  local metrics_token
+  metrics_token=$(grep '^METRICS_TOKEN=' .env | cut -d'=' -f2- || true)
+  if [[ ${#metrics_token} -lt 32 ]]; then
+    metrics_token="$(generate_random)$(generate_random)"
+    upsert_env METRICS_TOKEN "$metrics_token"
+  fi
+  local panel_domain
+  panel_domain=$(grep '^PANEL_DOMAIN=' .env | cut -d'=' -f2- || true)
+  if [[ -z "$panel_domain" ]]; then
+    echo "❌ 更新需要 .env 中已配置 PANEL_DOMAIN"
+    return 1
   fi
   local bootstrap_username
   bootstrap_username=$(grep '^BOOTSTRAP_USERNAME=' .env | cut -d'=' -f2- || true)
@@ -204,14 +212,17 @@ delete_self() {
 get_config_params() {
   echo "🔧 请输入配置参数："
 
-  read -p "前端端口（默认 6366）: " FRONTEND_PORT
-  FRONTEND_PORT=${FRONTEND_PORT:-6366}
+  while true; do
+    read -p "面板域名（DNS 必须已指向本机）: " PANEL_DOMAIN
+    PANEL_DOMAIN=$(printf '%s' "$PANEL_DOMAIN" | tr '[:upper:]' '[:lower:]')
+    if [[ "$PANEL_DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
+      break
+    fi
+    echo "❌ 请输入有效域名，例如 panel.example.com"
+  done
 
-  read -p "后端端口（默认 6365）: " BACKEND_PORT
-  BACKEND_PORT=${BACKEND_PORT:-6365}
-
-  # 生成JWT密钥和初始管理员密码
   JWT_SECRET=$(generate_random)$(generate_random)
+  METRICS_TOKEN=$(generate_random)$(generate_random)
   BOOTSTRAP_PASSWORD=$(generate_random)
 }
 
@@ -224,7 +235,8 @@ install_panel() {
   echo "🔽 下载必要文件..."
   DOCKER_COMPOSE_URL=$(get_docker_compose_url)
   echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-  curl -L -o docker-compose.yml "$DOCKER_COMPOSE_URL"
+  curl --fail --location --retry 3 -o docker-compose.yml "$DOCKER_COMPOSE_URL"
+  curl --fail --location --retry 3 -o Caddyfile "$CADDYFILE_URL"
   echo "✅ 文件准备完成"
 
   # 自动检测并配置 IPv6 支持
@@ -233,19 +245,22 @@ install_panel() {
     configure_docker_ipv6
   fi
 
+  umask 077
   cat > .env <<EOF
 JWT_SECRET=$JWT_SECRET
+METRICS_TOKEN=$METRICS_TOKEN
 BOOTSTRAP_USERNAME=admin
 BOOTSTRAP_PASSWORD=$BOOTSTRAP_PASSWORD
-FRONTEND_PORT=$FRONTEND_PORT
-BACKEND_PORT=$BACKEND_PORT
+PANEL_DOMAIN=$PANEL_DOMAIN
 EOF
+  chmod 600 .env
+  $DOCKER_CMD config >/dev/null
 
   echo "🚀 启动 docker 服务..."
   $DOCKER_CMD up -d
 
   echo "🎉 部署完成"
-  echo "🌐 访问地址: http://服务器IP:$FRONTEND_PORT"
+  echo "🌐 访问地址: https://$PANEL_DOMAIN"
   echo "📖 部署完成后请阅读下使用文档，求求了啊，不要上去就是一顿操作"
   echo "📚 文档地址: https://tes.cc/guide.html"
   echo "💡 初始管理员账号: admin"
@@ -263,9 +278,13 @@ update_panel() {
   echo "🔽 下载最新配置文件..."
   DOCKER_COMPOSE_URL=$(get_docker_compose_url)
   echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-  curl -L -o docker-compose.yml "$DOCKER_COMPOSE_URL"
-  echo "✅ 下载完成"
+  curl --fail --location --retry 3 -o docker-compose.yml.candidate "$DOCKER_COMPOSE_URL"
+  curl --fail --location --retry 3 -o Caddyfile.candidate "$CADDYFILE_URL"
   ensure_go_control_plane_env
+  $DOCKER_CMD -f docker-compose.yml.candidate config >/dev/null
+  mv docker-compose.yml.candidate docker-compose.yml
+  mv Caddyfile.candidate Caddyfile
+  echo "✅ 下载并验证完成"
 
   # 自动检测并配置 IPv6 支持
   if check_ipv6_support; then
@@ -338,8 +357,9 @@ uninstall_panel() {
     echo "⚠️ 未找到 docker-compose.yml 文件，正在下载以完成卸载..."
     DOCKER_COMPOSE_URL=$(get_docker_compose_url)
     echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-    curl -L -o docker-compose.yml "$DOCKER_COMPOSE_URL"
-    echo "✅ docker-compose.yml 下载完成"
+    curl --fail --location --retry 3 -o docker-compose.yml "$DOCKER_COMPOSE_URL"
+    curl --fail --location --retry 3 -o Caddyfile "$CADDYFILE_URL"
+    echo "✅ docker-compose.yml 与 Caddyfile 下载完成"
   fi
 
   read -p "确认卸载面板吗？此操作将停止并删除所有容器和数据 (y/N): " confirm
@@ -351,7 +371,7 @@ uninstall_panel() {
   echo "🛑 停止并删除容器、镜像、卷..."
   $DOCKER_CMD down --rmi all --volumes --remove-orphans
   echo "🧹 删除配置文件..."
-  rm -f docker-compose.yml .env
+  rm -f docker-compose.yml Caddyfile .env
   echo "✅ 卸载完成"
 }
 

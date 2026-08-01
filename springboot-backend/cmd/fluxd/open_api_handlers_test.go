@@ -41,7 +41,7 @@ func TestSubscriptionUsageRoute(t *testing.T) {
 	repository := auth.NewRepository(db)
 	mux := http.NewServeMux()
 	registerOpenAPIRoutes(mux, repository)
-	handler := httpapi.Middleware(slog.New(slog.NewTextHandler(io.Discard, nil)), observability.NewMetrics(db), auth.New("0123456789abcdef0123456789abcdef", time.Hour), nil, mux, repository)
+	handler := httpapi.Middleware(slog.New(slog.NewTextHandler(io.Discard, nil)), observability.NewMetrics(db), auth.New("0123456789abcdef0123456789abcdef", time.Hour), "metrics-token-0123456789abcdef0123", nil, mux, repository)
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/open_api/sub_store?tunnel=10", nil)
 	request.SetBasicAuth("member", "member-pass")
