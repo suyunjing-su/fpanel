@@ -58,11 +58,11 @@ func TestSubscriptionUsageRoute(t *testing.T) {
 		t.Fatalf("cache control=%q", response.Header().Get("Cache-Control"))
 	}
 
-	legacy := httptest.NewRequest(http.MethodGet, "/api/v1/open_api/sub_store?user=member&pwd=member-pass", nil)
-	legacyResponse := httptest.NewRecorder()
-	handler.ServeHTTP(legacyResponse, legacy)
-	if legacyResponse.Code != http.StatusOK || legacyResponse.Header().Get("Subscription-Userinfo") != "upload=300; download=200; total=1000; expire="+strconv.FormatInt(expiresAt/1000, 10) {
-		t.Fatalf("legacy subscription status=%d header=%q body=%s", legacyResponse.Code, legacyResponse.Header().Get("Subscription-Userinfo"), legacyResponse.Body.String())
+	queryCredentials := httptest.NewRequest(http.MethodGet, "/api/v1/open_api/sub_store?user=member&pwd=member-pass", nil)
+	queryCredentialsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(queryCredentialsResponse, queryCredentials)
+	if queryCredentialsResponse.Code != http.StatusUnauthorized || queryCredentialsResponse.Header().Get("WWW-Authenticate") == "" {
+		t.Fatalf("query credentials status=%d authenticate=%q body=%s", queryCredentialsResponse.Code, queryCredentialsResponse.Header().Get("WWW-Authenticate"), queryCredentialsResponse.Body.String())
 	}
 
 	unauthorized := httptest.NewRequest(http.MethodGet, "/api/v1/open_api/sub_store", nil)

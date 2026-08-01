@@ -15,8 +15,9 @@ func registerOpenAPIRoutes(mux *http.ServeMux, repository *auth.Repository) {
 	mux.HandleFunc("GET /api/v1/open_api/sub_store", func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()
 		if !ok {
-			username = r.URL.Query().Get("user")
-			password = r.URL.Query().Get("pwd")
+			w.Header().Set("WWW-Authenticate", `Basic realm="flux subscription"`)
+			httpapi.WriteJSON(w, http.StatusUnauthorized, httpapi.Failure(http.StatusUnauthorized, "鉴权失败"))
+			return
 		}
 		tunnelID := int64(0)
 		tunnel := strings.TrimSpace(r.URL.Query().Get("tunnel"))
