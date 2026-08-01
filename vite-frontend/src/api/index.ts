@@ -197,6 +197,19 @@ export const updateConfigs = (configMap: Record<string, string>) =>
 export const updateConfig = (name: string, value: string) =>
   Network.post("/config/update-single", { name, value });
 
+export interface MaintenanceRunEvent {
+  id: number;
+  job: string;
+  periodKey: string;
+  status: "succeeded" | "failed";
+  detail: string;
+  startedAt: number;
+  completedAt: number;
+}
+
+export const listMaintenanceRunEvents = (limit = 50) =>
+  Network.post<MaintenanceRunEvent[]>("/maintenance/run/list", { limit });
+
 export const getAuditLogs = (data: AuditListRequest) =>
   Network.post<AuditPage>("/audit/list", data);
 

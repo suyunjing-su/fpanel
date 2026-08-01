@@ -84,6 +84,7 @@ func run() error {
 	policyRepo := tunnelpolicies.NewRepository(db)
 	runtimeControlRepo := runtimecontrols.NewRepository(db, hub)
 	healthRepo := tunnelhealth.NewRepository(db)
+	maintenanceRepo := maintenance.NewRepository(db)
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
 	refreshQueue := tunnelhealth.NewRefreshQueue(db, hub, log)
@@ -142,6 +143,7 @@ func run() error {
 	registerAuditRoutes(mux, auditRepo, isAdmin)
 	restart := make(chan struct{}, 1)
 	registerOperationsRoutes(mux, db, cfg.DatabasePath, restart, isAdmin)
+	registerMaintenanceRoutes(mux, maintenanceRepo, isAdmin)
 	mux.HandleFunc("POST /api/v1/tunnel/failure-event/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
 			forbidden(w)

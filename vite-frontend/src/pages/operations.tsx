@@ -17,7 +17,9 @@ import { useNavigate } from "react-router-dom";
 import {
   downloadDatabaseBackup,
   downloadSupportBundle,
+  listMaintenanceRunEvents,
   restoreDatabaseBackup,
+  type MaintenanceRunEvent,
 } from "@/api";
 import { isAdmin } from "@/utils/auth";
 
@@ -48,12 +50,42 @@ export default function OperationsPage() {
     "backup" | "support" | null
   >(null);
   const [restoreLoading, setRestoreLoading] = useState(false);
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false);
+  const [maintenanceEvents, setMaintenanceEvents] = useState<MaintenanceRunEvent[]>([]);
+
+  const loadMaintenanceEvents = async () => {
+    setMaintenanceLoading(true);
+    try {
+      const response = await listMaintenanceRunEvents();
+      if (response.code !== 0) {
+        toast.error(response.msg || "获取维护运行历史失败");
+        return;
+      }
+      setMaintenanceEvents(response.data || []);
+    } catch (error) {
+      console.error("获取维护运行历史失败:", error);
+      toast.error("获取维护运行历史失败");
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
+  const formatTime = (timestamp: number) =>
+    new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+
+  const maintenanceJobLabel = (job: string) =>
+    job === "monthly_traffic_reset" ? "月度流量重置" : "小时流量统计";
+
+  const maintenanceDuration = (event: MaintenanceRunEvent) =>
+    `${Math.max(0, event.completedAt - event.startedAt)} ms`;
 
   useEffect(() => {
     if (!isAdmin()) {
       toast.error("权限不足，只有管理员可以访问此页面");
       navigate("/dashboard", { replace: true });
+      return;
     }
+    void loadMaintenanceEvents();
   }, [navigate]);
 
   const handleDownload = async (kind: "backup" | "support") => {
@@ -170,6 +202,62 @@ export default function OperationsPage() {
             </CardBody>
           </Card>
         </div>
+
+        <Card className="panel-shell">
+          <CardHeader className="flex flex-row items-start justify-between gap-4 px-5 pt-5">
+            <div>
+              <h2 className="text-lg font-semibold">维护运行历史</h2>
+              <p className="text-sm panel-muted mt-1">
+                查看月度流量重置与小时统计的最近执行结果，失败会保留错误摘要以便诊断。
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="flat"
+              onPress={() => void loadMaintenanceEvents()}
+              isLoading={maintenanceLoading}
+              isDisabled={restoreLoading}
+            >
+              刷新
+            </Button>
+          </CardHeader>
+          <Divider />
+          <CardBody className="px-5 py-5">
+            {maintenanceEvents.length === 0 ? (
+              <p className="text-sm panel-muted">尚无已完成的维护作业。</p>
+            ) : (
+              <div className="space-y-3">
+                {maintenanceEvents.map((event) => (
+                  <div
+                    key={event.id}
+                    className={`rounded-xl border px-4 py-3 ${event.status === "failed"
+                      ? "border-danger-200 bg-danger-50/60 dark:border-danger-800 dark:bg-danger-950/20"
+                      : "border-success-200 bg-success-50/60 dark:border-success-800 dark:bg-success-950/20"}`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${event.status === "failed"
+                          ? "bg-danger-100 text-danger-700 dark:bg-danger-900/60 dark:text-danger-300"
+                          : "bg-success-100 text-success-700 dark:bg-success-900/60 dark:text-success-300"}`}>
+                          {event.status === "failed" ? "失败" : "成功"}
+                        </span>
+                        <span className="text-sm font-medium">{maintenanceJobLabel(event.job)}</span>
+                      </div>
+                      <span className="text-xs panel-muted">{maintenanceDuration(event)}</span>
+                    </div>
+                    <p className="mt-2 break-words text-sm text-default-700 dark:text-default-300">
+                      {event.detail || "未提供详情"}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs panel-muted">
+                      <span>周期：{event.periodKey}</span>
+                      <span>完成：{formatTime(event.completedAt)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardBody>
+        </Card>
 
         <Card className="panel-shell border-danger-200 dark:border-danger-800">
           <CardHeader className="flex flex-col items-start gap-1 px-5 pt-5">

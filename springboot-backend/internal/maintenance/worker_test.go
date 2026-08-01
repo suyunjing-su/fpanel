@@ -72,6 +72,13 @@ func TestWorkerResetsShortMonthAndRecordsHourlyIncrementOnce(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("hourly statistics duplicated: count=%d", count)
 	}
+	var succeededEvents int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM maintenance_run_events WHERE status='succeeded'`).Scan(&succeededEvents); err != nil {
+		t.Fatal(err)
+	}
+	if succeededEvents != 3 {
+		t.Fatalf("maintenance events=%d want=3", succeededEvents)
+	}
 
 	changed, err = worker.resetMonthlyTraffic(ctx, now)
 	if err != nil || changed {
