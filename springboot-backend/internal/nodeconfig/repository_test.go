@@ -75,7 +75,7 @@ func TestBuildHybridTunnelWithUserPolicies(t *testing.T) {
 	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,created_at,updated_at) VALUES(1,'hybrid',2,1,1,1,1,1)`)
 	execFixture(t, db, `INSERT INTO tunnel_nodes(id,tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol,speed_limit_mbps) VALUES
 		(1,1,1,1,7000,'fifo',0,'udp+quic',0),
-		(2,1,3,2,8000,'round',0,'udp+quic',0),
+		(2,1,3,2,8000,'round',0,'udp+quic',24),
 		(3,1,3,3,8100,'round',0,'udp+quic',0)`)
 	execFixture(t, db, `INSERT INTO user_tunnels(id,user_id,tunnel_id,status,created_at,updated_at) VALUES(1,1,1,1,1,1)`)
 	execFixture(t, db, `INSERT INTO user_tunnel_entry_policies(id,user_tunnel_id,tunnel_id,entry_node_id,speed_limit_mbps,status,created_at,updated_at) VALUES(1,1,1,1,16,1,1,1)`)
@@ -114,8 +114,22 @@ func TestBuildHybridTunnelWithUserPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if namedItem(exitDocument.Services, "1_relay_udp_quic_tcp") == nil || namedItem(exitDocument.Services, "1_relay_udp_quic_udp") == nil {
-		t.Fatalf("hybrid exit services are incomplete: %#v", exitDocument.Services)
+	for _, serviceName := range []string{"1_relay_udp_quic_tcp", "1_relay_udp_quic_udp"} {
+		service := namedItem(exitDocument.Services, serviceName)
+		if service == nil {
+			t.Fatalf("hybrid exit service %s is missing: %#v", serviceName, exitDocument.Services)
+		}
+		if service["limiter"] != "relay_1_2" {
+			t.Fatalf("hybrid exit service %s has no node limiter: %#v", serviceName, service)
+		}
+	}
+	relayLimiter := namedItem(exitDocument.Limiters, "relay_1_2")
+	if relayLimiter == nil {
+		t.Fatal("missing relay node limiter")
+	}
+	relayLimits, _ := relayLimiter["limits"].([]string)
+	if len(relayLimits) != 1 || relayLimits[0] != "$ 3MB 3MB" {
+		t.Fatalf("unexpected relay limiter: %#v", relayLimiter)
 	}
 }
 

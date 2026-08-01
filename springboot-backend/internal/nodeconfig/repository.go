@@ -213,8 +213,13 @@ func (r *Repository) Build(ctx context.Context, nodeID int64) (Document, error) 
 			continue
 		}
 		if currentNode.ChainType == 2 || currentNode.ChainType == 3 {
+			limiterName := ""
+			if currentNode.SpeedLimitMbps > 0 {
+				limiterName = fmt.Sprintf("relay_%d_%d", tunnel.ID, nodeID)
+				limiterSpeeds[limiterName] = currentNode.SpeedLimitMbps
+			}
 			for _, trafficProtocol := range trafficProtocols([]*tunnelNode{currentNode}) {
-				service := buildRelayService(current, currentNode, tunnel, topology, trafficProtocol)
+				service := buildRelayService(current, currentNode, tunnel, topology, trafficProtocol, limiterName)
 				addNamed(&document.Services, serviceNames, service)
 			}
 		}
@@ -771,12 +776,15 @@ func buildPathChain(current nodeRecord, tunnel tunnelRecord, suffix, trafficProt
 	}
 }
 
-func buildRelayService(current nodeRecord, item *tunnelNode, tunnel tunnelRecord, _ []*tunnelNode, trafficProtocol string) map[string]any {
+func buildRelayService(current nodeRecord, item *tunnelNode, tunnel tunnelRecord, _ []*tunnelNode, trafficProtocol, limiterName string) map[string]any {
 	service := map[string]any{
 		"name":     relayServiceName(item.TunnelID, item.Protocol, trafficProtocol),
 		"addr":     joinListenAddr(current, item.Port, item.Protocol, trafficProtocol),
 		"handler":  map[string]any{"type": "relay"},
 		"listener": transportConfig(item.Protocol, trafficProtocol, true, tunnel),
+	}
+	if limiterName != "" {
+		service["limiter"] = limiterName
 	}
 	if item.ChainType == 3 && strings.TrimSpace(current.InterfaceName) != "" {
 		service["metadata"] = map[string]any{"interface": current.InterfaceName}
