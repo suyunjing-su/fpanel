@@ -674,7 +674,7 @@ func (r *Repository) loadNodes(ctx context.Context, tunnel *Tunnel) error {
 		if err := rows.Scan(&kind, &nodeID, &port, &strategy, &hop, &protocol, &quota, &speed, &health, &overloaded, &latency, &checked); err != nil {
 			return err
 		}
-		spec := NodeSpec{NodeID: int64(nodeID), Port: port, Strategy: strategy, Inx: hop, Protocol: protocol, HealthStatus: health, BandwidthOverload: overloaded}
+		spec := NodeSpec{NodeID: int64(nodeID), Port: port, Strategy: strategy, ChainType: kind, Inx: hop, Protocol: protocol, HealthStatus: health, BandwidthOverload: overloaded}
 		if quota.Valid && quota.Int64 > 0 {
 			value := quota.Int64 / bytesPerGB
 			spec.FlowQuotaGB = &value

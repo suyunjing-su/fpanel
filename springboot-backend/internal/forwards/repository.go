@@ -103,6 +103,23 @@ func (r *Repository) List(ctx context.Context, userID int64, admin bool) ([]Forw
 	return result, rows.Err()
 }
 
+func (r *Repository) Get(ctx context.Context, id, userID int64, admin bool) (Forward, error) {
+	var f Forward
+	if id <= 0 {
+		return f, errors.New("forward id must be positive")
+	}
+	query := `SELECT f.id,f.user_id,COALESCE(u.username,''),f.name,f.tunnel_id,t.name,f.remote_addr,f.interface_name,f.strategy,f.endpoint_group_id,f.route_rule_set_id,f.max_connections,f.max_connections_per_ip,f.source_ranges,f.source_whitelist,f.proxy_protocol_receive,f.proxy_protocol_send,f.ingress_bytes,f.egress_bytes,f.status,f.sort_index,f.created_at,COALESCE((SELECT MIN(fp.port) FROM forward_ports fp WHERE fp.forward_id=f.id),0),t.in_ip FROM forwards f JOIN users u ON u.id=f.user_id JOIN tunnels t ON t.id=f.tunnel_id WHERE f.id=?`
+	args := []any{id}
+	if !admin {
+		query += " AND f.user_id=?"
+		args = append(args, userID)
+	}
+	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&f.ID, &f.UserID, &f.UserName, &f.Name, &f.TunnelID, &f.TunnelName, &f.RemoteAddr, &f.InterfaceName, &f.Strategy, &f.EndpointGroupID, &f.RouteRuleSetID, &f.MaxConnections, &f.MaxConnectionsPerIP, &f.SourceRanges, &f.SourceWhitelist, &f.ProxyProtocolReceive, &f.ProxyProtocolSend, &f.InFlow, &f.OutFlow, &f.Status, &f.SortIndex, &f.CreatedTime, &f.InPort, &f.InIP); err != nil {
+		return f, err
+	}
+	return f, nil
+}
+
 func (r *Repository) Create(ctx context.Context, request CreateRequest, actorID int64, admin bool) (int64, error) {
 	if request.UserID == 0 {
 		request.UserID = actorID

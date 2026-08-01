@@ -179,6 +179,17 @@ func (r *Repository) LookupSecret(ctx context.Context, secret string, id *int64)
 	}
 	return nil
 }
+
+func (r *Repository) SecretForInstall(ctx context.Context, id int64) (string, error) {
+	if id <= 0 {
+		return "", errors.New("node id must be positive")
+	}
+	var secret string
+	if err := r.db.QueryRowContext(ctx, "SELECT secret FROM nodes WHERE id=?", id).Scan(&secret); err != nil {
+		return "", err
+	}
+	return secret, nil
+}
 func (r *Repository) SetStatus(ctx context.Context, id int64, status int, version string) error {
 	if status != 0 && status != 1 {
 		return errors.New("invalid node status")

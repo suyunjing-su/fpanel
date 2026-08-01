@@ -117,6 +117,7 @@ func run() error {
 	registerLimitRoutes(mux, speedLimitRepo, policyRepo, tunnelRepo, refreshQueue, isAdmin)
 	registerBatchDeleteRoutes(mux, userRepo, nodeRepo, tunnelRepo, forwardRepo, refreshQueue, isAdmin)
 	registerAccountRoutes(mux, userRepo, tunnelRepo, forwardRepo, authRepo, refreshQueue, isAdmin)
+	registerNodeToolsRoutes(mux, nodeRepo, tunnelRepo, forwardRepo, configRepo, hub, isAdmin)
 	registerRuntimeControlRoutes(mux, runtimeControlRepo, refreshQueue, isAdmin)
 	mux.HandleFunc("POST /api/v1/tunnel/failure-event/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
