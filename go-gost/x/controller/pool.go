@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const failbackProbeInterval = 30 * time.Second
+
 type Status struct {
 	Address             string `json:"address"`
 	Active              bool   `json:"active"`
@@ -52,14 +54,34 @@ func Normalize(addresses []string) []string {
 }
 
 func (p *Pool) Candidates() []string {
+	return p.candidates(time.Now())
+}
+
+func (p *Pool) candidates(now time.Time) []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if len(p.entries) == 0 {
 		return nil
 	}
+
 	result := make([]string, 0, len(p.entries))
+	included := make(map[int]struct{}, len(p.entries))
+	if p.active > 0 {
+		probeBefore := now.Add(-failbackProbeInterval).UnixMilli()
+		for index := 0; index < p.active; index++ {
+			entry := p.entries[index]
+			if entry.ConsecutiveFailures == 0 || entry.LastFailureAt == 0 || entry.LastFailureAt <= probeBefore {
+				result = append(result, entry.Address)
+				included[index] = struct{}{}
+			}
+		}
+	}
+
 	for offset := 0; offset < len(p.entries); offset++ {
 		index := (p.active + offset) % len(p.entries)
+		if _, ok := included[index]; ok {
+			continue
+		}
 		result = append(result, p.entries[index].Address)
 	}
 	return result
