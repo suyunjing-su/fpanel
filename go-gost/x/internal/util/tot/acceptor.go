@@ -39,6 +39,7 @@ type Acceptor struct {
 	ready     chan net.Conn
 	errors    chan error
 	closed    chan struct{}
+	handshake chan struct{}
 	closeOnce sync.Once
 
 	mu       sync.Mutex
@@ -54,13 +55,14 @@ func NewAcceptor(listener net.Listener, options AcceptorOptions) (*Acceptor, err
 		return nil, err
 	}
 	a := &Acceptor{
-		listener: listener,
-		options:  options,
-		ready:    make(chan net.Conn, options.Backlog),
-		errors:   make(chan error, 1),
-		closed:   make(chan struct{}),
-		sessions: make(map[uint64]*managedSession),
-		nonces:   make(map[string]time.Time),
+		listener:  listener,
+		options:   options,
+		ready:     make(chan net.Conn, options.Backlog),
+		errors:    make(chan error, 1),
+		closed:    make(chan struct{}),
+		handshake: make(chan struct{}, options.Backlog),
+		sessions:  make(map[uint64]*managedSession),
+		nonces:    make(map[string]time.Time),
 	}
 	go a.acceptLoop()
 	go a.cleanupLoop()
@@ -99,6 +101,7 @@ func (a *Acceptor) Close() error {
 func (a *Acceptor) Addr() net.Addr { return a.listener.Addr() }
 
 func (a *Acceptor) acceptLoop() {
+	var tempDelay time.Duration
 	for {
 		conn, err := a.listener.Accept()
 		if err != nil {
@@ -107,17 +110,37 @@ func (a *Acceptor) acceptLoop() {
 				return
 			default:
 			}
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				if tempDelay == 0 {
+					tempDelay = 100 * time.Millisecond
+				} else {
+					tempDelay *= 2
+				}
+				if tempDelay > time.Second {
+					tempDelay = time.Second
+				}
+				time.Sleep(tempDelay)
+				continue
+			}
 			select {
 			case a.errors <- err:
 			default:
 			}
 			return
 		}
-		go a.acceptPath(conn)
+		tempDelay = 0
+		select {
+		case a.handshake <- struct{}{}:
+			go a.acceptPath(conn)
+		case <-a.closed:
+			_ = conn.Close()
+			return
+		}
 	}
 }
 
 func (a *Acceptor) acceptPath(conn net.Conn) {
+	defer func() { <-a.handshake }()
 	sessionID, err := ServerHandshake(conn, a.options.Handshake, a.recordNonce)
 	if err != nil {
 		_ = conn.Close()

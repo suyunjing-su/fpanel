@@ -23,7 +23,8 @@ var (
 
 var sessionRegistry = struct {
 	sync.Mutex
-	items map[*Session]struct{}
+	items  map[*Session]struct{}
+	totals Stats
 }{items: make(map[*Session]struct{})}
 
 type AggregateStats struct {
@@ -43,9 +44,15 @@ func Snapshot() AggregateStats {
 	for session := range sessionRegistry.items {
 		sessions = append(sessions, session)
 	}
+	totals := sessionRegistry.totals
 	sessionRegistry.Unlock()
 
 	var aggregate AggregateStats
+	aggregate.SentFrames = totals.SentFrames
+	aggregate.ReceivedFrames = totals.ReceivedFrames
+	aggregate.Retransmits = totals.Retransmits
+	aggregate.DuplicateFrames = totals.DuplicateFrames
+	aggregate.PathFailures = totals.PathFailures
 	for _, session := range sessions {
 		stats := session.Stats()
 		aggregate.Sessions++
@@ -720,6 +727,11 @@ func (s *Session) closeWithError(err error) {
 		}
 		close(s.closed)
 		sessionRegistry.Lock()
+		sessionRegistry.totals.SentFrames += s.stats.SentFrames
+		sessionRegistry.totals.ReceivedFrames += s.stats.ReceivedFrames
+		sessionRegistry.totals.Retransmits += s.stats.Retransmits
+		sessionRegistry.totals.DuplicateFrames += s.stats.DuplicateFrames
+		sessionRegistry.totals.PathFailures += s.stats.PathFailures
 		delete(sessionRegistry.items, s)
 		sessionRegistry.Unlock()
 		s.signal()

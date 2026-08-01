@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -80,6 +81,77 @@ func TestAcceptorAuthenticatesAndAggregatesPaths(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+func TestAcceptorSurvivesTemporaryAcceptError(t *testing.T) {
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := &temporaryErrorListener{Listener: base, failures: 1}
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	acceptor, err := NewAcceptor(listener, AcceptorOptions{
+		Session:   Options{Key: secret},
+		Handshake: HandshakeOptions{Secret: secret, Timeout: time.Second},
+		Backlog:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer acceptor.Close()
+	client := NewSession(4321, Options{Key: secret, Role: RoleClient})
+	defer client.Close()
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ClientHandshake(conn, client.ID(), HandshakeOptions{Secret: secret, Timeout: time.Second}); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	if err := client.AddPath(conn); err != nil {
+		t.Fatal(err)
+	}
+	serverConn, err := acceptor.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = serverConn.Close()
+}
+
+func TestSnapshotKeepsClosedSessionCounters(t *testing.T) {
+	before := Snapshot()
+	session := NewSession(5150, Options{})
+	session.stats.SentFrames = 3
+	session.stats.ReceivedFrames = 4
+	session.stats.Retransmits = 5
+	session.stats.DuplicateFrames = 6
+	session.stats.PathFailures = 7
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after := Snapshot()
+	if after.SentFrames < before.SentFrames+3 || after.ReceivedFrames < before.ReceivedFrames+4 || after.Retransmits < before.Retransmits+5 || after.DuplicateFrames < before.DuplicateFrames+6 || after.PathFailures < before.PathFailures+7 {
+		t.Fatalf("closed counters were not retained: before=%#v after=%#v", before, after)
+	}
+}
+
+type temporaryErrorListener struct {
+	net.Listener
+	failures int32
+}
+
+func (l *temporaryErrorListener) Accept() (net.Conn, error) {
+	if atomic.AddInt32(&l.failures, -1) >= 0 {
+		return nil, temporaryNetError{}
+	}
+	return l.Listener.Accept()
+}
+
+type temporaryNetError struct{}
+
+func (temporaryNetError) Error() string   { return "temporary accept failure" }
+func (temporaryNetError) Timeout() bool   { return false }
+func (temporaryNetError) Temporary() bool { return true }
 
 func TestHandshakeRejectsWrongSecret(t *testing.T) {
 	client, server := net.Pipe()

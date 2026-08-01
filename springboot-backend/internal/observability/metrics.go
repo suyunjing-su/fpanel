@@ -69,6 +69,41 @@ func (m *Metrics) writeDatabaseMetrics(w http.ResponseWriter) {
 		}
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n%s %d\n", metric.name, metric.help, metric.name, metric.name, value)
 	}
+	m.writeTOTMetrics(w)
+}
+
+func (m *Metrics) writeTOTMetrics(w http.ResponseWriter) {
+	rows, err := m.db.Query(`SELECT id,name,tot_sessions,tot_active_paths,tot_pending_frames,tot_sent_frames,tot_received_frames,tot_retransmits,tot_duplicate_frames,tot_path_failures FROM nodes ORDER BY id`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	fmt.Fprint(w, "# HELP flux_node_tot_sessions TOT sessions currently tracked by node.\n# TYPE flux_node_tot_sessions gauge\n")
+	fmt.Fprint(w, "# HELP flux_node_tot_active_paths TOT active paths currently tracked by node.\n# TYPE flux_node_tot_active_paths gauge\n")
+	fmt.Fprint(w, "# HELP flux_node_tot_pending_frames TOT pending frames currently tracked by node.\n# TYPE flux_node_tot_pending_frames gauge\n")
+	fmt.Fprint(w, "# HELP flux_node_tot_sent_frames_total TOT frames sent by node.\n# TYPE flux_node_tot_sent_frames_total counter\n")
+	fmt.Fprint(w, "# HELP flux_node_tot_received_frames_total TOT frames received by node.\n# TYPE flux_node_tot_received_frames_total counter\n")
+	fmt.Fprint(w, "# HELP flux_node_tot_retransmits_total TOT retransmitted frames by node.\n# TYPE flux_node_tot_retransmits_total counter\n")
+	fmt.Fprint(w, "# HELP flux_node_tot_duplicate_frames_total TOT duplicate frames received by node.\n# TYPE flux_node_tot_duplicate_frames_total counter\n")
+	fmt.Fprint(w, "# HELP flux_node_tot_path_failures_total TOT path failures by node.\n# TYPE flux_node_tot_path_failures_total counter\n")
+	for rows.Next() {
+		var id int64
+		var name string
+		var sessions, activePaths, pendingFrames int64
+		var sentFrames, receivedFrames, retransmits, duplicateFrames, pathFailures uint64
+		if err := rows.Scan(&id, &name, &sessions, &activePaths, &pendingFrames, &sentFrames, &receivedFrames, &retransmits, &duplicateFrames, &pathFailures); err != nil {
+			continue
+		}
+		labels := fmt.Sprintf("{node_id=%q,node=%q}", strconv.FormatInt(id, 10), name)
+		fmt.Fprintf(w, "flux_node_tot_sessions%s %d\n", labels, sessions)
+		fmt.Fprintf(w, "flux_node_tot_active_paths%s %d\n", labels, activePaths)
+		fmt.Fprintf(w, "flux_node_tot_pending_frames%s %d\n", labels, pendingFrames)
+		fmt.Fprintf(w, "flux_node_tot_sent_frames_total%s %d\n", labels, sentFrames)
+		fmt.Fprintf(w, "flux_node_tot_received_frames_total%s %d\n", labels, receivedFrames)
+		fmt.Fprintf(w, "flux_node_tot_retransmits_total%s %d\n", labels, retransmits)
+		fmt.Fprintf(w, "flux_node_tot_duplicate_frames_total%s %d\n", labels, duplicateFrames)
+		fmt.Fprintf(w, "flux_node_tot_path_failures_total%s %d\n", labels, pathFailures)
+	}
 }
 
 func (m *Metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {

@@ -30,6 +30,9 @@ func TestMetricsExposeControlPlaneState(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO tunnel_failure_events(tunnel_id,node_id,event_type,from_status,to_status,started_at,created_at) VALUES(1,1,'health',1,0,1,1)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`UPDATE nodes SET tot_sessions=2,tot_active_paths=3,tot_pending_frames=4,tot_sent_frames=5,tot_received_frames=6,tot_retransmits=7,tot_duplicate_frames=8,tot_path_failures=9 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
 
 	response := httptest.NewRecorder()
 	NewMetrics(db).ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
@@ -40,6 +43,9 @@ func TestMetricsExposeControlPlaneState(t *testing.T) {
 		"flux_tunnels_enabled 1",
 		"flux_config_refresh_pending 1",
 		"flux_failure_events_active 1",
+		"flux_node_tot_sessions{node_id=\"1\",node=\"node\"} 2",
+		"flux_node_tot_sent_frames_total{node_id=\"1\",node=\"node\"} 5",
+		"flux_node_tot_path_failures_total{node_id=\"1\",node=\"node\"} 9",
 	} {
 		if !strings.Contains(body, metric) {
 			t.Fatalf("metric %q missing from output:\n%s", metric, body)
