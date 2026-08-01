@@ -18,6 +18,11 @@ const PANEL_LABELS: Record<string, PanelLabelEntry> = {
   "/limit": { title: "限速管理", admin: "限速管理", profile: "限速管理" },
   "/user": { title: "用户管理", admin: "用户管理", profile: "用户管理" },
   "/config": { title: "网站配置", admin: "网站配置", profile: "网站配置" },
+  "/runtime-policy": {
+    title: "运行策略",
+    admin: "运行策略",
+    profile: "运行策略",
+  },
   "/audit": { title: "审计日志", admin: "审计日志", profile: "审计日志" },
   "/profile": { title: "个人中心", h5: "我的" },
   "/change-password": { title: "修改密码" },

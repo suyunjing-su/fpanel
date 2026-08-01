@@ -224,9 +224,9 @@ func TestBuildAdvancedForwardControls(t *testing.T) {
 	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,created_at,updated_at) VALUES(1,'direct',1,1,1,1,1,1)`)
 	execFixture(t, db, `INSERT INTO tunnel_nodes(id,tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol) VALUES(1,1,1,1,7000,'fifo',0,'tcp')`)
 	execFixture(t, db, `INSERT INTO endpoint_groups(id,name,strategy,max_fails,fail_timeout_ms,probe_interval_ms,probe_timeout_ms,status,created_at,updated_at) VALUES(1,'origins','round',2,45000,7000,1500,1,1,1)`)
-	execFixture(t, db, `INSERT INTO endpoints(id,group_id,name,address,priority,backup,status,sort_index,created_at,updated_at) VALUES
-		(1,1,'primary','192.0.2.10:443',20,0,1,0,1,1),
-		(2,1,'backup','192.0.2.20:443',10,1,1,1,1,1)`)
+	execFixture(t, db, `INSERT INTO endpoints(id,group_id,name,address,priority,weight,backup,status,sort_index,created_at,updated_at) VALUES
+		(1,1,'primary','192.0.2.10:443',20,7,0,1,0,1,1),
+		(2,1,'backup','192.0.2.20:443',10,3,1,1,1,1,1)`)
 	execFixture(t, db, `INSERT INTO route_rule_sets(id,name,status,created_at,updated_at) VALUES(1,'hosts',1,1,1)`)
 	execFixture(t, db, `INSERT INTO route_rules(id,rule_set_id,name,match_type,value,secondary_value,negate,priority,status,sort_index,created_at,updated_at) VALUES(1,1,'api','host','api.example.com','',0,200,1,0,1,1)`)
 	execFixture(t, db, `INSERT INTO route_rule_endpoints(rule_id,endpoint_id) VALUES(1,1)`)
@@ -269,8 +269,12 @@ func TestBuildAdvancedForwardControls(t *testing.T) {
 	if matcher["rule"] != "Host(`api.example.com`)" || matcher["priority"] != 1_000_200 {
 		t.Fatalf("route matcher is incomplete: %#v", matcher)
 	}
+	ruleMetadata, _ := nodes[0]["metadata"].(map[string]any)
+	if ruleMetadata["weight"] != 7 {
+		t.Fatalf("route endpoint weight is missing: %#v", nodes[0])
+	}
 	backupMetadata, _ := nodes[2]["metadata"].(map[string]any)
-	if backupMetadata["backup"] != true {
+	if backupMetadata["backup"] != true || backupMetadata["weight"] != 3 {
 		t.Fatalf("backup endpoint is not marked: %#v", nodes[2])
 	}
 	if nodes[3]["addr"] != "198.51.100.5:443" {

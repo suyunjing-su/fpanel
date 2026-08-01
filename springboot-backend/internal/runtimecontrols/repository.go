@@ -19,6 +19,7 @@ type Endpoint struct {
 	Name      string `json:"name"`
 	Address   string `json:"address"`
 	Priority  int    `json:"priority"`
+	Weight    int    `json:"weight"`
 	Backup    int    `json:"backup"`
 	Status    int    `json:"status"`
 	SortIndex int    `json:"sortIndex"`
@@ -802,7 +803,7 @@ func (r *Repository) DeleteEndpointGroup(ctx context.Context, id int64) error {
 func (r *Repository) loadEndpoints(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, groupID int64) ([]Endpoint, error) {
-	rows, err := queryer.QueryContext(ctx, `SELECT id,name,address,priority,backup,status,sort_index FROM endpoints WHERE group_id=? ORDER BY sort_index,id`, groupID)
+	rows, err := queryer.QueryContext(ctx, `SELECT id,name,address,priority,weight,backup,status,sort_index FROM endpoints WHERE group_id=? ORDER BY sort_index,id`, groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -810,7 +811,7 @@ func (r *Repository) loadEndpoints(ctx context.Context, queryer interface {
 	result := make([]Endpoint, 0)
 	for rows.Next() {
 		var endpoint Endpoint
-		if err := rows.Scan(&endpoint.ID, &endpoint.Name, &endpoint.Address, &endpoint.Priority, &endpoint.Backup, &endpoint.Status, &endpoint.SortIndex); err != nil {
+		if err := rows.Scan(&endpoint.ID, &endpoint.Name, &endpoint.Address, &endpoint.Priority, &endpoint.Weight, &endpoint.Backup, &endpoint.Status, &endpoint.SortIndex); err != nil {
 			return nil, err
 		}
 		result = append(result, endpoint)
@@ -847,13 +848,13 @@ func replaceEndpoints(ctx context.Context, tx *sql.Tx, groupID int64, endpoints 
 			if _, duplicate := kept[endpoint.ID]; duplicate {
 				return fmt.Errorf("duplicate endpoint id %d", endpoint.ID)
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE endpoints SET name=?,address=?,priority=?,backup=?,status=?,sort_index=?,updated_at=? WHERE id=? AND group_id=?`, strings.TrimSpace(endpoint.Name), strings.TrimSpace(endpoint.Address), endpoint.Priority, endpoint.Backup, endpoint.Status, endpoint.SortIndex, now, endpoint.ID, groupID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE endpoints SET name=?,address=?,priority=?,weight=?,backup=?,status=?,sort_index=?,updated_at=? WHERE id=? AND group_id=?`, strings.TrimSpace(endpoint.Name), strings.TrimSpace(endpoint.Address), endpoint.Priority, endpoint.Weight, endpoint.Backup, endpoint.Status, endpoint.SortIndex, now, endpoint.ID, groupID); err != nil {
 				return fmt.Errorf("update endpoint: %w", err)
 			}
 			kept[endpoint.ID] = struct{}{}
 			continue
 		}
-		result, err := tx.ExecContext(ctx, `INSERT INTO endpoints(group_id,name,address,priority,backup,status,sort_index,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, groupID, strings.TrimSpace(endpoint.Name), strings.TrimSpace(endpoint.Address), endpoint.Priority, endpoint.Backup, endpoint.Status, endpoint.SortIndex, now, now)
+		result, err := tx.ExecContext(ctx, `INSERT INTO endpoints(group_id,name,address,priority,weight,backup,status,sort_index,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, groupID, strings.TrimSpace(endpoint.Name), strings.TrimSpace(endpoint.Address), endpoint.Priority, endpoint.Weight, endpoint.Backup, endpoint.Status, endpoint.SortIndex, now, now)
 		if err != nil {
 			return fmt.Errorf("save endpoint: %w", err)
 		}
@@ -1104,6 +1105,11 @@ func normalizeEndpointGroup(request EndpointGroupRequest) EndpointGroupRequest {
 	if request.ProbeTimeoutMS == 0 {
 		request.ProbeTimeoutMS = 3000
 	}
+	for index := range request.Endpoints {
+		if request.Endpoints[index].Weight == 0 {
+			request.Endpoints[index].Weight = 1
+		}
+	}
 	return request
 }
 
@@ -1131,7 +1137,7 @@ func validateEndpointGroup(request EndpointGroupRequest) error {
 		if _, _, err := net.SplitHostPort(address); err != nil {
 			return fmt.Errorf("endpoint %d address is invalid", index+1)
 		}
-		if endpoint.Priority < 0 || endpoint.SortIndex < 0 || endpoint.Backup < 0 || endpoint.Backup > 1 || endpoint.Status < 0 || endpoint.Status > 1 {
+		if endpoint.Priority < 0 || endpoint.Weight < 1 || endpoint.Weight > 100 || endpoint.SortIndex < 0 || endpoint.Backup < 0 || endpoint.Backup > 1 || endpoint.Status < 0 || endpoint.Status > 1 {
 			return fmt.Errorf("endpoint %d settings are invalid", index+1)
 		}
 		nameKey := strings.ToLower(name)

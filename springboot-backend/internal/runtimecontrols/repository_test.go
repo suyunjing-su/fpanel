@@ -193,6 +193,50 @@ func TestNodeGroupBindingSynchronizesTunnelTopology(t *testing.T) {
 	}
 }
 
+func TestEndpointGroupWeightsPersistAndValidate(t *testing.T) {
+	db := openTestDatabase(t)
+	repository := NewRepository(db, nil)
+	request := EndpointGroupRequest{
+		Name:            "weighted-origins",
+		Strategy:        "rand",
+		MaxFails:        1,
+		FailTimeoutMS:   1000,
+		ProbeIntervalMS: 1000,
+		ProbeTimeoutMS:  100,
+		Status:          1,
+		Endpoints: []Endpoint{{
+			Name: "primary", Address: "192.0.2.10:443", Weight: 7, Status: 1,
+		}},
+	}
+	groupID, err := repository.CreateEndpointGroup(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := repository.ListEndpointGroups(context.Background())
+	if err != nil || len(groups) != 1 || len(groups[0].Endpoints) != 1 || groups[0].Endpoints[0].Weight != 7 {
+		t.Fatalf("unexpected endpoint groups: %#v, %v", groups, err)
+	}
+
+	request.Endpoints[0].ID = groups[0].Endpoints[0].ID
+	request.Endpoints[0].Weight = 0
+	if err := repository.UpdateEndpointGroup(context.Background(), UpdateEndpointGroupRequest{
+		ID: groupID, EndpointGroupRequest: request,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	groups, err = repository.ListEndpointGroups(context.Background())
+	if err != nil || groups[0].Endpoints[0].Weight != 1 {
+		t.Fatalf("default endpoint weight was not persisted: %#v, %v", groups, err)
+	}
+
+	request.Name = "invalid-weight"
+	request.Endpoints[0].ID = 0
+	request.Endpoints[0].Weight = 101
+	if _, err := repository.CreateEndpointGroup(context.Background(), request); err == nil {
+		t.Fatal("endpoint weight above 100 was accepted")
+	}
+}
+
 func TestNodeGroupBindingRejectsManualTopologyConflict(t *testing.T) {
 	db := openTestDatabase(t)
 	execFixture(t, db, `INSERT INTO nodes(id,name,ip,server_ip,port_start,port_end,secret,status,created_at,updated_at) VALUES(1,'node','10.0.0.1','203.0.113.1',10000,20000,'secret',1,1,1)`)

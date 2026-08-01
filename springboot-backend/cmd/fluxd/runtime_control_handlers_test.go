@@ -72,6 +72,23 @@ func TestRuntimeControlRoutesRequireAdminAndPersist(t *testing.T) {
 		t.Fatalf("unexpected list response: %s", response.Body.String())
 	}
 
+	response = serveRuntimeRequest(mux, "/api/v1/endpoint-group/create", `{"name":"weighted","strategy":"rand","maxFails":1,"failTimeoutMs":1000,"probeIntervalMs":1000,"probeTimeoutMs":100,"status":1,"endpoints":[{"name":"primary","address":"192.0.2.10:443","priority":0,"weight":9,"backup":0,"status":1,"sortIndex":0}]}`, true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("endpoint group create status = %d, body=%s", response.Code, response.Body.String())
+	}
+	response = serveRuntimeRequest(mux, "/api/v1/endpoint-group/list", `{}`, true)
+	var endpointGroups struct {
+		Code int `json:"code"`
+		Data []struct {
+			Endpoints []struct {
+				Weight int `json:"weight"`
+			} `json:"endpoints"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &endpointGroups); err != nil || endpointGroups.Code != 0 || len(endpointGroups.Data) != 1 || len(endpointGroups.Data[0].Endpoints) != 1 || endpointGroups.Data[0].Endpoints[0].Weight != 9 {
+		t.Fatalf("endpoint weight did not round trip: %s, %v", response.Body.String(), err)
+	}
+
 	response = serveRuntimeRequest(mux, "/api/v1/endpoint-group/create", `{"name":"invalid","strategy":"fifo","maxFails":0,"failTimeoutMs":1,"probeIntervalMs":1,"probeTimeoutMs":1,"status":1,"endpoints":[]}`, true)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid endpoint group status = %d, body=%s", response.Code, response.Body.String())

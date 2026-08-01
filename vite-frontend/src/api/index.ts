@@ -1,5 +1,16 @@
 import Network from "./network";
-import type { AuditListRequest, AuditPage } from "@/types";
+import type {
+  AuditListRequest,
+  AuditPage,
+  EndpointGroup,
+  EndpointGroupRequest,
+  NodeGroup,
+  NodeGroupRequest,
+  ResourceID,
+  RouteRuleSet,
+  RouteRuleSetRequest,
+  TunnelNodeGroupBinding,
+} from "@/types";
 
 // 登陆相关接口
 export interface LoginData {
@@ -167,6 +178,52 @@ export const updateConfig = (name: string, value: string) =>
 
 export const getAuditLogs = (data: AuditListRequest) =>
   Network.post<AuditPage>("/audit/list", data);
+
+export const getEndpointGroups = () =>
+  Network.post<EndpointGroup[]>("/endpoint-group/list");
+export const createEndpointGroup = (data: EndpointGroupRequest) =>
+  Network.post<ResourceID>("/endpoint-group/create", data);
+export const updateEndpointGroup = (data: EndpointGroup) => {
+  const payload = { ...data };
+  delete payload.createdTime;
+  return Network.post("/endpoint-group/update", payload);
+};
+export const deleteEndpointGroup = (id: number) =>
+  Network.post("/endpoint-group/delete", { id });
+
+export const getRouteRuleSets = () =>
+  Network.post<RouteRuleSet[]>("/route-rule-set/list");
+export const createRouteRuleSet = (data: RouteRuleSetRequest) =>
+  Network.post<ResourceID>("/route-rule-set/create", data);
+export const updateRouteRuleSet = (data: RouteRuleSet) => {
+  const payload = { ...data };
+  delete payload.createdTime;
+  return Network.post("/route-rule-set/update", payload);
+};
+export const deleteRouteRuleSet = (id: number) =>
+  Network.post("/route-rule-set/delete", { id });
+
+export const getNodeGroups = () =>
+  Network.post<NodeGroup[]>("/node-group/list");
+export const createNodeGroup = (data: NodeGroupRequest) =>
+  Network.post<ResourceID>("/node-group/create", data);
+export const updateNodeGroup = (data: NodeGroup) => {
+  const payload = { ...data };
+  delete payload.createdTime;
+  return Network.post("/node-group/update", payload);
+};
+export const deleteNodeGroup = (id: number) =>
+  Network.post("/node-group/delete", { id });
+
+export const getTunnelNodeGroupBindings = () =>
+  Network.post<TunnelNodeGroupBinding[]>("/tunnel-node-group-binding/list");
+export const createTunnelNodeGroupBinding = (
+  data: Omit<TunnelNodeGroupBinding, "id">,
+) => Network.post<ResourceID>("/tunnel-node-group-binding/create", data);
+export const updateTunnelNodeGroupBinding = (data: TunnelNodeGroupBinding) =>
+  Network.post("/tunnel-node-group-binding/update", data);
+export const deleteTunnelNodeGroupBinding = (id: number) =>
+  Network.post("/tunnel-node-group-binding/delete", { id });
 
 // 验证码相关接口
 export const checkCaptcha = () => Network.post("/captcha/check");

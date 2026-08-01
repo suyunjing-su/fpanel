@@ -150,6 +150,26 @@ export default function AdminLayout({
       adminOnly: true,
     },
     {
+      path: "/runtime-policy",
+      label: getPanelLabel("/runtime-policy", "admin"),
+      icon: (
+        <svg
+          className="w-5 h-5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M10.5 6h9M4.5 6h1.5m-1.5 6h15m-9 0h1.5m-7.5 6h15m-9 0h1.5M8 4v4m8-4v4m-4 4v4m-4 4v4"
+          />
+        </svg>
+      ),
+      adminOnly: true,
+    },
+    {
       path: "/audit",
       label: getPanelLabel("/audit", "admin"),
       icon: (

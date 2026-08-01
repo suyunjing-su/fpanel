@@ -123,6 +123,7 @@ type routeEndpoint struct {
 	Name     string
 	Address  string
 	Priority int
+	Weight   int
 	Backup   int
 	Rule     string
 }
@@ -492,7 +493,7 @@ func (r *Repository) loadEndpointPlan(ctx context.Context, forward forwardRecord
 		return plan, nil
 	}
 
-	rows, err := r.db.QueryContext(ctx, `SELECT id,name,address,priority,backup FROM endpoints WHERE group_id=? AND status=1 ORDER BY sort_index,id`, *forward.EndpointGroupID)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,name,address,priority,weight,backup FROM endpoints WHERE group_id=? AND status=1 ORDER BY sort_index,id`, *forward.EndpointGroupID)
 	if err != nil {
 		return endpointPlan{}, fmt.Errorf("load endpoints: %w", err)
 	}
@@ -501,7 +502,7 @@ func (r *Repository) loadEndpointPlan(ctx context.Context, forward forwardRecord
 	byID := make(map[int64]routeEndpoint)
 	for rows.Next() {
 		var endpoint routeEndpoint
-		if err := rows.Scan(&endpoint.ID, &endpoint.Name, &endpoint.Address, &endpoint.Priority, &endpoint.Backup); err != nil {
+		if err := rows.Scan(&endpoint.ID, &endpoint.Name, &endpoint.Address, &endpoint.Priority, &endpoint.Weight, &endpoint.Backup); err != nil {
 			return endpointPlan{}, fmt.Errorf("scan endpoint: %w", err)
 		}
 		endpoints = append(endpoints, endpoint)
@@ -856,6 +857,9 @@ func buildForwarder(remoteAddr, strategy, protocol string, plan endpointPlan) ma
 			"addr": endpoint.Address,
 		}
 		metadata := make(map[string]any)
+		if endpoint.Weight > 0 {
+			metadata["weight"] = endpoint.Weight
+		}
 		if endpoint.Backup == 1 {
 			metadata["backup"] = true
 		}
