@@ -6,10 +6,34 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/suyunjing-su/fpanel/backend/internal/database"
+	"github.com/suyunjing-su/fpanel/backend/internal/nodehub"
 )
+
+type groupPortProber struct {
+	mu          sync.Mutex
+	unavailable map[int64]string
+	calls       map[int64]int
+}
+
+func (p *groupPortProber) ProbePorts(_ context.Context, nodeID int64, request nodehub.PortProbeRequest) (nodehub.PortProbeResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.calls == nil {
+		p.calls = make(map[int64]int)
+	}
+	p.calls[nodeID]++
+	result := nodehub.PortProbeResult{Port: request.Ports[0], Available: true}
+	if reason := p.unavailable[nodeID]; reason != "" {
+		result.Available = false
+		result.Error = reason
+	}
+	return nodehub.PortProbeResponse{Results: []nodehub.PortProbeResult{result}}, nil
+}
 
 func TestNodeGroupBindingSynchronizesTunnelTopology(t *testing.T) {
 	db := openTestDatabase(t)
@@ -19,7 +43,7 @@ func TestNodeGroupBindingSynchronizesTunnelTopology(t *testing.T) {
 		(3,'node-c','10.0.0.3','203.0.113.3',10000,20000,'c',1,1,1)`)
 	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,created_at,updated_at) VALUES(1,'direct',1,1,1,1,1,1)`)
 
-	repository := NewRepository(db)
+	repository := NewRepository(db, nil)
 	groupID, err := repository.CreateNodeGroup(context.Background(), NodeGroupRequest{
 		Name:        "entry-pool",
 		Strategy:    "round",
@@ -95,6 +119,8 @@ func TestNodeGroupBindingSynchronizesTunnelTopology(t *testing.T) {
 	execFixture(t, db, `INSERT INTO users(id,username,password_hash,role,expires_at,status,created_at,updated_at) VALUES(1,'admin','hash','admin',0,1,1,1)`)
 	execFixture(t, db, `INSERT INTO forwards(id,user_id,name,tunnel_id,remote_addr,strategy,status,sort_index,created_at,updated_at) VALUES(1,1,'forward',1,'192.0.2.10:443','fifo',1,0,1,1)`)
 	execFixture(t, db, `INSERT INTO forward_ports(forward_id,node_id,port) VALUES(1,1,10000)`)
+	prober := &groupPortProber{unavailable: make(map[int64]string)}
+	repository = NewRepository(db, prober)
 	err = repository.UpdateNodeGroup(context.Background(), UpdateNodeGroupRequest{
 		ID: groupID,
 		NodeGroupRequest: NodeGroupRequest{
@@ -114,6 +140,34 @@ func TestNodeGroupBindingSynchronizesTunnelTopology(t *testing.T) {
 	}
 	if ports != 2 {
 		t.Fatalf("entry group did not synchronize forward ports: %d", ports)
+	}
+	if prober.calls[3] != 1 || prober.calls[1] != 0 {
+		t.Fatalf("unexpected entry group port probes: %#v", prober.calls)
+	}
+
+	prober.unavailable[2] = "UDP: address already in use"
+	err = repository.UpdateNodeGroup(context.Background(), UpdateNodeGroupRequest{
+		ID: groupID,
+		NodeGroupRequest: NodeGroupRequest{
+			Name: "entry-pool", Strategy: "fifo", MaxFails: 3, FailTimeout: 60000, Status: 1,
+			Members: []NodeGroupMember{
+				{NodeID: 1, Priority: 80, SortIndex: 0},
+				{NodeID: 2, Priority: 30, Backup: 1, SortIndex: 1},
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "node 2") {
+		t.Fatalf("occupied port was accepted for entry group: %v", err)
+	}
+	var node2Topology, node2Ports int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tunnel_nodes WHERE tunnel_id=1 AND node_id=2`).Scan(&node2Topology); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM forward_ports WHERE forward_id=1 AND node_id=2`).Scan(&node2Ports); err != nil {
+		t.Fatal(err)
+	}
+	if node2Topology != 0 || node2Ports != 0 {
+		t.Fatalf("failed entry group update was not rolled back: topology=%d ports=%d", node2Topology, node2Ports)
 	}
 
 	groups, err := repository.ListNodeGroups(context.Background())
@@ -144,7 +198,7 @@ func TestNodeGroupBindingRejectsManualTopologyConflict(t *testing.T) {
 	execFixture(t, db, `INSERT INTO nodes(id,name,ip,server_ip,port_start,port_end,secret,status,created_at,updated_at) VALUES(1,'node','10.0.0.1','203.0.113.1',10000,20000,'secret',1,1,1)`)
 	execFixture(t, db, `INSERT INTO tunnels(id,name,type,flow,traffic_ratio,status,created_at,updated_at) VALUES(1,'direct',1,1,1,1,1,1)`)
 	execFixture(t, db, `INSERT INTO tunnel_nodes(tunnel_id,chain_type,node_id,port,strategy,hop_index,protocol) VALUES(1,1,1,7000,'fifo',0,'tcp')`)
-	repository := NewRepository(db)
+	repository := NewRepository(db, nil)
 	groupID, err := repository.CreateNodeGroup(context.Background(), NodeGroupRequest{
 		Name: "pool", Strategy: "fifo", MaxFails: 1, FailTimeout: 1000, Status: 1,
 		Members: []NodeGroupMember{{NodeID: 1}},

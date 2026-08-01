@@ -234,6 +234,61 @@ func TestPreprocessDurationFields(t *testing.T) {
 	}
 }
 
+func TestPortProbeChecksTCPAndUDPBindings(t *testing.T) {
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpListener.Close()
+	tcpPort := tcpListener.Addr().(*net.TCPAddr).Port
+
+	udpListener, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpListener.Close()
+	udpPort := udpListener.LocalAddr().(*net.UDPAddr).Port
+
+	freeListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freePort := freeListener.Addr().(*net.TCPAddr).Port
+	freeListener.Close()
+
+	reporter := &WebSocketReporter{}
+	response, err := reporter.handlePortProbe(PortProbeRequest{
+		Ports:         []int{tcpPort, udpPort, freePort},
+		TCPListenAddr: "127.0.0.1",
+		UDPListenAddr: "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 3 {
+		t.Fatalf("unexpected probe results: %#v", response.Results)
+	}
+	if response.Results[0].Available || !strings.Contains(response.Results[0].Error, "TCP") {
+		t.Fatalf("TCP conflict was not detected: %#v", response.Results[0])
+	}
+	if response.Results[1].Available || !strings.Contains(response.Results[1].Error, "UDP") {
+		t.Fatalf("UDP conflict was not detected: %#v", response.Results[1])
+	}
+	if !response.Results[2].Available || response.Results[2].Error != "" {
+		t.Fatalf("free port was rejected: %#v", response.Results[2])
+	}
+}
+
+func TestPortProbeRejectsOversizedBatch(t *testing.T) {
+	ports := make([]int, 129)
+	for index := range ports {
+		ports[index] = index + 1
+	}
+	if _, err := (&WebSocketReporter{}).handlePortProbe(PortProbeRequest{Ports: ports}); err == nil {
+		t.Fatal("oversized port probe batch was accepted")
+	}
+}
+
 func TestTcpPingHostUsesOverallTimeoutAndNextEndpointGetsFreshContext(t *testing.T) {
 	lookup := func(context.Context, string) ([]string, error) {
 		return nil, errors.New("lookup should not be called for IP addresses")

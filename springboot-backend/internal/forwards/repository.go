@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suyunjing-su/fpanel/backend/internal/nodehub"
 	"github.com/suyunjing-su/fpanel/backend/internal/nodes"
 	"github.com/suyunjing-su/fpanel/backend/internal/tunnels"
 )
@@ -69,14 +70,19 @@ type Port struct {
 	Port   int   `json:"port"`
 }
 
+type PortProber interface {
+	ProbePorts(context.Context, int64, nodehub.PortProbeRequest) (nodehub.PortProbeResponse, error)
+}
+
 type Repository struct {
 	db      *sql.DB
 	nodes   *nodes.Repository
 	tunnels *tunnels.Repository
+	prober  PortProber
 }
 
-func NewRepository(db *sql.DB, nodeRepo *nodes.Repository, tunnelRepo *tunnels.Repository) *Repository {
-	return &Repository{db: db, nodes: nodeRepo, tunnels: tunnelRepo}
+func NewRepository(db *sql.DB, nodeRepo *nodes.Repository, tunnelRepo *tunnels.Repository, prober PortProber) *Repository {
+	return &Repository{db: db, nodes: nodeRepo, tunnels: tunnelRepo, prober: prober}
 }
 
 func (r *Repository) List(ctx context.Context, userID int64, admin bool) ([]Forward, error) {
@@ -155,7 +161,7 @@ func (r *Repository) Create(ctx context.Context, request CreateRequest, actorID 
 	if err := r.checkOnline(ctx, entryNodes); err != nil {
 		return 0, err
 	}
-	ports, err := r.allocatePorts(ctx, transaction, entryNodes, request.InPort)
+	ports, err := r.allocatePorts(ctx, transaction, entryNodes, request.InPort, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -230,11 +236,11 @@ func (r *Repository) Update(ctx context.Context, request UpdateRequest, actorID 
 	if err := r.checkOnline(ctx, tunnel.InNodeID); err != nil {
 		return err
 	}
-	if _, err = transaction.ExecContext(ctx, "DELETE FROM forward_ports WHERE forward_id=?", request.ID); err != nil {
+	ports, err := r.allocatePorts(ctx, transaction, tunnel.InNodeID, request.InPort, request.ID)
+	if err != nil {
 		return err
 	}
-	ports, err := r.allocatePorts(ctx, transaction, tunnel.InNodeID, request.InPort)
-	if err != nil {
+	if _, err = transaction.ExecContext(ctx, "DELETE FROM forward_ports WHERE forward_id=?", request.ID); err != nil {
 		return err
 	}
 	for _, port := range ports {
@@ -317,17 +323,19 @@ func (r *Repository) Reorder(ctx context.Context, userID int64, admin bool, item
 	return transaction.Commit()
 }
 
-func (r *Repository) allocatePorts(ctx context.Context, transaction *sql.Tx, entries []tunnels.NodeSpec, requested *int) ([]Port, error) {
+func (r *Repository) allocatePorts(ctx context.Context, transaction *sql.Tx, entries []tunnels.NodeSpec, requested *int, forwardID int64) ([]Port, error) {
 	if len(entries) == 0 {
 		return nil, errors.New("tunnel has no entry nodes")
 	}
 	portStart := 1
 	portEnd := 65535
+	nodeByID := make(map[int64]nodes.Node, len(entries))
 	for _, entry := range entries {
 		node, err := r.nodes.Get(ctx, entry.NodeID)
 		if err != nil {
 			return nil, fmt.Errorf("load entry node %d: %w", entry.NodeID, err)
 		}
+		nodeByID[entry.NodeID] = node
 		if node.PortStart > portStart {
 			portStart = node.PortStart
 		}
@@ -342,40 +350,141 @@ func (r *Repository) allocatePorts(ctx context.Context, transaction *sql.Tx, ent
 		if *requested < portStart || *requested > portEnd {
 			return nil, fmt.Errorf("ingress port %d is outside the common node port range", *requested)
 		}
-		out := make([]Port, 0, len(entries))
-		for _, entry := range entries {
-			var count int
-			if err := transaction.QueryRowContext(ctx, "SELECT COUNT(1) FROM forward_ports WHERE node_id=? AND port=?", entry.NodeID, *requested).Scan(&count); err != nil {
-				return nil, err
-			}
-			if count > 0 {
-				return nil, fmt.Errorf("port %d is already in use on node %d", *requested, entry.NodeID)
-			}
-			out = append(out, Port{NodeID: entry.NodeID, Port: *requested})
-		}
-		return out, nil
+		return r.allocatePortBatch(ctx, transaction, entries, nodeByID, []int{*requested}, forwardID, true)
 	}
-	for port := portStart; port <= portEnd; port++ {
-		available := true
-		for _, entry := range entries {
-			var count int
-			if err := transaction.QueryRowContext(ctx, "SELECT COUNT(1) FROM forward_ports WHERE node_id=? AND port=?", entry.NodeID, port).Scan(&count); err != nil {
-				return nil, err
-			}
-			if count > 0 {
-				available = false
-				break
-			}
+	for start := portStart; start <= portEnd; start += 128 {
+		end := min(start+127, portEnd)
+		candidates := make([]int, 0, end-start+1)
+		for port := start; port <= end; port++ {
+			candidates = append(candidates, port)
 		}
-		if available {
-			out := make([]Port, 0, len(entries))
-			for _, entry := range entries {
-				out = append(out, Port{NodeID: entry.NodeID, Port: port})
-			}
-			return out, nil
+		ports, err := r.allocatePortBatch(ctx, transaction, entries, nodeByID, candidates, forwardID, false)
+		if err != nil {
+			return nil, err
+		}
+		if len(ports) > 0 {
+			return ports, nil
 		}
 	}
 	return nil, errors.New("no common ingress port available")
+}
+
+func (r *Repository) allocatePortBatch(ctx context.Context, transaction *sql.Tx, entries []tunnels.NodeSpec, nodeByID map[int64]nodes.Node, candidates []int, forwardID int64, required bool) ([]Port, error) {
+	available := make(map[int]bool, len(candidates))
+	for _, port := range candidates {
+		available[port] = true
+	}
+	for _, entry := range entries {
+		rows, err := transaction.QueryContext(ctx, `SELECT port FROM forward_ports WHERE node_id=? AND port BETWEEN ? AND ? AND forward_id<>?`, entry.NodeID, candidates[0], candidates[len(candidates)-1], forwardID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var port int
+			if err := rows.Scan(&port); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			delete(available, port)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	if required && !available[candidates[0]] {
+		return nil, fmt.Errorf("port %d is already reserved on an entry node", candidates[0])
+	}
+	if len(available) == 0 {
+		return nil, nil
+	}
+	if r.prober != nil {
+		owned, err := loadOwnedPorts(ctx, transaction, forwardID)
+		if err != nil {
+			return nil, err
+		}
+		type probeResult struct {
+			nodeID   int64
+			ports    []int
+			response nodehub.PortProbeResponse
+			err      error
+		}
+		results := make(chan probeResult, len(entries))
+		pending := 0
+		for _, entry := range entries {
+			probePorts := make([]int, 0, len(available))
+			for _, port := range candidates {
+				if available[port] && !owned[Port{NodeID: entry.NodeID, Port: port}] {
+					probePorts = append(probePorts, port)
+				}
+			}
+			if len(probePorts) == 0 {
+				continue
+			}
+			pending++
+			node := nodeByID[entry.NodeID]
+			go func(nodeID int64, ports []int, tcpListenAddr, udpListenAddr string) {
+				response, err := r.prober.ProbePorts(ctx, nodeID, nodehub.PortProbeRequest{
+					Ports:         ports,
+					TCPListenAddr: tcpListenAddr,
+					UDPListenAddr: udpListenAddr,
+				})
+				results <- probeResult{nodeID: nodeID, ports: ports, response: response, err: err}
+			}(entry.NodeID, probePorts, node.TCPListenAddr, node.UDPListenAddr)
+		}
+		for range pending {
+			probe := <-results
+			if probe.err != nil {
+				return nil, fmt.Errorf("probe ports on node %d: %w", probe.nodeID, probe.err)
+			}
+			byPort := make(map[int]nodehub.PortProbeResult, len(probe.response.Results))
+			for _, result := range probe.response.Results {
+				byPort[result.Port] = result
+			}
+			for _, port := range probe.ports {
+				result, exists := byPort[port]
+				if !exists {
+					return nil, fmt.Errorf("node %d omitted port %d probe result", probe.nodeID, port)
+				}
+				if !result.Available {
+					delete(available, port)
+					if required {
+						return nil, fmt.Errorf("port %d is unavailable on node %d: %s", port, probe.nodeID, result.Error)
+					}
+				}
+			}
+		}
+	}
+	for _, port := range candidates {
+		if !available[port] {
+			continue
+		}
+		result := make([]Port, 0, len(entries))
+		for _, entry := range entries {
+			result = append(result, Port{NodeID: entry.NodeID, Port: port})
+		}
+		return result, nil
+	}
+	return nil, nil
+}
+
+func loadOwnedPorts(ctx context.Context, transaction *sql.Tx, forwardID int64) (map[Port]bool, error) {
+	result := make(map[Port]bool)
+	if forwardID <= 0 {
+		return result, nil
+	}
+	rows, err := transaction.QueryContext(ctx, `SELECT node_id,port FROM forward_ports WHERE forward_id=?`, forwardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var port Port
+		if err := rows.Scan(&port.NodeID, &port.Port); err != nil {
+			return nil, err
+		}
+		result[port] = true
+	}
+	return result, rows.Err()
 }
 func (r *Repository) checkPermission(ctx context.Context, transaction *sql.Tx, userID, tunnelID int64) error {
 	var status int

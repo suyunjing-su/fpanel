@@ -66,6 +66,22 @@ type TCPPingResponse struct {
 	PacketLoss  float64 `json:"packetLoss"`
 	Error       string  `json:"errorMessage,omitempty"`
 }
+
+type PortProbeRequest struct {
+	Ports         []int  `json:"ports"`
+	TCPListenAddr string `json:"tcpListenAddr"`
+	UDPListenAddr string `json:"udpListenAddr"`
+}
+
+type PortProbeResult struct {
+	Port      int    `json:"port"`
+	Available bool   `json:"available"`
+	Error     string `json:"error,omitempty"`
+}
+
+type PortProbeResponse struct {
+	Results []PortProbeResult `json:"results"`
+}
 type envelope struct {
 	Encrypted bool   `json:"encrypted"`
 	Data      string `json:"data"`

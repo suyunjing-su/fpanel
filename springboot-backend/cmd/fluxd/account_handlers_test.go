@@ -61,7 +61,7 @@ func TestAccountPackageResetAndPasswordRoutes(t *testing.T) {
 	userRepo := users.NewRepository(db)
 	nodeRepo := nodes.NewRepository(db)
 	tunnelRepo := tunnels.NewRepository(db, nodeRepo)
-	forwardRepo := forwards.NewRepository(db, nodeRepo, tunnelRepo)
+	forwardRepo := forwards.NewRepository(db, nodeRepo, tunnelRepo, nil)
 	authRepo := auth.NewRepository(db)
 	mux := http.NewServeMux()
 	registerAccountRoutes(mux, userRepo, tunnelRepo, forwardRepo, authRepo, &batchWakeCounter{}, func(*http.Request) bool { return true })

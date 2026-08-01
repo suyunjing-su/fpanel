@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/suyunjing-su/fpanel/backend/internal/nodehub"
 )
 
 type Endpoint struct {
@@ -151,9 +153,18 @@ type UpdateTunnelNodeGroupBindingRequest struct {
 	ID int64 `json:"id"`
 }
 
-type Repository struct{ db *sql.DB }
+type PortProber interface {
+	ProbePorts(context.Context, int64, nodehub.PortProbeRequest) (nodehub.PortProbeResponse, error)
+}
 
-func NewRepository(db *sql.DB) *Repository { return &Repository{db: db} }
+type Repository struct {
+	db     *sql.DB
+	prober PortProber
+}
+
+func NewRepository(db *sql.DB, prober PortProber) *Repository {
+	return &Repository{db: db, prober: prober}
+}
 
 func (r *Repository) ListNodeGroups(ctx context.Context) ([]NodeGroup, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT id,name,description,strategy,max_fails,fail_timeout_ms,status,created_at FROM node_groups ORDER BY id`)
@@ -230,7 +241,7 @@ func (r *Repository) UpdateNodeGroup(ctx context.Context, request UpdateNodeGrou
 	if err := replaceNodeGroupMembers(ctx, tx, request.ID, request.Members); err != nil {
 		return err
 	}
-	if err := syncBindingsForGroup(ctx, tx, request.ID); err != nil {
+	if err := r.syncBindingsForGroup(ctx, tx, request.ID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -295,7 +306,7 @@ func (r *Repository) CreateTunnelNodeGroupBinding(ctx context.Context, request T
 	if err != nil {
 		return 0, err
 	}
-	if err := syncBinding(ctx, tx, id); err != nil {
+	if err := r.syncBinding(ctx, tx, id); err != nil {
 		return 0, err
 	}
 	return id, tx.Commit()
@@ -331,11 +342,11 @@ func (r *Repository) UpdateTunnelNodeGroupBinding(ctx context.Context, request U
 	if count, _ := result.RowsAffected(); count == 0 {
 		return sql.ErrNoRows
 	}
-	if err := syncBinding(ctx, tx, request.ID); err != nil {
+	if err := r.syncBinding(ctx, tx, request.ID); err != nil {
 		return err
 	}
 	if oldTunnelID != request.TunnelID {
-		if err := syncForwardPorts(ctx, tx, oldTunnelID); err != nil {
+		if err := r.syncForwardPorts(ctx, tx, oldTunnelID); err != nil {
 			return err
 		}
 	}
@@ -362,7 +373,7 @@ func (r *Repository) DeleteTunnelNodeGroupBinding(ctx context.Context, id int64)
 	if count, _ := result.RowsAffected(); count == 0 {
 		return sql.ErrNoRows
 	}
-	if err := syncForwardPorts(ctx, tx, tunnelID); err != nil {
+	if err := r.syncForwardPorts(ctx, tx, tunnelID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -399,7 +410,7 @@ func replaceNodeGroupMembers(ctx context.Context, tx *sql.Tx, groupID int64, mem
 	return nil
 }
 
-func syncBindingsForGroup(ctx context.Context, tx *sql.Tx, groupID int64) error {
+func (r *Repository) syncBindingsForGroup(ctx context.Context, tx *sql.Tx, groupID int64) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM tunnel_node_group_bindings WHERE group_id=? ORDER BY id`, groupID)
 	if err != nil {
 		return err
@@ -417,14 +428,14 @@ func syncBindingsForGroup(ctx context.Context, tx *sql.Tx, groupID int64) error 
 		return err
 	}
 	for _, id := range ids {
-		if err := syncBinding(ctx, tx, id); err != nil {
+		if err := r.syncBinding(ctx, tx, id); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func syncBinding(ctx context.Context, tx *sql.Tx, bindingID int64) error {
+func (r *Repository) syncBinding(ctx context.Context, tx *sql.Tx, bindingID int64) error {
 	var binding TunnelNodeGroupBinding
 	var groupStrategy string
 	var groupStatus, groupMaxFails int
@@ -438,7 +449,7 @@ func syncBinding(ctx context.Context, tx *sql.Tx, bindingID int64) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM tunnel_nodes WHERE group_binding_id=?`, bindingID); err != nil {
 			return err
 		}
-		return syncForwardPorts(ctx, tx, binding.TunnelID)
+		return r.syncForwardPorts(ctx, tx, binding.TunnelID)
 	}
 	members, err := loadNodeGroupMembers(ctx, tx, binding.GroupID)
 	if err != nil {
@@ -475,10 +486,10 @@ func syncBinding(ctx context.Context, tx *sql.Tx, bindingID int64) error {
 	if err != nil {
 		return err
 	}
-	return syncForwardPorts(ctx, tx, binding.TunnelID)
+	return r.syncForwardPorts(ctx, tx, binding.TunnelID)
 }
 
-func syncForwardPorts(ctx context.Context, tx *sql.Tx, tunnelID int64) error {
+func (r *Repository) syncForwardPorts(ctx context.Context, tx *sql.Tx, tunnelID int64) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM forwards WHERE tunnel_id=?`, tunnelID)
 	if err != nil {
 		return err
@@ -506,6 +517,9 @@ func syncForwardPorts(ctx context.Context, tx *sql.Tx, tunnelID int64) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM forward_ports WHERE forward_id=? AND node_id NOT IN (SELECT node_id FROM tunnel_nodes WHERE tunnel_id=? AND chain_type=1)`, forwardID, tunnelID); err != nil {
 			return err
 		}
+		if err := r.probeForwardPortAdditions(ctx, tx, forwardID, tunnelID, port); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO forward_ports(forward_id,node_id,port) SELECT ?,node_id,? FROM tunnel_nodes WHERE tunnel_id=? AND chain_type=1`, forwardID, port, tunnelID)
 		if err != nil {
 			return err
@@ -521,6 +535,70 @@ func syncForwardPorts(ctx context.Context, tx *sql.Tx, tunnelID int64) error {
 			return fmt.Errorf("port %d is unavailable on a node added by the entry group", port)
 		}
 		_, _ = result.RowsAffected()
+	}
+	return nil
+}
+
+func (r *Repository) probeForwardPortAdditions(ctx context.Context, tx *sql.Tx, forwardID, tunnelID int64, port int) error {
+	if r.prober == nil {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT n.id,n.tcp_listen_addr,n.udp_listen_addr
+		FROM tunnel_nodes tn
+		JOIN nodes n ON n.id=tn.node_id
+		WHERE tn.tunnel_id=? AND tn.chain_type=1
+		  AND NOT EXISTS (
+			SELECT 1 FROM forward_ports fp
+			WHERE fp.forward_id=? AND fp.node_id=tn.node_id AND fp.port=?
+		  )`, tunnelID, forwardID, port)
+	if err != nil {
+		return err
+	}
+	type target struct {
+		nodeID        int64
+		tcpListenAddr string
+		udpListenAddr string
+	}
+	targets := make([]target, 0)
+	for rows.Next() {
+		var item target
+		if err := rows.Scan(&item.nodeID, &item.tcpListenAddr, &item.udpListenAddr); err != nil {
+			rows.Close()
+			return err
+		}
+		targets = append(targets, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	type probeResult struct {
+		nodeID   int64
+		response nodehub.PortProbeResponse
+		err      error
+	}
+	results := make(chan probeResult, len(targets))
+	for _, item := range targets {
+		go func(item target) {
+			response, err := r.prober.ProbePorts(ctx, item.nodeID, nodehub.PortProbeRequest{
+				Ports:         []int{port},
+				TCPListenAddr: item.tcpListenAddr,
+				UDPListenAddr: item.udpListenAddr,
+			})
+			results <- probeResult{nodeID: item.nodeID, response: response, err: err}
+		}(item)
+	}
+	for range targets {
+		probe := <-results
+		if probe.err != nil {
+			return fmt.Errorf("probe port %d on node %d: %w", port, probe.nodeID, probe.err)
+		}
+		if len(probe.response.Results) != 1 || probe.response.Results[0].Port != port {
+			return fmt.Errorf("node %d returned an invalid port %d probe result", probe.nodeID, port)
+		}
+		if !probe.response.Results[0].Available {
+			return fmt.Errorf("port %d is unavailable on node %d: %s", port, probe.nodeID, probe.response.Results[0].Error)
+		}
 	}
 	return nil
 }

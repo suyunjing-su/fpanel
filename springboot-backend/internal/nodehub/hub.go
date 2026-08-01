@@ -350,6 +350,29 @@ func (h *Hub) TCPPing(ctx context.Context, nodeID int64, request TCPPingRequest)
 	return result, nil
 }
 
+func (h *Hub) ProbePorts(ctx context.Context, nodeID int64, request PortProbeRequest) (PortProbeResponse, error) {
+	data, err := json.Marshal(request)
+	if err != nil {
+		return PortProbeResponse{}, err
+	}
+	response, err := h.Command(ctx, nodeID, CommandMessage{Type: "ProbePorts", Data: data})
+	if err != nil {
+		return PortProbeResponse{}, err
+	}
+	if !response.Success {
+		return PortProbeResponse{}, errors.New(response.Message)
+	}
+	encoded, err := json.Marshal(response.Data)
+	if err != nil {
+		return PortProbeResponse{}, err
+	}
+	var result PortProbeResponse
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		return PortProbeResponse{}, err
+	}
+	return result, nil
+}
+
 func (h *Hub) ForcePullFullConfig(ctx context.Context, nodeID int64) error {
 	response, err := h.Command(ctx, nodeID, CommandMessage{Type: "ForcePullFullConfig", Data: json.RawMessage(`{}`)})
 	if err != nil {

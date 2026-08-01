@@ -32,7 +32,7 @@ func TestRuntimeControlRoutesRequireAdminAndPersist(t *testing.T) {
 	}
 	refreshes := &wakeRecorder{}
 	mux := http.NewServeMux()
-	registerRuntimeControlRoutes(mux, runtimecontrols.NewRepository(db), refreshes, func(r *http.Request) bool {
+	registerRuntimeControlRoutes(mux, runtimecontrols.NewRepository(db, nil), refreshes, func(r *http.Request) bool {
 		return r.Header.Get("X-Test-Admin") == "true"
 	})
 

@@ -51,7 +51,7 @@ func TestNodeInstallCommandUsesSiteConfigAndHiddenSecret(t *testing.T) {
 	mux := http.NewServeMux()
 	nodeRepo := nodes.NewRepository(db)
 	tunnelRepo := tunnels.NewRepository(db, nodeRepo)
-	registerNodeToolsRoutes(mux, nodeRepo, tunnelRepo, forwards.NewRepository(db, nodeRepo, tunnelRepo), siteconfig.NewRepository(db), &recordingPinger{}, func(*http.Request) bool { return true })
+	registerNodeToolsRoutes(mux, nodeRepo, tunnelRepo, forwards.NewRepository(db, nodeRepo, tunnelRepo, nil), siteconfig.NewRepository(db), &recordingPinger{}, func(*http.Request) bool { return true })
 
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/node/install", bytes.NewBufferString(`{"id":1}`)))
@@ -113,7 +113,7 @@ func TestForwardDiagnoseRequiresOwnerAndTargetsRemoteAddresses(t *testing.T) {
 	pinger := &recordingPinger{}
 	nodeRepo := nodes.NewRepository(db)
 	tunnelRepo := tunnels.NewRepository(db, nodeRepo)
-	forwardRepo := forwards.NewRepository(db, nodeRepo, tunnelRepo)
+	forwardRepo := forwards.NewRepository(db, nodeRepo, tunnelRepo, nil)
 	result, err := diagnoseForward(context.Background(), forwardRepo, tunnelRepo, nodeRepo, pinger, 1, 1, false)
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func TestForwardDiagnoseRouteUsesAuthenticatedIdentity(t *testing.T) {
 	nodeRepo := nodes.NewRepository(db)
 	tunnelRepo := tunnels.NewRepository(db, nodeRepo)
 	mux := http.NewServeMux()
-	registerNodeToolsRoutes(mux, nodeRepo, tunnelRepo, forwards.NewRepository(db, nodeRepo, tunnelRepo), siteconfig.NewRepository(db), &recordingPinger{}, func(*http.Request) bool { return false })
+	registerNodeToolsRoutes(mux, nodeRepo, tunnelRepo, forwards.NewRepository(db, nodeRepo, tunnelRepo, nil), siteconfig.NewRepository(db), &recordingPinger{}, func(*http.Request) bool { return false })
 	manager := auth.New("0123456789abcdef0123456789abcdef", time.Hour)
 	token, err := manager.Issue(auth.Identity{UserID: 1, Username: "member", Role: "user", RoleID: 1, TokenVersion: 1})
 	if err != nil {

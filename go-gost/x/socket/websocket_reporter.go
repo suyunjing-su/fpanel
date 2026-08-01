@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync" // 新增：用于管理连接状态的互斥锁
 	"time"
@@ -31,7 +33,6 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 	psnet "github.com/shirou/gopsutil/v3/net"
 	"github.com/xtaci/kcp-go/v5"
-	"os"
 )
 
 func buildSecureWebSocketBase(addr string) (string, error) {
@@ -186,6 +187,22 @@ type TcpPingResponse struct {
 	PacketLoss   float64 `json:"packetLoss"`  // 连接失败率(%)
 	ErrorMessage string  `json:"errorMessage,omitempty"`
 	RequestId    string  `json:"requestId,omitempty"`
+}
+
+type PortProbeRequest struct {
+	Ports         []int  `json:"ports"`
+	TCPListenAddr string `json:"tcpListenAddr"`
+	UDPListenAddr string `json:"udpListenAddr"`
+}
+
+type PortProbeResult struct {
+	Port      int    `json:"port"`
+	Available bool   `json:"available"`
+	Error     string `json:"error,omitempty"`
+}
+
+type PortProbeResponse struct {
+	Results []PortProbeResult `json:"results"`
 }
 
 type WebSocketReporter struct {
@@ -695,7 +712,13 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		response.Type = "KcpPingResponse"
 		response.Data = kcpPingResult
 
-	// Protocol blocking switches
+	case "ProbePorts":
+		var portProbeResult PortProbeResponse
+		portProbeResult, err = w.handlePortProbe(cmd.Data)
+		response.Type = "ProbePortsResponse"
+		response.Data = portProbeResult
+
+		// Protocol blocking switches
 	case "SetProtocol":
 		err = w.handleSetProtocol(cmd.Data)
 		response.Type = "SetProtocolResponse"
@@ -1488,6 +1511,60 @@ func StartWebSocketReporterWithPool(pool *controller.Pool, secret string, http i
 	reporter.version = version
 	reporter.Start()
 	return reporter
+}
+
+func (w *WebSocketReporter) handlePortProbe(data interface{}) (PortProbeResponse, error) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return PortProbeResponse{}, fmt.Errorf("序列化端口探测数据失败: %v", err)
+	}
+	var request PortProbeRequest
+	if err := json.Unmarshal(jsonData, &request); err != nil {
+		return PortProbeResponse{}, fmt.Errorf("解析端口探测请求失败: %v", err)
+	}
+	if len(request.Ports) == 0 || len(request.Ports) > 128 {
+		return PortProbeResponse{}, fmt.Errorf("端口探测数量必须在1-128之间")
+	}
+	tcpHost := normalizeProbeHost(request.TCPListenAddr)
+	udpHost := normalizeProbeHost(request.UDPListenAddr)
+	seen := make(map[int]struct{}, len(request.Ports))
+	response := PortProbeResponse{Results: make([]PortProbeResult, 0, len(request.Ports))}
+	for _, port := range request.Ports {
+		if port < 1 || port > 65535 {
+			return PortProbeResponse{}, fmt.Errorf("无效的端口号: %d", port)
+		}
+		if _, exists := seen[port]; exists {
+			return PortProbeResponse{}, fmt.Errorf("重复的端口号: %d", port)
+		}
+		seen[port] = struct{}{}
+		result := PortProbeResult{Port: port, Available: true}
+		tcpListener, err := net.Listen("tcp", net.JoinHostPort(tcpHost, strconv.Itoa(port)))
+		if err != nil {
+			result.Available = false
+			result.Error = "TCP: " + err.Error()
+			response.Results = append(response.Results, result)
+			continue
+		}
+		udpListener, err := net.ListenPacket("udp", net.JoinHostPort(udpHost, strconv.Itoa(port)))
+		if err != nil {
+			result.Available = false
+			result.Error = "UDP: " + err.Error()
+		}
+		if udpListener != nil {
+			_ = udpListener.Close()
+		}
+		_ = tcpListener.Close()
+		response.Results = append(response.Results, result)
+	}
+	return response, nil
+}
+
+func normalizeProbeHost(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "::"
+	}
+	return strings.Trim(value, "[]")
 }
 
 // handleTcpPing 处理TCP ping诊断命令

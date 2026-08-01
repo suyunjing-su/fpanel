@@ -37,7 +37,7 @@ func TestUserBatchDeleteReturnsPartialResult(t *testing.T) {
 	tunnelRepo := tunnels.NewRepository(db, nodeRepo)
 	wake := &batchWakeCounter{}
 	mux := http.NewServeMux()
-	registerBatchDeleteRoutes(mux, users.NewRepository(db), nodeRepo, tunnelRepo, forwards.NewRepository(db, nodeRepo, tunnelRepo), wake, func(*http.Request) bool { return true })
+	registerBatchDeleteRoutes(mux, users.NewRepository(db), nodeRepo, tunnelRepo, forwards.NewRepository(db, nodeRepo, tunnelRepo, nil), wake, func(*http.Request) bool { return true })
 
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/user/batch-delete", bytes.NewBufferString(`{"ids":[1,999,1]}`))
 	response := httptest.NewRecorder()
