@@ -26,14 +26,38 @@ import (
 )
 
 type recordingPinger struct {
-	requests []nodehub.TCPPingRequest
-	nodeIDs  []int64
+	requests     []nodehub.TCPPingRequest
+	nodeIDs      []int64
+	udpRequests  []nodehub.TransportPingRequest
+	quicRequests []nodehub.TransportPingRequest
+	kcpRequests  []nodehub.TransportPingRequest
 }
 
 func (p *recordingPinger) TCPPing(_ context.Context, nodeID int64, request nodehub.TCPPingRequest) (nodehub.TCPPingResponse, error) {
 	p.nodeIDs = append(p.nodeIDs, nodeID)
 	p.requests = append(p.requests, request)
 	return nodehub.TCPPingResponse{IP: request.IP, Port: request.Port, Success: true, AverageTime: 12.5}, nil
+}
+
+func (p *recordingPinger) UDPPing(_ context.Context, nodeID int64, request nodehub.TransportPingRequest) (nodehub.TransportPingResponse, error) {
+	p.nodeIDs = append(p.nodeIDs, nodeID)
+	p.requests = append(p.requests, request)
+	p.udpRequests = append(p.udpRequests, request)
+	return nodehub.TransportPingResponse{IP: request.IP, Port: request.Port, Success: true, AverageTime: 13.5}, nil
+}
+
+func (p *recordingPinger) QUICPing(_ context.Context, nodeID int64, request nodehub.TransportPingRequest) (nodehub.TransportPingResponse, error) {
+	p.nodeIDs = append(p.nodeIDs, nodeID)
+	p.requests = append(p.requests, request)
+	p.quicRequests = append(p.quicRequests, request)
+	return nodehub.TransportPingResponse{IP: request.IP, Port: request.Port, Success: true, AverageTime: 14.5}, nil
+}
+
+func (p *recordingPinger) KCPPing(_ context.Context, nodeID int64, request nodehub.TransportPingRequest) (nodehub.TransportPingResponse, error) {
+	p.nodeIDs = append(p.nodeIDs, nodeID)
+	p.requests = append(p.requests, request)
+	p.kcpRequests = append(p.kcpRequests, request)
+	return nodehub.TransportPingResponse{IP: request.IP, Port: request.Port, Success: true, AverageTime: 15.5}, nil
 }
 
 func TestNodeInstallCommandUsesSiteConfigAndHiddenSecret(t *testing.T) {
@@ -91,6 +115,62 @@ func TestTunnelDiagnoseRunsTopologyPings(t *testing.T) {
 	}
 	if pinger.requests[2].IP != "www.google.com" || pinger.requests[2].Port != 443 || result.Results[2].FromChainType != 3 {
 		t.Fatalf("exit ping mismatch result=%#v reqs=%#v", result.Results[2], pinger.requests)
+	}
+}
+
+func TestRunDiagnosisChecksUsesConfiguredTransport(t *testing.T) {
+	tests := []struct {
+		protocol string
+		check    func(*recordingPinger) int
+	}{
+		{protocol: "udp", check: func(p *recordingPinger) int { return len(p.udpRequests) }},
+		{protocol: "quic", check: func(p *recordingPinger) int { return len(p.quicRequests) }},
+		{protocol: "kcp", check: func(p *recordingPinger) int { return len(p.kcpRequests) }},
+	}
+	for _, test := range tests {
+		t.Run(test.protocol, func(t *testing.T) {
+			pinger := &recordingPinger{}
+			checks := []diagnosisCheck{{
+				From: diagnosisNode{
+					Spec: tunnels.NodeSpec{NodeID: 7, Protocol: test.protocol},
+					Node: nodes.Node{ID: 7, Name: "node"},
+				},
+				Target: hostPort{Host: "target.example.com", Port: 443},
+			}}
+			results := runDiagnosisChecks(context.Background(), pinger, checks)
+			if len(results) != 1 || !results[0].Success {
+				t.Fatalf("unexpected results: %#v", results)
+			}
+			if test.check(pinger) != 1 {
+				t.Fatalf("%s probe was not selected: %#v", test.protocol, pinger)
+			}
+			if len(pinger.requests) != 1 || pinger.requests[0].IP != "target.example.com" {
+				t.Fatalf("unexpected probe request: %#v", pinger.requests)
+			}
+		})
+	}
+}
+
+func TestRunDiagnosisChecksRejectsUnsupportedTransport(t *testing.T) {
+	pinger := &recordingPinger{}
+	results := runDiagnosisChecks(context.Background(), pinger, []diagnosisCheck{{
+		From: diagnosisNode{
+			Spec: tunnels.NodeSpec{NodeID: 7, Protocol: "tot"},
+			Node: nodes.Node{ID: 7, Name: "node"},
+		},
+		Target: hostPort{Host: "target.example.com", Port: 443},
+	}})
+	if len(results) != 1 {
+		t.Fatalf("unexpected result count: %#v", results)
+	}
+	if results[0].Success {
+		t.Fatal("unsupported transport was reported as successful")
+	}
+	if !strings.Contains(results[0].Message, "unsupported") {
+		t.Fatalf("unexpected unsupported message: %q", results[0].Message)
+	}
+	if len(pinger.nodeIDs) != 0 {
+		t.Fatalf("unsupported transport invoked a pinger: %#v", pinger.nodeIDs)
 	}
 }
 

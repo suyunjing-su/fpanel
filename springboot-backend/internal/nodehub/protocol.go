@@ -67,6 +67,9 @@ type TCPPingResponse struct {
 	Error       string  `json:"errorMessage,omitempty"`
 }
 
+type TransportPingRequest = TCPPingRequest
+type TransportPingResponse = TCPPingResponse
+
 type PortProbeRequest struct {
 	Ports         []int  `json:"ports"`
 	TCPListenAddr string `json:"tcpListenAddr"`

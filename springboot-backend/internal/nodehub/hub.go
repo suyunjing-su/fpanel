@@ -328,21 +328,37 @@ func (h *Hub) limiterCommand(ctx context.Context, nodeID int64, commandType stri
 }
 
 func (h *Hub) TCPPing(ctx context.Context, nodeID int64, request TCPPingRequest) (TCPPingResponse, error) {
+	return h.transportPing(ctx, nodeID, "TcpPing", request)
+}
+
+func (h *Hub) UDPPing(ctx context.Context, nodeID int64, request TransportPingRequest) (TransportPingResponse, error) {
+	return h.transportPing(ctx, nodeID, "UdpPing", request)
+}
+
+func (h *Hub) QUICPing(ctx context.Context, nodeID int64, request TransportPingRequest) (TransportPingResponse, error) {
+	return h.transportPing(ctx, nodeID, "QuicPing", request)
+}
+
+func (h *Hub) KCPPing(ctx context.Context, nodeID int64, request TransportPingRequest) (TransportPingResponse, error) {
+	return h.transportPing(ctx, nodeID, "KcpPing", request)
+}
+
+func (h *Hub) transportPing(ctx context.Context, nodeID int64, commandType string, request TransportPingRequest) (TransportPingResponse, error) {
 	data, err := json.Marshal(request)
 	if err != nil {
-		return TCPPingResponse{}, err
+		return TransportPingResponse{}, err
 	}
-	response, err := h.Command(ctx, nodeID, CommandMessage{Type: "TcpPing", Data: data})
+	response, err := h.Command(ctx, nodeID, CommandMessage{Type: commandType, Data: data})
 	if err != nil {
-		return TCPPingResponse{}, err
+		return TransportPingResponse{}, err
 	}
 	encoded, err := json.Marshal(response.Data)
 	if err != nil {
-		return TCPPingResponse{}, err
+		return TransportPingResponse{}, err
 	}
-	var result TCPPingResponse
+	var result TransportPingResponse
 	if err := json.Unmarshal(encoded, &result); err != nil {
-		return TCPPingResponse{}, err
+		return TransportPingResponse{}, err
 	}
 	if !response.Success && result.Error == "" {
 		result.Error = response.Message

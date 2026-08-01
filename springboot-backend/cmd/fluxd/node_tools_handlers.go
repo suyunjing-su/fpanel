@@ -32,6 +32,12 @@ type tcpPinger interface {
 	TCPPing(context.Context, int64, nodehub.TCPPingRequest) (nodehub.TCPPingResponse, error)
 }
 
+type transportPinger interface {
+	UDPPing(context.Context, int64, nodehub.TransportPingRequest) (nodehub.TransportPingResponse, error)
+	QUICPing(context.Context, int64, nodehub.TransportPingRequest) (nodehub.TransportPingResponse, error)
+	KCPPing(context.Context, int64, nodehub.TransportPingRequest) (nodehub.TransportPingResponse, error)
+}
+
 type diagnosisResult struct {
 	TunnelName  string                 `json:"tunnelName,omitempty"`
 	TunnelType  string                 `json:"tunnelType,omitempty"`
@@ -347,8 +353,8 @@ func tcpDiagnosisPort(spec tunnels.NodeSpec) int {
 
 func runDiagnosisChecks(ctx context.Context, pinger tcpPinger, checks []diagnosisCheck) []diagnosisCheckResult {
 	results := make([]diagnosisCheckResult, 0, len(checks))
+	transport, _ := pinger.(transportPinger)
 	for _, check := range checks {
-		response, err := pinger.TCPPing(ctx, check.From.Node.ID, nodehub.TCPPingRequest{IP: check.Target.Host, Port: check.Target.Port, Count: diagnosisPingCount, Timeout: diagnosisPingTimeout})
 		result := diagnosisCheckResult{
 			Description:   check.Description,
 			NodeName:      check.From.Node.Name,
@@ -359,6 +365,42 @@ func runDiagnosisChecks(ctx context.Context, pinger tcpPinger, checks []diagnosi
 			FromInx:       check.From.Spec.Inx,
 			ToChainType:   check.ToChainType,
 			ToInx:         check.ToInx,
+		}
+		protocol := strings.ToLower(strings.TrimSpace(check.From.Spec.Protocol))
+		if protocol == "" {
+			protocol = "tcp"
+		}
+		request := nodehub.TransportPingRequest{IP: check.Target.Host, Port: check.Target.Port, Count: diagnosisPingCount, Timeout: diagnosisPingTimeout}
+		var response nodehub.TransportPingResponse
+		var err error
+		switch protocol {
+		case "tcp":
+			response, err = pinger.TCPPing(ctx, check.From.Node.ID, request)
+		case "udp":
+			if transport == nil {
+				result.Message = "UDP diagnosis is unavailable on this node connection"
+				results = append(results, result)
+				continue
+			}
+			response, err = transport.UDPPing(ctx, check.From.Node.ID, request)
+		case "quic":
+			if transport == nil {
+				result.Message = "QUIC diagnosis is unavailable on this node connection"
+				results = append(results, result)
+				continue
+			}
+			response, err = transport.QUICPing(ctx, check.From.Node.ID, request)
+		case "kcp":
+			if transport == nil {
+				result.Message = "KCP diagnosis is unavailable on this node connection"
+				results = append(results, result)
+				continue
+			}
+			response, err = transport.KCPPing(ctx, check.From.Node.ID, request)
+		default:
+			result.Message = fmt.Sprintf("diagnosis is unsupported for %s transport", protocol)
+			results = append(results, result)
+			continue
 		}
 		if err != nil {
 			result.Message = err.Error()
