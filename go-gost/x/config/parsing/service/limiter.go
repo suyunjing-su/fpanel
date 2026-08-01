@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/go-gost/core/limiter"
@@ -56,7 +57,8 @@ type trafficLimiterGroupValue struct {
 	inbound bool
 }
 
-func (g *trafficLimiterGroupValue) each(fn func(traffic_limiter.Limiter) bool) {
+func (g *trafficLimiterGroupValue) limits() []traffic_limiter.Limiter {
+	limits := make([]traffic_limiter.Limiter, 0, len(g.names))
 	for _, name := range g.names {
 		candidate := registry.TrafficLimiterRegistry().Get(name)
 		if candidate == nil {
@@ -68,32 +70,34 @@ func (g *trafficLimiterGroupValue) each(fn func(traffic_limiter.Limiter) bool) {
 		} else {
 			limit = candidate.Out(g.ctx, g.key, g.options...)
 		}
-		if limit != nil && !fn(limit) {
-			return
+		if limit != nil {
+			limits = append(limits, limit)
 		}
 	}
+	sort.SliceStable(limits, func(left, right int) bool {
+		return limits[left].Limit() < limits[right].Limit()
+	})
+	return limits
 }
 
 func (g *trafficLimiterGroupValue) Wait(ctx context.Context, n int) int {
-	g.each(func(limit traffic_limiter.Limiter) bool {
+	for _, limit := range g.limits() {
 		if allowed := limit.Wait(ctx, n); allowed < n {
 			n = allowed
 		}
-		return n > 0
-	})
+		if n == 0 {
+			return 0
+		}
+	}
 	return n
 }
 
 func (g *trafficLimiterGroupValue) Limit() int {
-	minimum := 0
-	g.each(func(limit traffic_limiter.Limiter) bool {
-		value := limit.Limit()
-		if value > 0 && (minimum == 0 || value < minimum) {
-			minimum = value
-		}
-		return true
-	})
-	return minimum
+	limits := g.limits()
+	if len(limits) == 0 {
+		return 0
+	}
+	return limits[0].Limit()
 }
 
 func (g *trafficLimiterGroupValue) Set(int) {}
