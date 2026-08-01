@@ -13,8 +13,56 @@ type Repository struct {
 	db *sql.DB
 }
 
+type SubscriptionUsage struct {
+	Upload   int64
+	Download int64
+	Total    int64
+	Expire   int64
+}
+
+var ErrSubscriptionTunnelNotFound = errors.New("subscription tunnel not found")
+
 func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
+}
+
+func (r *Repository) SubscriptionUsage(ctx context.Context, username, password string, tunnelID int64) (SubscriptionUsage, error) {
+	username = NormalizeUsername(username)
+	if username == "" || password == "" {
+		return SubscriptionUsage{}, errors.New("invalid credentials")
+	}
+	var userID int64
+	var encoded string
+	var status int
+	var usage SubscriptionUsage
+	if err := r.db.QueryRowContext(ctx, `SELECT id,password_hash,status,expires_at,flow_quota_bytes,egress_bytes,ingress_bytes FROM users WHERE username=?`, username).Scan(
+		&userID, &encoded, &status, &usage.Expire, &usage.Total, &usage.Upload, &usage.Download,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SubscriptionUsage{}, errors.New("invalid credentials")
+		}
+		return SubscriptionUsage{}, fmt.Errorf("query subscription user: %w", err)
+	}
+	if status != 1 || (usage.Expire > 0 && usage.Expire <= nowMillis()) || !VerifyPassword(encoded, password) {
+		return SubscriptionUsage{}, errors.New("invalid credentials")
+	}
+	if tunnelID > 0 {
+		if err := r.db.QueryRowContext(ctx, `SELECT egress_bytes,ingress_bytes,flow_quota_bytes,expires_at FROM user_tunnels WHERE id=? AND user_id=? AND status=1`, tunnelID, userID).Scan(
+			&usage.Upload, &usage.Download, &usage.Total, &usage.Expire,
+		); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return SubscriptionUsage{}, ErrSubscriptionTunnelNotFound
+			}
+			return SubscriptionUsage{}, fmt.Errorf("query subscription tunnel: %w", err)
+		}
+		if usage.Expire > 0 && usage.Expire <= nowMillis() {
+			return SubscriptionUsage{}, ErrSubscriptionTunnelNotFound
+		}
+	}
+	if usage.Expire > 0 {
+		usage.Expire /= 1000
+	}
+	return usage, nil
 }
 
 func (r *Repository) Authenticate(ctx context.Context, username, password string) (Identity, error) {
