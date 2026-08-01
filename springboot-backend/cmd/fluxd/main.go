@@ -116,6 +116,7 @@ func run() error {
 	}
 	registerLimitRoutes(mux, speedLimitRepo, policyRepo, tunnelRepo, refreshQueue, isAdmin)
 	registerBatchDeleteRoutes(mux, userRepo, nodeRepo, tunnelRepo, forwardRepo, refreshQueue, isAdmin)
+	registerAccountRoutes(mux, userRepo, tunnelRepo, forwardRepo, authRepo, refreshQueue, isAdmin)
 	registerRuntimeControlRoutes(mux, runtimeControlRepo, refreshQueue, isAdmin)
 	mux.HandleFunc("POST /api/v1/tunnel/failure-event/list", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
@@ -629,7 +630,7 @@ func run() error {
 		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
 	})
 
-	server := &http.Server{Addr: cfg.Address, Handler: httpapi.Middleware(log, metrics, jwtManager, cfg.AllowedOrigins, mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
+	server := &http.Server{Addr: cfg.Address, Handler: httpapi.Middleware(log, metrics, jwtManager, cfg.AllowedOrigins, mux, authRepo), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Info("flux control plane started", "address", cfg.Address)

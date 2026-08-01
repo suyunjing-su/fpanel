@@ -25,6 +25,21 @@ type User struct {
 	OutFlow       int64  `json:"outFlow"`
 }
 
+type StatisticsFlow struct {
+	ID        int64  `json:"id"`
+	UserID    int64  `json:"userId"`
+	Flow      int    `json:"flow"`
+	TotalFlow int64  `json:"totalFlow"`
+	Time      string `json:"time"`
+}
+
+type Package struct {
+	UserInfo          User             `json:"userInfo"`
+	TunnelPermissions []map[string]any `json:"tunnelPermissions"`
+	Forwards          []map[string]any `json:"forwards"`
+	StatisticsFlows   []StatisticsFlow `json:"statisticsFlows"`
+}
+
 type CreateRequest struct {
 	Name          string  `json:"name"`
 	Username      string  `json:"user"`
@@ -65,6 +80,73 @@ func (r *Repository) List(ctx context.Context) ([]User, error) {
 		result = append(result, u)
 	}
 	return result, rows.Err()
+}
+
+func (r *Repository) Get(ctx context.Context, id int64) (User, error) {
+	var user User
+	if id <= 0 {
+		return user, errors.New("user id must be positive")
+	}
+	err := r.db.QueryRowContext(ctx, `SELECT id, username, status, flow_quota_bytes, forward_quota, expires_at, flow_reset_day, created_at, ingress_bytes, egress_bytes FROM users WHERE id=?`, id).Scan(&user.ID, &user.Username, &user.Status, &user.Flow, &user.Num, &user.ExpTime, &user.FlowResetTime, &user.CreatedTime, &user.InFlow, &user.OutFlow)
+	if err != nil {
+		return user, err
+	}
+	user.Flow /= bytesPerGB
+	return user, nil
+}
+
+func (r *Repository) Package(ctx context.Context, id int64, tunnelPermissions []map[string]any, forwards []map[string]any) (Package, error) {
+	user, err := r.Get(ctx, id)
+	if err != nil {
+		return Package{}, err
+	}
+	statistics, err := r.StatisticsFlows(ctx, id, time.Now().UnixMilli()-24*60*60*1000)
+	if err != nil {
+		return Package{}, err
+	}
+	return Package{UserInfo: user, TunnelPermissions: tunnelPermissions, Forwards: forwards, StatisticsFlows: statistics}, nil
+}
+
+func (r *Repository) StatisticsFlows(ctx context.Context, id, since int64) ([]StatisticsFlow, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id,user_id,flow,total_flow,strftime('%H:00', recorded_at / 1000, 'unixepoch', 'localtime') FROM statistics_flows WHERE user_id=? AND recorded_at>=? ORDER BY recorded_at`, id, since)
+	if err != nil {
+		return nil, fmt.Errorf("list user traffic statistics: %w", err)
+	}
+	defer rows.Close()
+	result := make([]StatisticsFlow, 0)
+	for rows.Next() {
+		var item StatisticsFlow
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Flow, &item.TotalFlow, &item.Time); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (r *Repository) ResetFlow(ctx context.Context, id int64, resetType int) error {
+	if id <= 0 {
+		return errors.New("reset id must be positive")
+	}
+	var result sql.Result
+	var err error
+	switch resetType {
+	case 1:
+		result, err = r.db.ExecContext(ctx, "UPDATE users SET ingress_bytes=0,egress_bytes=0,updated_at=? WHERE id=? AND role <> 'admin'", time.Now().UnixMilli(), id)
+	case 2:
+		result, err = r.db.ExecContext(ctx, "UPDATE user_tunnels SET ingress_bytes=0,egress_bytes=0,updated_at=? WHERE id=?", time.Now().UnixMilli(), id)
+	default:
+		return errors.New("invalid reset type")
+	}
+	if err != nil {
+		return fmt.Errorf("reset user traffic: %w", err)
+	}
+	if count, countErr := result.RowsAffected(); countErr != nil {
+		return countErr
+	} else if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (r *Repository) Create(ctx context.Context, req CreateRequest) (int64, error) {

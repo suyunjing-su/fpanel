@@ -48,12 +48,20 @@ func Failure(code int, message string) APIResponse {
 	return APIResponse{Code: code, Msg: message, TS: time.Now().UnixMilli(), Data: nil}
 }
 
-func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.Manager, allowedOrigins []string, handler http.Handler) http.Handler {
-	handler = authenticatePublicRoutes(manager, handler)
+func Middleware(log *slog.Logger, metrics *observability.Metrics, manager *auth.Manager, allowedOrigins []string, handler http.Handler, identityStores ...IdentityStore) http.Handler {
+	handler = authenticatePublicRoutes(manager, handler, identityStores...)
 	return requestID(log, metrics, cors(allowedOrigins, securityHeaders(recoverPanic(log, handler))))
 }
 
-func authenticatePublicRoutes(manager *auth.Manager, next http.Handler) http.Handler {
+type IdentityStore interface {
+	FindIdentity(context.Context, int64) (auth.Identity, error)
+}
+
+func authenticatePublicRoutes(manager *auth.Manager, next http.Handler, identityStores ...IdentityStore) http.Handler {
+	var identityStore IdentityStore
+	if len(identityStores) > 0 {
+		identityStore = identityStores[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" || r.URL.Path == "/metrics" || r.URL.Path == "/system-info" ||
 			r.URL.Path == "/flow/test" || r.URL.Path == "/flow/upload" || r.URL.Path == "/flow/config" || r.URL.Path == "/flow/config/all" || r.URL.Path == "/api/v1/user/login" || r.URL.Path == "/api/v1/config/get" ||
@@ -61,7 +69,7 @@ func authenticatePublicRoutes(manager *auth.Manager, next http.Handler) http.Han
 			next.ServeHTTP(w, r)
 			return
 		}
-		Authenticate(manager, next).ServeHTTP(w, r)
+		authenticateWithStore(manager, next, identityStore).ServeHTTP(w, r)
 	})
 }
 
@@ -83,6 +91,10 @@ func requestID(log *slog.Logger, metrics *observability.Metrics, next http.Handl
 }
 
 func Authenticate(manager *auth.Manager, next http.Handler) http.Handler {
+	return authenticateWithStore(manager, next, nil)
+}
+
+func authenticateWithStore(manager *auth.Manager, next http.Handler, identityStore IdentityStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimSpace(r.Header.Get("Authorization"))
 		if strings.HasPrefix(strings.ToLower(raw), "bearer ") {
@@ -92,6 +104,14 @@ func Authenticate(manager *auth.Manager, next http.Handler) http.Handler {
 		if err != nil {
 			WriteJSON(w, http.StatusUnauthorized, Failure(http.StatusUnauthorized, "未登录或token已过期"))
 			return
+		}
+		if identityStore != nil {
+			current, lookupErr := identityStore.FindIdentity(r.Context(), identity.UserID)
+			if lookupErr != nil || current.TokenVersion != identity.TokenVersion || current.Role != identity.Role || current.Username != identity.Username {
+				WriteJSON(w, http.StatusUnauthorized, Failure(http.StatusUnauthorized, "未登录或token已过期"))
+				return
+			}
+			identity = current
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey, identity)))
 	})

@@ -43,6 +43,49 @@ func (r *Repository) Authenticate(ctx context.Context, username, password string
 	return identity, nil
 }
 
+func (r *Repository) UpdatePassword(ctx context.Context, id int64, newUsername, currentPassword, newPassword string) error {
+	if id <= 0 {
+		return errors.New("user id must be positive")
+	}
+	newUsername = NormalizeUsername(newUsername)
+	if newUsername == "" || currentPassword == "" || newPassword == "" {
+		return errors.New("username and passwords are required")
+	}
+	if len([]rune(newUsername)) < 3 || len([]rune(newUsername)) > 20 {
+		return errors.New("username must be between 3 and 20 characters")
+	}
+	if len([]rune(newPassword)) < 6 || len([]rune(newPassword)) > 128 {
+		return errors.New("password must be between 6 and 128 characters")
+	}
+	var encoded string
+	if err := r.db.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE id=? AND status=1", id).Scan(&encoded); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("invalid credentials")
+		}
+		return fmt.Errorf("load current password: %w", err)
+	}
+	if !VerifyPassword(encoded, currentPassword) {
+		return errors.New("invalid credentials")
+	}
+	hash, err := HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE users SET username=?,password_hash=?,token_version=token_version+1,updated_at=? WHERE id=? AND status=1`, newUsername, hash, nowMillis(), id)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return errors.New("username is already in use")
+		}
+		return fmt.Errorf("update password: %w", err)
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("read password update count: %w", err)
+	} else if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (r *Repository) FindIdentity(ctx context.Context, id int64) (Identity, error) {
 	var identity Identity
 	var username string
