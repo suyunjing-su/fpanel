@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -33,11 +32,26 @@ func mwLogger() gin.HandlerFunc {
 func mwBasicAuth(auther auth.Authenticator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if auther == nil {
+			c.Writer.Header().Set("WWW-Authenticate", `Basic realm="gost-api"`)
+			c.JSON(http.StatusUnauthorized, Response{
+				Code: http.StatusUnauthorized,
+				Msg:  "Unauthorized",
+			})
+			c.Abort()
 			return
 		}
-		u, p, _ := c.Request.BasicAuth()
+		u, p, ok := c.Request.BasicAuth()
+		if !ok {
+			c.Writer.Header().Set("WWW-Authenticate", `Basic realm="gost-api"`)
+			c.JSON(http.StatusUnauthorized, Response{
+				Code: http.StatusUnauthorized,
+				Msg:  "Unauthorized",
+			})
+			c.Abort()
+			return
+		}
 		if _, ok := auther.Authenticate(c, u, p); !ok {
-			c.Writer.Header().Set("WWW-Authenticate", "Basic")
+			c.Writer.Header().Set("WWW-Authenticate", `Basic realm="gost-api"`)
 			c.JSON(http.StatusUnauthorized, Response{
 				Code: http.StatusUnauthorized,
 				Msg:  "Unauthorized",
@@ -45,49 +59,4 @@ func mwBasicAuth(auther auth.Authenticator) gin.HandlerFunc {
 			c.Abort()
 		}
 	}
-}
-
-// GlobalInterceptor 全局HTTP请求拦截器
-func GlobalInterceptor() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 检查认证参数，如果没有认证就静默关闭
-		if !hasValidAuth(c) {
-			// 获取底层连接并直接关闭
-			if hijacker, ok := c.Writer.(http.Hijacker); ok {
-				if conn, _, err := hijacker.Hijack(); err == nil {
-					conn.Close() // 直接关闭连接，不发送任何数据
-					return
-				}
-			}
-
-			// 如果无法hijack连接，则中止请求但不返回响应
-			c.Abort()
-			return
-		}
-
-		c.Next()
-
-	}
-}
-
-// hasValidAuth 检查请求是否包含有效的认证信息
-func hasValidAuth(c *gin.Context) bool {
-	// 获取Authorization头
-	authHeader := c.GetHeader("Authorization")
-	if authHeader == "" {
-		return false
-	}
-
-	// 检查是否是Basic认证
-	if !strings.HasPrefix(authHeader, "Basic ") {
-		return false
-	}
-
-	// 解析Basic认证
-	_, _, ok := c.Request.BasicAuth()
-	if !ok {
-		return false
-	}
-
-	return true
 }

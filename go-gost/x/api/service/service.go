@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 
@@ -46,14 +47,17 @@ func NewService(network, addr string, opts ...Option) (service.Service, error) {
 	if network == "" {
 		network = "tcp"
 	}
-	ln, err := net.Listen(network, addr)
-	if err != nil {
-		return nil, err
-	}
-
 	var options options
 	for _, opt := range opts {
 		opt(&options)
+	}
+	if options.auther == nil {
+		return nil, fmt.Errorf("API authentication is required")
+	}
+
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		return nil, err
 	}
 
 	gin.SetMode(gin.ReleaseMode)

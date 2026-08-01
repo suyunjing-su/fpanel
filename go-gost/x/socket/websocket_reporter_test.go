@@ -20,11 +20,11 @@ import (
 )
 
 func TestWebSocketConnectFallsBackAndPromotesController(t *testing.T) {
-	primary := httptest.NewServer(nil)
+	primary := httptest.NewTLSServer(nil)
 	primary.Close()
 	upgrader := websocket.Upgrader{}
 	connected := make(chan struct{}, 1)
-	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backup := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		connection, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -34,6 +34,11 @@ func TestWebSocketConnectFallsBackAndPromotesController(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer backup.Close()
+	originalDialer := websocket.DefaultDialer
+	testDialer := *websocket.DefaultDialer
+	testDialer.TLSClientConfig = backup.Client().Transport.(*http.Transport).TLSClientConfig
+	websocket.DefaultDialer = &testDialer
+	t.Cleanup(func() { websocket.DefaultDialer = originalDialer })
 	pool, err := controller.New([]string{primary.URL, backup.URL})
 	if err != nil {
 		t.Fatal(err)

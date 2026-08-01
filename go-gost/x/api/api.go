@@ -4,7 +4,6 @@ import (
 	"embed"
 	"net/http"
 
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/go-gost/core/auth"
 )
@@ -31,14 +30,7 @@ func Register(r *gin.Engine, opts *Options) {
 	}
 
 	r.Use(
-		cors.New((cors.Config{
-			AllowAllOrigins:     true,
-			AllowMethods:        []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-			AllowHeaders:        []string{"*"},
-			AllowPrivateNetwork: true,
-		})),
 		gin.Recovery(),
-		GlobalInterceptor(),
 	)
 	if opts.AccessLog {
 		r.Use(mwLogger())
@@ -49,10 +41,10 @@ func Register(r *gin.Engine, opts *Options) {
 		router = router.Group(opts.PathPrefix)
 	}
 
+	router.Use(mwBasicAuth(opts.Auther))
 	router.StaticFS("/docs", http.FS(swaggerDoc))
 
 	config := router.Group("/config")
-	config.Use(mwBasicAuth(opts.Auther))
 
 	config.GET("", getConfig)
 	config.POST("", saveConfig)

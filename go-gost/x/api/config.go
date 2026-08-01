@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
-	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-gost/core/observer/stats"
@@ -103,9 +102,6 @@ type saveConfigRequest struct {
 	// output format, one of yaml|json, default is yaml.
 	// in: query
 	Format string `form:"format" json:"format"`
-	// file path, default is gost.yaml|gost.json in current working directory.
-	// in: query
-	Path string `form:"path" json:"path"`
 }
 
 // successful operation.
@@ -136,22 +132,16 @@ func saveConfig(ctx *gin.Context) {
 		req.Format = "yaml"
 	}
 
-	if req.Path != "" {
-		file = req.Path
-	}
-
-	f, err := os.Create(file)
-	if err != nil {
+	var content bytes.Buffer
+	if err := config.Global().Write(&content, req.Format); err != nil {
 		writeError(ctx, &Error{
 			statusCode: http.StatusInternalServerError,
 			Code:       ErrCodeSaveConfigFailed,
-			Msg:        fmt.Sprintf("create file: %s", err.Error()),
+			Msg:        fmt.Sprintf("serialize config: %s", err.Error()),
 		})
 		return
 	}
-	defer f.Close()
-
-	if err := config.Global().Write(f, req.Format); err != nil {
+	if err := config.WriteFileAtomic(file, content.Bytes(), 0600); err != nil {
 		writeError(ctx, &Error{
 			statusCode: http.StatusInternalServerError,
 			Code:       ErrCodeSaveConfigFailed,

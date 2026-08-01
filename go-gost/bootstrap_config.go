@@ -27,24 +27,15 @@ func buildSecureControlBaseURL(addr string) (string, error) {
 		}
 
 		switch strings.ToLower(u.Scheme) {
-		case "https":
+		case "https", "wss":
 			u.Scheme = "https"
-			return strings.TrimRight(u.String(), "/"), nil
-		case "wss":
-			u.Scheme = "https"
-			return strings.TrimRight(u.String(), "/"), nil
-		case "http":
-			u.Scheme = "http"
-			return strings.TrimRight(u.String(), "/"), nil
-		case "ws":
-			u.Scheme = "http"
 			return strings.TrimRight(u.String(), "/"), nil
 		default:
-			return "", fmt.Errorf("unsupported scheme: %s", u.Scheme)
+			return "", fmt.Errorf("controller address must use https:// or wss://")
 		}
 	}
 
-	return "", fmt.Errorf("server address must include scheme: http://, https://, ws:// or wss://")
+	return "", fmt.Errorf("server address must include https:// or wss://")
 }
 
 func syncFullConfigFromDashboard(pool *controller.Pool, secret string) error {

@@ -18,7 +18,6 @@ func TestProfilingAddr(t *testing.T) {
 		{name: "ipv6 loopback", config: config.ProfilingConfig{Addr: "[::1]:7000"}, want: "[::1]:7000"},
 		{name: "empty host normalizes to loopback", config: config.ProfilingConfig{Addr: ":7000"}, want: "127.0.0.1:7000"},
 		{name: "remote address rejected", config: config.ProfilingConfig{Addr: "0.0.0.0:6060"}, wantErr: true},
-		{name: "remote address requires explicit opt in", config: config.ProfilingConfig{Addr: "0.0.0.0:6060", AllowRemote: true}, want: "0.0.0.0:6060"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

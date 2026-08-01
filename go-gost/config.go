@@ -45,13 +45,13 @@ func LoadConfig(configPath string) (*Config, error) {
 	config.Addr = config.Controllers[0]
 	for _, address := range config.Controllers {
 		u, err := url.Parse(address)
-		if err != nil || u.Scheme == "" {
-			return nil, fmt.Errorf("服务器地址格式错误，必须包含协议，例如 http://127.0.0.1:8534 或 https://clk.qzz.io:443: %s", address)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("服务器地址格式错误，必须包含https://或wss://: %s", address)
 		}
 		switch strings.ToLower(u.Scheme) {
-		case "http", "https", "ws", "wss":
+		case "https", "wss":
 		default:
-			return nil, fmt.Errorf("不支持的服务器地址协议: %s，仅支持 http/https/ws/wss", u.Scheme)
+			return nil, fmt.Errorf("不安全的服务器地址协议: %s，仅支持https/wss", u.Scheme)
 		}
 	}
 

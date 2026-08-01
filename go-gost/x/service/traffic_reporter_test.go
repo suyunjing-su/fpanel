@@ -13,17 +13,20 @@ import (
 )
 
 func TestPostReportFallsBackAndPromotesController(t *testing.T) {
-	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	primary := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer primary.Close()
 	var received []byte
-	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backup := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer backup.Close()
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = backup.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	pool, err := controller.New([]string{primary.URL, backup.URL})
 	if err != nil {
 		t.Fatal(err)

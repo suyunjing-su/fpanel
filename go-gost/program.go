@@ -93,9 +93,6 @@ func profilingAddr(cfg *config.ProfilingConfig) (string, error) {
 	if addr == "" {
 		return "127.0.0.1:6060", nil
 	}
-	if cfg.AllowRemote {
-		return addr, nil
-	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return "", fmt.Errorf("invalid profiling address %q: %w", addr, err)
@@ -105,7 +102,7 @@ func profilingAddr(cfg *config.ProfilingConfig) (string, error) {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
-		return "", fmt.Errorf("profiling address %q is not loopback; set allowRemote=true to expose pprof", addr)
+		return "", fmt.Errorf("profiling address %q is not loopback", addr)
 	}
 	return addr, nil
 }
@@ -268,12 +265,27 @@ func (p *program) reloadConfig() error {
 	return nil
 }
 
+func requireLoopbackAddress(addr, serviceName string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid %s address %q: %w", serviceName, addr, err)
+	}
+	if host == "localhost" || host == "" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%s address %q is not loopback", serviceName, addr)
+	}
+	return nil
+}
+
 func buildApiService(cfg *config.APIConfig) (service.Service, error) {
 	var authers []auth.Authenticator
 	if auther := auth_parser.ParseAutherFromAuth(cfg.Auth); auther != nil {
 		authers = append(authers, auther)
 	}
-	if cfg.Auther != "" {
+	if cfg.Auther != "" && registry.AutherRegistry().IsRegistered(cfg.Auther) {
 		authers = append(authers, registry.AutherRegistry().Get(cfg.Auther))
 	}
 
@@ -281,12 +293,20 @@ func buildApiService(cfg *config.APIConfig) (service.Service, error) {
 	if len(authers) > 0 {
 		auther = xauth.AuthenticatorGroup(authers...)
 	}
+	if auther == nil {
+		return nil, fmt.Errorf("API authentication is required")
+	}
 
 	network := "tcp"
 	addr := cfg.Addr
 	if strings.HasPrefix(addr, "unix://") {
 		network = "unix"
 		addr = strings.TrimPrefix(addr, "unix://")
+	}
+	if network == "tcp" {
+		if err := requireLoopbackAddress(addr, "API"); err != nil {
+			return nil, err
+		}
 	}
 	return api_service.NewService(
 		network, addr,
@@ -299,7 +319,13 @@ func buildApiService(cfg *config.APIConfig) (service.Service, error) {
 func buildMetricsService(cfg *config.MetricsConfig) (service.Service, error) {
 	auther := auth_parser.ParseAutherFromAuth(cfg.Auth)
 	if cfg.Auther != "" {
+		if !registry.AutherRegistry().IsRegistered(cfg.Auther) {
+			return nil, fmt.Errorf("metrics authenticator %q is not registered", cfg.Auther)
+		}
 		auther = registry.AutherRegistry().Get(cfg.Auther)
+	}
+	if auther == nil {
+		return nil, fmt.Errorf("metrics authentication is required")
 	}
 
 	network := "tcp"
@@ -307,6 +333,11 @@ func buildMetricsService(cfg *config.MetricsConfig) (service.Service, error) {
 	if strings.HasPrefix(addr, "unix://") {
 		network = "unix"
 		addr = strings.TrimPrefix(addr, "unix://")
+	}
+	if network == "tcp" {
+		if err := requireLoopbackAddress(addr, "metrics"); err != nil {
+			return nil, err
+		}
 	}
 	return metrics.NewService(
 		network, addr,

@@ -48,24 +48,15 @@ func buildSecureWebSocketBase(addr string) (string, error) {
 		}
 
 		switch strings.ToLower(u.Scheme) {
-		case "wss":
+		case "wss", "https":
 			u.Scheme = "wss"
-			return strings.TrimRight(u.String(), "/"), nil
-		case "https":
-			u.Scheme = "wss"
-			return strings.TrimRight(u.String(), "/"), nil
-		case "ws":
-			u.Scheme = "ws"
-			return strings.TrimRight(u.String(), "/"), nil
-		case "http":
-			u.Scheme = "ws"
 			return strings.TrimRight(u.String(), "/"), nil
 		default:
-			return "", fmt.Errorf("不支持的协议: %s", u.Scheme)
+			return "", fmt.Errorf("控制器地址必须使用https://或wss://")
 		}
 	}
 
-	return "", fmt.Errorf("服务器地址必须包含协议(http://、https://、ws://或wss://)")
+	return "", fmt.Errorf("控制器地址必须包含https://或wss://")
 }
 
 func buildNodeWebSocketURL(addr string) (string, error) {
@@ -106,24 +97,15 @@ func buildSecureControlBaseURL(addr string) (string, error) {
 		}
 
 		switch strings.ToLower(u.Scheme) {
-		case "https":
+		case "https", "wss":
 			u.Scheme = "https"
-			return strings.TrimRight(u.String(), "/"), nil
-		case "wss":
-			u.Scheme = "https"
-			return strings.TrimRight(u.String(), "/"), nil
-		case "http":
-			u.Scheme = "http"
-			return strings.TrimRight(u.String(), "/"), nil
-		case "ws":
-			u.Scheme = "http"
 			return strings.TrimRight(u.String(), "/"), nil
 		default:
-			return "", fmt.Errorf("不支持的协议: %s", u.Scheme)
+			return "", fmt.Errorf("控制器地址必须使用https://或wss://")
 		}
 	}
 
-	return "", fmt.Errorf("服务器地址必须包含协议(http://、https://、ws://或wss://)")
+	return "", fmt.Errorf("控制器地址必须包含https://或wss://")
 }
 
 // SystemInfo 系统信息结构体

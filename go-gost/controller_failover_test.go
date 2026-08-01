@@ -12,11 +12,11 @@ import (
 )
 
 func TestSyncFullConfigFallsBackAndPromotesController(t *testing.T) {
-	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	primary := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer primary.Close()
-	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backup := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer secret" {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
@@ -25,6 +25,9 @@ func TestSyncFullConfigFallsBackAndPromotesController(t *testing.T) {
 		_, _ = w.Write([]byte(`{"services":[],"chains":[]}`))
 	}))
 	defer backup.Close()
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = backup.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	pool, err := controller.New([]string{primary.URL, backup.URL})
 	if err != nil {
 		t.Fatal(err)
@@ -49,10 +52,13 @@ func TestSyncFullConfigFallsBackAndPromotesController(t *testing.T) {
 }
 
 func TestSyncFullConfigUsesValidCacheWhenControllersFail(t *testing.T) {
-	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	controlServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer controlServer.Close()
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = controlServer.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	pool, err := controller.New([]string{controlServer.URL})
 	if err != nil {
 		t.Fatal(err)
@@ -71,10 +77,13 @@ func TestSyncFullConfigUsesValidCacheWhenControllersFail(t *testing.T) {
 }
 
 func TestSyncFullConfigRejectsInvalidCache(t *testing.T) {
-	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	controlServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer controlServer.Close()
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = controlServer.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	pool, err := controller.New([]string{controlServer.URL})
 	if err != nil {
 		t.Fatal(err)
@@ -88,17 +97,12 @@ func TestSyncFullConfigRejectsInvalidCache(t *testing.T) {
 	}
 }
 
-func TestLoadConfigSupportsLegacyAndControllerList(t *testing.T) {
+func TestLoadConfigRejectsInsecureController(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"addr":"http://primary/","controllers":["http://primary","https://backup"],"secret":"secret"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	config, err := LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := []string{"http://primary", "https://backup"}
-	if !reflect.DeepEqual(config.Controllers, expected) || config.Addr != expected[0] {
-		t.Fatalf("unexpected controllers: %#v addr=%q", config.Controllers, config.Addr)
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("insecure controller was accepted")
 	}
 }
