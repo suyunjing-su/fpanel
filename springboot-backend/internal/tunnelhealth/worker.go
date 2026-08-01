@@ -50,6 +50,7 @@ type healthCandidate struct {
 type exitCandidate struct {
 	TunnelID         int64
 	NodeID           int64
+	Strategy         string
 	MaxBandwidthMbps int
 	NodeBytes        uint64
 	TunnelBytes      int64
@@ -158,6 +159,18 @@ func (w *Worker) checkBandwidth(ctx context.Context) {
 	defer w.mu.Unlock()
 	for _, candidate := range candidates {
 		key := bandwidthKey{TunnelID: candidate.TunnelID, NodeID: candidate.NodeID}
+		if candidate.Strategy != "fifo" {
+			delete(w.snapshots, key)
+			changed, err := w.repository.UpdateBandwidth(ctx, candidate.TunnelID, candidate.NodeID, false, "bandwidth monitoring disabled for non-fifo strategy")
+			if err != nil {
+				w.log.Warn("failed to clear non-fifo exit bandwidth state", "tunnel_id", candidate.TunnelID, "node_id", candidate.NodeID, "error", err)
+				continue
+			}
+			if changed && w.refreshes != nil {
+				w.refreshes.Wake()
+			}
+			continue
+		}
 		previous, ok := w.snapshots[key]
 		current := bandwidthSnapshot{NodeBytes: candidate.NodeBytes, TunnelBytes: candidate.TunnelBytes, ObservedAt: now}
 		w.snapshots[key] = current
@@ -182,7 +195,7 @@ func (w *Worker) checkBandwidth(ctx context.Context) {
 }
 
 func (w *Worker) bandwidthCandidates(ctx context.Context) ([]exitCandidate, error) {
-	rows, err := w.db.QueryContext(ctx, `SELECT tn.tunnel_id,tn.node_id,n.max_bandwidth_mbps,n.bytes_received+n.bytes_transmitted,tn.ingress_bytes+tn.egress_bytes FROM tunnel_nodes tn JOIN nodes n ON n.id=tn.node_id WHERE tn.chain_type=3 AND n.status=1 AND COALESCE(tn.strategy,'fifo')='fifo' AND tn.tunnel_id IN (SELECT tunnel_id FROM tunnel_nodes WHERE chain_type=3 GROUP BY tunnel_id HAVING COUNT(*)>1)`)
+	rows, err := w.db.QueryContext(ctx, `SELECT tn.tunnel_id,tn.node_id,COALESCE(tn.strategy,'fifo'),n.max_bandwidth_mbps,n.bytes_received+n.bytes_transmitted,tn.ingress_bytes+tn.egress_bytes FROM tunnel_nodes tn JOIN nodes n ON n.id=tn.node_id WHERE tn.chain_type=3 AND n.status=1 AND tn.tunnel_id IN (SELECT tunnel_id FROM tunnel_nodes WHERE chain_type=3 GROUP BY tunnel_id HAVING COUNT(*)>1)`)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +203,7 @@ func (w *Worker) bandwidthCandidates(ctx context.Context) ([]exitCandidate, erro
 	result := make([]exitCandidate, 0)
 	for rows.Next() {
 		var candidate exitCandidate
-		if err := rows.Scan(&candidate.TunnelID, &candidate.NodeID, &candidate.MaxBandwidthMbps, &candidate.NodeBytes, &candidate.TunnelBytes); err != nil {
+		if err := rows.Scan(&candidate.TunnelID, &candidate.NodeID, &candidate.Strategy, &candidate.MaxBandwidthMbps, &candidate.NodeBytes, &candidate.TunnelBytes); err != nil {
 			return nil, err
 		}
 		result = append(result, candidate)
