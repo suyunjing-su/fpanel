@@ -85,7 +85,8 @@ type LoggerConfig struct {
 }
 
 type ProfilingConfig struct {
-	Addr string `json:"addr"`
+	Addr        string `json:"addr"`
+	AllowRemote bool   `yaml:"allowRemote,omitempty" json:"allowRemote,omitempty"`
 }
 
 type APIConfig struct {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/go-gost/core/auth"
 	"github.com/go-gost/core/logger"
 	"github.com/go-gost/core/service"
@@ -17,6 +18,7 @@ import (
 	"github.com/go-gost/x/registry"
 	xservice "github.com/go-gost/x/service"
 	"github.com/judwhite/go-svc"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -86,6 +88,35 @@ func (p *program) Start() error {
 	return nil
 }
 
+func profilingAddr(cfg *config.ProfilingConfig) (string, error) {
+	addr := strings.TrimSpace(cfg.Addr)
+	if addr == "" {
+		return "127.0.0.1:6060", nil
+	}
+	if cfg.AllowRemote {
+		return addr, nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("invalid profiling address %q: %w", addr, err)
+	}
+	if host == "localhost" || host == "" {
+		return "127.0.0.1:" + portFromAddress(addr), nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return "", fmt.Errorf("profiling address %q is not loopback; set allowRemote=true to expose pprof", addr)
+	}
+	return addr, nil
+}
+
+func portFromAddress(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "6060"
+	}
+	return port
+}
 func (p *program) run(cfg *config.Config) error {
 	for _, svc := range registry.ServiceRegistry().GetAll() {
 		svc := svc
@@ -150,9 +181,9 @@ func (p *program) run(cfg *config.Config) error {
 		p.srvProfiling = nil
 	}
 	if cfg.Profiling != nil {
-		addr := cfg.Profiling.Addr
-		if addr == "" {
-			addr = ":6060"
+		addr, err := profilingAddr(cfg.Profiling)
+		if err != nil {
+			return err
 		}
 		s := &http.Server{
 			Addr: addr,
