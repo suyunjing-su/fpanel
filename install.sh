@@ -1,370 +1,315 @@
 #!/bin/bash
+set -Eeuo pipefail
 
-RELEASE_VERSION="3.0.26-beta"
+RELEASE_VERSION="3.0.27-beta"
+RELEASE_BASE_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}"
+CHECKSUMS_URL="${RELEASE_BASE_URL}/SHA256SUMS"
+BINARY_DIR="/usr/local/lib/flux-agent"
+BINARY_PATH="${BINARY_DIR}/flux-agent"
+ROLLBACK_PATH="${BINARY_DIR}/flux-agent.rollback"
+STATE_DIR="/var/lib/flux-agent"
+CONFIG_PATH="${STATE_DIR}/config.json"
+GOST_CONFIG_PATH="${STATE_DIR}/gost.json"
+SERVICE_FILE="/etc/systemd/system/flux-agent.service"
+AGENT_USER="flux-agent"
+SERVER_ADDR=""
+SECRET=""
 
-# 获取系统架构
 get_architecture() {
-    ARCH=$(uname -m)
-    case $ARCH in
-        x86_64)
-            echo "amd64"
-            ;;
-        aarch64|arm64)
-            echo "arm64"
-            ;;
-        *)
-            echo "amd64"  # 默认使用 amd64
-            ;;
-    esac
+  case "$(uname -m)" in
+    x86_64) printf '%s\n' amd64 ;;
+    aarch64|arm64) printf '%s\n' arm64 ;;
+    *) printf '不支持的系统架构: %s\n' "$(uname -m)" >&2; return 1 ;;
+  esac
 }
 
-# 构建下载地址
-build_download_url() {
-    local ARCH=$(get_architecture)
-  echo "https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/gost-${ARCH}"
-}
-
-# 下载地址
-DOWNLOAD_URL=$(build_download_url)
-INSTALL_DIR="/etc/flux_agent"
-COUNTRY=$(curl -s https://ipinfo.io/country)
-if [ "$COUNTRY" = "CN" ]; then
-    # 拼接 URL
-    DOWNLOAD_URL="https://ghfast.top/${DOWNLOAD_URL}"
-fi
-
-
-
-# 显示菜单
-show_menu() {
-  echo "==============================================="
-  echo "              管理脚本"
-  echo "==============================================="
-  echo "请选择操作："
-  echo "1. 安装"
-  echo "2. 更新"  
-  echo "3. 卸载"
-  echo "4. 退出"
-  echo "==============================================="
-}
-
-# 删除脚本自身
-delete_self() {
-  echo ""
-  echo "🗑️ 操作已完成，正在清理脚本文件..."
-  SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
-  sleep 1
-  rm -f "$SCRIPT_PATH" && echo "✅ 脚本文件已删除" || echo "❌ 删除脚本文件失败"
-}
-
-# 检查并安装 tcpkill
-check_and_install_tcpkill() {
-  # 检查 tcpkill 是否已安装
-  if command -v tcpkill &> /dev/null; then
-    return 0
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo "缺少 sha256sum 或 shasum" >&2
+    return 1
   fi
-  
-  # 检测操作系统类型
-  OS_TYPE=$(uname -s)
-  
-  # 检查是否需要 sudo
+}
+
+require_runtime() {
   if [[ $EUID -ne 0 ]]; then
-    SUDO_CMD="sudo"
-  else
-    SUDO_CMD=""
+    echo "请以 root 用户运行安装器" >&2
+    return 1
   fi
-  
-  if [[ "$OS_TYPE" == "Darwin" ]]; then
-    if command -v brew &> /dev/null; then
-      brew install dsniff &> /dev/null
-    fi
-    return 0
+  if [[ "$(uname -s)" != "Linux" ]] || ! command -v systemctl >/dev/null 2>&1; then
+    echo "仅支持使用 systemd 的 Linux 系统" >&2
+    return 1
   fi
-  
-  # 检测 Linux 发行版并安装对应的包
-  if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    DISTRO=$ID
-  elif [ -f /etc/redhat-release ]; then
-    DISTRO="rhel"
-  elif [ -f /etc/debian_version ]; then
-    DISTRO="debian"
-  else
-    return 0
-  fi
-  
-  case $DISTRO in
-    ubuntu|debian)
-      $SUDO_CMD apt update &> /dev/null
-      $SUDO_CMD apt install -y dsniff &> /dev/null
-      ;;
-    centos|rhel|fedora)
-      if command -v dnf &> /dev/null; then
-        $SUDO_CMD dnf install -y dsniff &> /dev/null
-      elif command -v yum &> /dev/null; then
-        $SUDO_CMD yum install -y dsniff &> /dev/null
-      fi
-      ;;
-    alpine)
-      $SUDO_CMD apk add --no-cache dsniff &> /dev/null
-      ;;
-    arch|manjaro)
-      $SUDO_CMD pacman -S --noconfirm dsniff &> /dev/null
-      ;;
-    opensuse*|sles)
-      $SUDO_CMD zypper install -y dsniff &> /dev/null
-      ;;
-    gentoo)
-      $SUDO_CMD emerge --ask=n net-analyzer/dsniff &> /dev/null
-      ;;
-    void)
-      $SUDO_CMD xbps-install -Sy dsniff &> /dev/null
-      ;;
-  esac
-  
-  return 0
+  command -v curl >/dev/null 2>&1 || { echo "缺少 curl" >&2; return 1; }
+  sha256_file /dev/null >/dev/null
 }
 
+validate_config() {
+  case "$SERVER_ADDR" in
+    https://*|wss://*) ;;
+    *) echo "服务器地址必须以 https:// 或 wss:// 开头" >&2; return 1 ;;
+  esac
+  if [[ "$SERVER_ADDR" =~ [[:space:]\"\\] ]]; then
+    echo "服务器地址包含不支持的字符" >&2
+    return 1
+  fi
+  if [[ -z "$SECRET" || "$SECRET" =~ [^A-Za-z0-9._~-] ]]; then
+    echo "密钥只能包含字母、数字、点、下划线、波浪线和连字符" >&2
+    return 1
+  fi
+}
 
-# 获取用户输入的配置参数
+download_verified_binary() {
+  local output="$1"
+  local architecture asset checksums expected actual
+  architecture=$(get_architecture)
+  asset="gost-${architecture}"
+  checksums="${output}.SHA256SUMS"
+  rm -f "$output" "$checksums"
+  curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+    "$CHECKSUMS_URL" -o "$checksums"
+  curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+    "${RELEASE_BASE_URL}/${asset}" -o "$output"
+  expected=$(awk -v asset="$asset" '$2 == asset {print $1; exit}' "$checksums")
+  actual=$(sha256_file "$output")
+  rm -f "$checksums"
+  if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ || "${actual,,}" != "${expected,,}" ]]; then
+    rm -f "$output"
+    echo "flux-agent SHA-256 校验失败" >&2
+    return 1
+  fi
+  chmod 0755 "$output"
+  chown root:root "$output"
+}
+
+ensure_agent_user() {
+  if ! id "$AGENT_USER" >/dev/null 2>&1; then
+    if command -v useradd >/dev/null 2>&1; then
+      useradd --system --home-dir "$STATE_DIR" --shell /usr/sbin/nologin "$AGENT_USER"
+    elif command -v adduser >/dev/null 2>&1; then
+      adduser -S -H -h "$STATE_DIR" -s /sbin/nologin "$AGENT_USER"
+    else
+      echo "系统缺少 useradd 或 adduser" >&2
+      return 1
+    fi
+  fi
+  install -d -m 0755 -o root -g root "$BINARY_DIR"
+  install -d -m 0750 -o "$AGENT_USER" -g "$AGENT_USER" "$STATE_DIR"
+}
+
+write_service() {
+  local candidate="${SERVICE_FILE}.new"
+  cat > "$candidate" <<EOF
+[Unit]
+Description=Flux Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$AGENT_USER
+Group=$AGENT_USER
+WorkingDirectory=$STATE_DIR
+ExecStart=$BINARY_PATH
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=$STATE_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "$candidate"
+  chown root:root "$candidate"
+  mv -f "$candidate" "$SERVICE_FILE"
+  systemctl daemon-reload
+}
+
+stage_binary() {
+  local candidate="${BINARY_PATH}.new"
+  download_verified_binary "$candidate"
+  "$candidate" -V
+}
+
+activate_candidate() {
+  local candidate="${BINARY_PATH}.new"
+  rm -f "$ROLLBACK_PATH"
+  if [[ -f "$BINARY_PATH" ]]; then
+    ln "$BINARY_PATH" "$ROLLBACK_PATH"
+  fi
+  mv -f "$candidate" "$BINARY_PATH"
+  sync "$BINARY_PATH" 2>/dev/null || sync
+}
+
+rollback_binary() {
+  systemctl stop flux-agent.service 2>/dev/null || true
+  if [[ -f "$ROLLBACK_PATH" ]]; then
+    mv -f "$ROLLBACK_PATH" "$BINARY_PATH"
+    sync "$BINARY_PATH" 2>/dev/null || sync
+  else
+    rm -f "$BINARY_PATH"
+  fi
+}
+
+start_and_verify() {
+  systemctl enable flux-agent.service
+  systemctl restart flux-agent.service
+  sleep 3
+  systemctl is-active --quiet flux-agent.service
+}
+
 get_config_params() {
-  if [[ -z "$SERVER_ADDR" || -z "$SECRET" ]]; then
-    echo "请输入配置参数："
-    
-    if [[ -z "$SERVER_ADDR" ]]; then
-      read -p "服务器地址: " SERVER_ADDR
-    fi
-    
-    if [[ -z "$SECRET" ]]; then
-      read -p "密钥: " SECRET
-    fi
-    
-    if [[ -z "$SERVER_ADDR" || -z "$SECRET" ]]; then
-      echo "❌ 参数不完整，操作取消。"
-      exit 1
-    fi
+  if [[ -z "$SERVER_ADDR" ]]; then
+    read -r -p "服务器地址（https:// 或 wss://）: " SERVER_ADDR
   fi
+  if [[ -z "$SECRET" ]]; then
+    read -r -p "密钥: " SECRET
+  fi
+  validate_config
 }
 
-# 解析命令行参数
-while getopts "a:s:" opt; do
-  case $opt in
-    a) SERVER_ADDR="$OPTARG" ;;
-    s) SECRET="$OPTARG" ;;
-    *) echo "❌ 无效参数"; exit 1 ;;
-  esac
-done
-
-# 安装功能
-install_flux_agent() {
-  echo "🚀 开始安装 flux_agent..."
+install_agent() {
+  require_runtime
+  if [[ -e "$BINARY_PATH" || -e "$SERVICE_FILE" ]]; then
+    echo "flux-agent 已安装；请使用更新操作" >&2
+    return 1
+  fi
   get_config_params
+  ensure_agent_user
+  stage_binary
 
-    # 检查并安装 tcpkill
-  check_and_install_tcpkill
-  
-
-  mkdir -p "$INSTALL_DIR"
-
-  # 停止并禁用已有服务
-  if systemctl list-units --full -all | grep -Fq "flux_agent.service"; then
-    echo "🔍 检测到已存在的flux_agent服务"
-    systemctl stop flux_agent 2>/dev/null && echo "🛑 停止服务"
-    systemctl disable flux_agent 2>/dev/null && echo "🚫 禁用自启"
-  fi
-
-  # 删除旧文件
-  [[ -f "$INSTALL_DIR/flux_agent" ]] && echo "🧹 删除旧文件 flux_agent" && rm -f "$INSTALL_DIR/flux_agent"
-
-  # 下载 flux_agent
-  echo "⬇️ 下载 flux_agent 中..."
-  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/flux_agent"
-  if [[ ! -f "$INSTALL_DIR/flux_agent" || ! -s "$INSTALL_DIR/flux_agent" ]]; then
-    echo "❌ 下载失败，请检查网络或下载链接。"
-    exit 1
-  fi
-  chmod +x "$INSTALL_DIR/flux_agent"
-  echo "✅ 下载完成"
-
-  # 打印版本
-  echo "🔎 flux_agent 版本：$($INSTALL_DIR/flux_agent -V)"
-
-  # 写入 config.json (安装时总是创建新的)
-  CONFIG_FILE="$INSTALL_DIR/config.json"
-  echo "📄 创建新配置: config.json"
-  cat > "$CONFIG_FILE" <<EOF
+  umask 077
+  cat > "${CONFIG_PATH}.new" <<EOF
 {
   "addr": "$SERVER_ADDR",
   "secret": "$SECRET"
 }
 EOF
-
-  # 写入 gost.json
-  GOST_CONFIG="$INSTALL_DIR/gost.json"
-  if [[ -f "$GOST_CONFIG" ]]; then
-    echo "⏭️ 跳过配置文件: gost.json (已存在)"
-  else
-    echo "📄 创建新配置: gost.json"
-    cat > "$GOST_CONFIG" <<EOF
-{}
-EOF
+  chown root:"$AGENT_USER" "${CONFIG_PATH}.new"
+  chmod 0640 "${CONFIG_PATH}.new"
+  mv -f "${CONFIG_PATH}.new" "$CONFIG_PATH"
+  if [[ ! -f "$GOST_CONFIG_PATH" ]]; then
+    printf '{}\n' > "$GOST_CONFIG_PATH"
   fi
+  chown "$AGENT_USER:$AGENT_USER" "$GOST_CONFIG_PATH"
+  chmod 0600 "$GOST_CONFIG_PATH"
 
-  # 加强权限
-  chmod 600 "$INSTALL_DIR"/*.json
-
-  # 创建 systemd 服务
-  SERVICE_FILE="/etc/systemd/system/flux_agent.service"
-  cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=Flux_agent Proxy Service
-After=network.target
-
-[Service]
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/flux_agent
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  # 启动服务
-  systemctl daemon-reload
-  systemctl enable flux_agent
-  systemctl start flux_agent
-
-  # 检查状态
-  echo "🔄 检查服务状态..."
-  if systemctl is-active --quiet flux_agent; then
-    echo "✅ 安装完成，flux_agent服务已启动并设置为开机启动。"
-    echo "📁 配置目录: $INSTALL_DIR"
-    echo "🔧 服务状态: $(systemctl is-active flux_agent)"
-  else
-    echo "❌ flux_agent服务启动失败，请执行以下命令查看日志："
-    echo "journalctl -u flux_agent -f"
-  fi
-}
-
-# 更新功能
-update_flux_agent() {
-  echo "🔄 开始更新 flux_agent..."
-  
-  if [[ ! -d "$INSTALL_DIR" ]]; then
-    echo "❌ flux_agent 未安装，请先选择安装。"
+  write_service
+  activate_candidate
+  if ! start_and_verify; then
+    echo "新版本启动失败，正在回滚" >&2
+    rollback_binary
+    systemctl disable flux-agent.service 2>/dev/null || true
+    rm -f "$SERVICE_FILE"
+    systemctl daemon-reload
     return 1
   fi
-  
-  echo "📥 使用下载地址: $DOWNLOAD_URL"
-  
-  # 检查并安装 tcpkill
-  check_and_install_tcpkill
-  
-  # 先下载新版本
-  echo "⬇️ 下载最新版本..."
-  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/flux_agent.new"
-  if [[ ! -f "$INSTALL_DIR/flux_agent.new" || ! -s "$INSTALL_DIR/flux_agent.new" ]]; then
-    echo "❌ 下载失败。"
+  rm -f "$ROLLBACK_PATH"
+  echo "flux-agent 安装完成"
+  echo "配置目录: $STATE_DIR"
+}
+
+update_agent() {
+  require_runtime
+  if [[ ! -x "$BINARY_PATH" || ! -f "$SERVICE_FILE" || ! -f "$CONFIG_PATH" ]]; then
+    echo "未检测到当前架构的 flux-agent 安装" >&2
     return 1
   fi
-
-  # 停止服务
-  if systemctl list-units --full -all | grep -Fq "flux_agent.service"; then
-    echo "🛑 停止 flux_agent 服务..."
-    systemctl stop flux_agent
+  ensure_agent_user
+  stage_binary
+  local service_backup="${SERVICE_FILE}.rollback"
+  rm -f "$service_backup"
+  cp -a "$SERVICE_FILE" "$service_backup"
+  write_service
+  systemctl stop flux-agent.service
+  activate_candidate
+  if ! start_and_verify; then
+    echo "新版本启动失败，正在回滚" >&2
+    rollback_binary
+    mv -f "$service_backup" "$SERVICE_FILE"
+    systemctl daemon-reload
+    systemctl start flux-agent.service
+    systemctl is-active --quiet flux-agent.service || echo "旧版本服务恢复失败" >&2
+    return 1
   fi
-
-  # 替换文件
-  mv "$INSTALL_DIR/flux_agent.new" "$INSTALL_DIR/flux_agent"
-  chmod +x "$INSTALL_DIR/flux_agent"
-  
-  # 打印版本
-  echo "🔎 新版本：$($INSTALL_DIR/flux_agent -V)"
-
-  # 重启服务
-  echo "🔄 重启服务..."
-  systemctl start flux_agent
-  
-  echo "✅ 更新完成，服务已重新启动。"
+  rm -f "$ROLLBACK_PATH" "$service_backup"
+  echo "flux-agent 更新完成"
 }
 
-# 卸载功能
-uninstall_flux_agent() {
-  echo "🗑️ 开始卸载 flux_agent..."
-  
-  read -p "确认卸载 flux_agent 吗？此操作将删除所有相关文件 (y/N): " confirm
-  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    echo "❌ 取消卸载"
-    return 0
-  fi
-
-  # 停止并禁用服务
-  if systemctl list-units --full -all | grep -Fq "flux_agent.service"; then
-    echo "🛑 停止并禁用服务..."
-    systemctl stop flux_agent 2>/dev/null
-    systemctl disable flux_agent 2>/dev/null
-  fi
-
-  # 删除服务文件
-  if [[ -f "/etc/systemd/system/flux_agent.service" ]]; then
-    rm -f "/etc/systemd/system/flux_agent.service"
-    echo "🧹 删除服务文件"
-  fi
-
-  # 删除安装目录
-  if [[ -d "$INSTALL_DIR" ]]; then
-    rm -rf "$INSTALL_DIR"
-    echo "🧹 删除安装目录: $INSTALL_DIR"
-  fi
-
-  # 重载 systemd
+uninstall_agent() {
+  require_runtime
+  read -r -p "确认卸载 flux-agent 并删除其配置与状态吗？(y/N): " confirm
+  [[ "$confirm" == "y" || "$confirm" == "Y" ]] || return 0
+  systemctl disable --now flux-agent.service 2>/dev/null || true
+  rm -f "$SERVICE_FILE"
   systemctl daemon-reload
-
-  echo "✅ 卸载完成"
+  rm -rf "$BINARY_DIR" "$STATE_DIR"
+  if id "$AGENT_USER" >/dev/null 2>&1; then
+    if command -v userdel >/dev/null 2>&1; then
+      userdel "$AGENT_USER"
+    elif command -v deluser >/dev/null 2>&1; then
+      deluser "$AGENT_USER"
+    fi
+  fi
+  echo "flux-agent 已卸载"
 }
 
-# 主逻辑
+show_menu() {
+  printf '%s\n' \
+    "===============================================" \
+    "              Flux Agent 管理" \
+    "===============================================" \
+    "1. 安装" \
+    "2. 更新" \
+    "3. 卸载" \
+    "4. 退出"
+}
+
+while getopts "a:s:" opt; do
+  case "$opt" in
+    a) SERVER_ADDR="$OPTARG" ;;
+    s) SECRET="$OPTARG" ;;
+    *) exit 1 ;;
+  esac
+done
+
 main() {
-  # 如果提供了命令行参数，直接执行安装
-  if [[ -n "$SERVER_ADDR" && -n "$SECRET" ]]; then
-    install_flux_agent
-    delete_self
-    exit 0
+  if [[ -n "$SERVER_ADDR" || -n "$SECRET" ]]; then
+    install_agent
+    return
   fi
-
-  # 显示交互式菜单
-  while true; do
-    show_menu
-    read -p "请输入选项 (1-4): " choice
-    
-    case $choice in
-      1)
-        install_flux_agent
-        delete_self
-        exit 0
-        ;;
-      2)
-        update_flux_agent
-        delete_self
-        exit 0
-        ;;
-      3)
-        uninstall_flux_agent
-        delete_self
-        exit 0
-        ;;
-      4)
-        echo "👋 退出脚本"
-        delete_self
-        exit 0
-        ;;
-      *)
-        echo "❌ 无效选项，请输入 1-4"
-        echo ""
-        ;;
-    esac
-  done
+  show_menu
+  read -r -p "请输入选项 (1-4): " choice
+  case "$choice" in
+    1) install_agent ;;
+    2) update_agent ;;
+    3) uninstall_agent ;;
+    4) return ;;
+    *) echo "无效选项" >&2; return 1 ;;
+  esac
 }
 
-# 执行主函数
 main

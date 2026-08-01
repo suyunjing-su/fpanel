@@ -1,416 +1,492 @@
 #!/bin/bash
-set -e
+set -Eeuo pipefail
 
-# 解决 macOS 下 tr 可能出现的非法字节序列问题
-export LANG=en_US.UTF-8
 export LC_ALL=C
 
-RELEASE_VERSION="3.0.26-beta"
+RELEASE_VERSION="3.0.27-beta"
+RELEASE_BASE_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}"
+CHECKSUMS_URL="${RELEASE_BASE_URL}/SHA256SUMS"
+BACKEND_CONTAINER="flux-control-plane"
+FRONTEND_CONTAINER="vite-frontend"
+INGRESS_CONTAINER="flux-ingress"
+SQLITE_VOLUME="sqlite_data"
+DOCKER_CMD=()
+TEMP_PATHS=()
+UPDATE_ROLLBACK_ACTIVE=false
+UPDATE_BACKUP_DIRECTORY=""
+UPDATE_OLD_BACKEND_ID=""
+UPDATE_OLD_BACKEND_REF=""
+UPDATE_OLD_FRONTEND_ID=""
+UPDATE_OLD_FRONTEND_REF=""
+UPDATE_OLD_INGRESS_ID=""
+UPDATE_OLD_INGRESS_REF=""
 
-
-# 全局下载地址配置
-DOCKER_COMPOSEV4_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/docker-compose-v4.yml"
-DOCKER_COMPOSEV6_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/docker-compose-v6.yml"
-CADDYFILE_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}/Caddyfile"
-
-
-
-# 根据IPv6支持情况选择docker-compose URL
-get_docker_compose_url() {
-  if check_ipv6_support > /dev/null 2>&1; then
-    echo "$DOCKER_COMPOSEV6_URL"
-  else
-    echo "$DOCKER_COMPOSEV4_URL"
-  fi
+cleanup_temp_paths() {
+  local path
+  for path in "${TEMP_PATHS[@]}"; do
+    [[ -n "$path" ]] && rm -rf -- "$path"
+  done
 }
 
-# 检查 docker-compose 或 docker compose 命令
-check_docker() {
-  if command -v docker-compose &> /dev/null; then
-    DOCKER_CMD="docker-compose"
-  elif command -v docker &> /dev/null; then
-    if docker compose version &> /dev/null; then
-      DOCKER_CMD="docker compose"
+track_temp_path() {
+  TEMP_PATHS+=("$1")
+}
+
+preserve_temp_path() {
+  local preserved="$1"
+  local path
+  local remaining=()
+  for path in "${TEMP_PATHS[@]}"; do
+    [[ "$path" == "$preserved" ]] || remaining+=("$path")
+  done
+  TEMP_PATHS=("${remaining[@]}")
+}
+
+handle_exit() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ "$UPDATE_ROLLBACK_ACTIVE" == "true" ]]; then
+    echo "更新被中断，正在恢复旧部署" >&2
+    preserve_temp_path "$UPDATE_BACKUP_DIRECTORY"
+    if rollback_update "$UPDATE_BACKUP_DIRECTORY" \
+      "$UPDATE_OLD_BACKEND_ID" "$UPDATE_OLD_BACKEND_REF" \
+      "$UPDATE_OLD_FRONTEND_ID" "$UPDATE_OLD_FRONTEND_REF" \
+      "$UPDATE_OLD_INGRESS_ID" "$UPDATE_OLD_INGRESS_REF"; then
+      echo "旧版本已恢复；备份保留于 $UPDATE_BACKUP_DIRECTORY" >&2
     else
-      echo "错误：检测到 docker，但不支持 'docker compose' 命令。请安装 docker-compose 或更新 docker 版本。"
-      exit 1
+      echo "自动回滚失败；备份保留于 $UPDATE_BACKUP_DIRECTORY" >&2
     fi
-  else
-    echo "错误：未检测到 docker 或 docker-compose 命令。请先安装 Docker。"
-    exit 1
   fi
-  echo "检测到 Docker 命令：$DOCKER_CMD"
+  cleanup_temp_paths
+  exit "$status"
 }
 
-# 检测系统是否支持 IPv6
-check_ipv6_support() {
-  echo "🔍 检测 IPv6 支持..."
+trap handle_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-  # 检查是否有 IPv6 地址（排除 link-local 地址）
-  if ip -6 addr show | grep -v "scope link" | grep -q "inet6"; then
-    echo "✅ 检测到系统支持 IPv6"
-    return 0
-  elif ifconfig 2>/dev/null | grep -v "fe80:" | grep -q "inet6"; then
-    echo "✅ 检测到系统支持 IPv6"
-    return 0
+check_runtime() {
+  command -v curl >/dev/null 2>&1 || { echo "缺少 curl" >&2; return 1; }
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    DOCKER_CMD=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then
+    DOCKER_CMD=(docker-compose)
   else
-    echo "⚠️ 未检测到 IPv6 支持"
+    echo "需要 Docker Compose v2 或 docker-compose" >&2
+    return 1
+  fi
+  docker info >/dev/null
+}
+
+compose() {
+  "${DOCKER_CMD[@]}" "$@"
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo "缺少 sha256sum 或 shasum" >&2
     return 1
   fi
 }
 
-
-
-# 配置 Docker 启用 IPv6
-configure_docker_ipv6() {
-  echo "🔧 配置 Docker IPv6 支持..."
-
-  # 检查操作系统类型
-  OS_TYPE=$(uname -s)
-
-  if [[ "$OS_TYPE" == "Darwin" ]]; then
-    # macOS 上 Docker Desktop 已默认支持 IPv6
-    echo "✅ macOS Docker Desktop 默认支持 IPv6"
-    return 0
-  fi
-
-  # Docker daemon 配置文件路径
-  DOCKER_CONFIG="/etc/docker/daemon.json"
-
-  # 检查是否需要 sudo
-  if [[ $EUID -ne 0 ]]; then
-    SUDO_CMD="sudo"
+supports_ipv6() {
+  if command -v ip >/dev/null 2>&1; then
+    ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'
+  elif command -v ifconfig >/dev/null 2>&1; then
+    ifconfig 2>/dev/null | grep -v 'fe80:' | grep -q 'inet6'
   else
-    SUDO_CMD=""
-  fi
-
-  # 检查 Docker 配置文件
-  if [ -f "$DOCKER_CONFIG" ]; then
-    # 检查是否已经配置了 IPv6
-    if grep -q '"ipv6"' "$DOCKER_CONFIG"; then
-      echo "✅ Docker 已配置 IPv6 支持"
-    else
-      echo "📝 更新 Docker 配置以启用 IPv6..."
-      # 备份原配置
-      $SUDO_CMD cp "$DOCKER_CONFIG" "${DOCKER_CONFIG}.backup"
-
-      # 使用 jq 或 sed 添加 IPv6 配置
-      if command -v jq &> /dev/null; then
-        $SUDO_CMD jq '. + {"ipv6": true, "fixed-cidr-v6": "fd00::/80"}' "$DOCKER_CONFIG" > /tmp/daemon.json && $SUDO_CMD mv /tmp/daemon.json "$DOCKER_CONFIG"
-      else
-        # 如果没有 jq，使用 sed
-        $SUDO_CMD sed -i 's/^{$/{\n  "ipv6": true,\n  "fixed-cidr-v6": "fd00::\/80",/' "$DOCKER_CONFIG"
-      fi
-
-      echo "🔄 重启 Docker 服务..."
-      if command -v systemctl &> /dev/null; then
-        $SUDO_CMD systemctl restart docker
-      elif command -v service &> /dev/null; then
-        $SUDO_CMD service docker restart
-      else
-        echo "⚠️ 请手动重启 Docker 服务"
-      fi
-      sleep 5
-    fi
-  else
-    # 创建新的配置文件
-    echo "📝 创建 Docker 配置文件..."
-    $SUDO_CMD mkdir -p /etc/docker
-    echo '{
-  "ipv6": true,
-  "fixed-cidr-v6": "fd00::/80"
-}' | $SUDO_CMD tee "$DOCKER_CONFIG" > /dev/null
-
-    echo "🔄 重启 Docker 服务..."
-    if command -v systemctl &> /dev/null; then
-      $SUDO_CMD systemctl restart docker
-    elif command -v service &> /dev/null; then
-      $SUDO_CMD service docker restart
-    else
-      echo "⚠️ 请手动重启 Docker 服务"
-    fi
-    sleep 5
+    return 1
   fi
 }
 
-# 显示菜单
-show_menu() {
-  echo "==============================================="
-  echo "          面板管理脚本"
-  echo "==============================================="
-  echo "请选择操作："
-  echo "1. 安装面板"
-  echo "2. 更新面板"
-  echo "3. 卸载面板"
-  echo "4. 退出"
-  echo "==============================================="
+verify_download() {
+  local checksums="$1"
+  local asset="$2"
+  local destination="$3"
+  local expected actual
+  curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+    "${RELEASE_BASE_URL}/${asset}" -o "$destination"
+  expected=$(awk -v asset="$asset" '$2 == asset {print $1; exit}' "$checksums")
+  actual=$(sha256_file "$destination")
+  if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ || "${actual,,}" != "${expected,,}" ]]; then
+    rm -f "$destination"
+    echo "${asset} SHA-256 校验失败" >&2
+    return 1
+  fi
+}
+
+download_candidate() {
+  local directory="$1"
+  local compose_asset
+  if supports_ipv6; then
+    compose_asset="docker-compose-v6.yml"
+  else
+    compose_asset="docker-compose-v4.yml"
+  fi
+  curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+    "$CHECKSUMS_URL" -o "$directory/SHA256SUMS"
+  verify_download "$directory/SHA256SUMS" "$compose_asset" "$directory/docker-compose.yml"
+  verify_download "$directory/SHA256SUMS" Caddyfile "$directory/Caddyfile"
+  rm -f "$directory/SHA256SUMS"
+  chmod 0644 "$directory/docker-compose.yml" "$directory/Caddyfile"
 }
 
 generate_random() {
-  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c32
+  od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
 }
 
 upsert_env() {
-  local key="$1"
-  local value="$2"
-  if grep -q "^${key}=" .env 2>/dev/null; then
-    sed -i "s|^${key}=.*|${key}=${value}|" .env
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$file"
   else
-    printf '%s=%s\n' "$key" "$value" >> .env
+    printf '%s=%s\n' "$key" "$value" >> "$file"
   fi
 }
 
-ensure_go_control_plane_env() {
-  umask 077
-  touch .env
-  chmod 600 .env
-  local jwt_secret
-  jwt_secret=$(grep '^JWT_SECRET=' .env | cut -d'=' -f2- || true)
+read_env() {
+  local file="$1"
+  local key="$2"
+  grep "^${key}=" "$file" 2>/dev/null | cut -d= -f2- | tail -n 1 || true
+}
+
+validate_domain() {
+  [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]
+}
+
+prepare_existing_env() {
+  local file="$1"
+  local panel_domain jwt_secret metrics_token bootstrap_username bootstrap_password
+  [[ -f "$file" ]] || { echo "缺少 .env" >&2; return 1; }
+  chmod 0600 "$file"
+  panel_domain=$(read_env "$file" PANEL_DOMAIN)
+  validate_domain "$panel_domain" || { echo ".env 中的 PANEL_DOMAIN 无效" >&2; return 1; }
+  jwt_secret=$(read_env "$file" JWT_SECRET)
+  metrics_token=$(read_env "$file" METRICS_TOKEN)
+  bootstrap_username=$(read_env "$file" BOOTSTRAP_USERNAME)
+  bootstrap_password=$(read_env "$file" BOOTSTRAP_PASSWORD)
   if [[ ${#jwt_secret} -lt 32 ]]; then
-    jwt_secret="$(generate_random)$(generate_random)"
-    upsert_env JWT_SECRET "$jwt_secret"
-    echo "✅ 已将 JWT 密钥升级为 Go 控制面要求的安全长度"
+    upsert_env "$file" JWT_SECRET "$(generate_random)"
   fi
-  local metrics_token
-  metrics_token=$(grep '^METRICS_TOKEN=' .env | cut -d'=' -f2- || true)
   if [[ ${#metrics_token} -lt 32 ]]; then
-    metrics_token="$(generate_random)$(generate_random)"
-    upsert_env METRICS_TOKEN "$metrics_token"
+    upsert_env "$file" METRICS_TOKEN "$(generate_random)"
   fi
-  local panel_domain
-  panel_domain=$(grep '^PANEL_DOMAIN=' .env | cut -d'=' -f2- || true)
-  if [[ -z "$panel_domain" ]]; then
-    echo "❌ 更新需要 .env 中已配置 PANEL_DOMAIN"
-    return 1
-  fi
-  local bootstrap_username
-  bootstrap_username=$(grep '^BOOTSTRAP_USERNAME=' .env | cut -d'=' -f2- || true)
   if [[ -z "$bootstrap_username" ]]; then
-    bootstrap_username=admin
+    upsert_env "$file" BOOTSTRAP_USERNAME admin
   fi
-  upsert_env BOOTSTRAP_USERNAME "$bootstrap_username"
-  local bootstrap_password
-  bootstrap_password=$(grep '^BOOTSTRAP_PASSWORD=' .env | cut -d'=' -f2- || true)
   if [[ ${#bootstrap_password} -lt 12 ]]; then
-    bootstrap_password=$(generate_random)
-    upsert_env BOOTSTRAP_PASSWORD "$bootstrap_password"
+    upsert_env "$file" BOOTSTRAP_PASSWORD "$(generate_random)"
   fi
 }
 
-# 删除脚本自身
-delete_self() {
-  echo ""
-  echo "🗑️ 操作已完成，正在清理脚本文件..."
-  SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
-  sleep 1
-  rm -f "$SCRIPT_PATH" && echo "✅ 脚本文件已删除" || echo "❌ 删除脚本文件失败"
+validate_candidate() {
+  local directory="$1"
+  (
+    cd "$directory"
+    compose -f docker-compose.yml config >/dev/null
+  )
+  local ingress_image panel_domain
+  ingress_image=$(
+    cd "$directory"
+    compose -f docker-compose.yml config --images | awk '$0 ~ /^caddy(:|@)/ {print; exit}'
+  )
+  [[ -n "$ingress_image" ]] || { echo "无法解析 Caddy 镜像" >&2; return 1; }
+  panel_domain=$(read_env "$directory/.env" PANEL_DOMAIN)
+  docker run --rm \
+    --entrypoint caddy \
+    -e "PANEL_DOMAIN=${panel_domain}" \
+    -v "$directory/Caddyfile:/etc/caddy/Caddyfile:ro" \
+    "$ingress_image" \
+    validate --config /etc/caddy/Caddyfile >/dev/null
 }
 
-
-
-# 获取用户输入的配置参数
-get_config_params() {
-  echo "🔧 请输入配置参数："
-
-  while true; do
-    read -p "面板域名（DNS 必须已指向本机）: " PANEL_DOMAIN
-    PANEL_DOMAIN=$(printf '%s' "$PANEL_DOMAIN" | tr '[:upper:]' '[:lower:]')
-    if [[ "$PANEL_DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
-      break
-    fi
-    echo "❌ 请输入有效域名，例如 panel.example.com"
-  done
-
-  JWT_SECRET=$(generate_random)$(generate_random)
-  METRICS_TOKEN=$(generate_random)$(generate_random)
-  BOOTSTRAP_PASSWORD=$(generate_random)
+pull_candidate() {
+  local directory="$1"
+  (
+    cd "$directory"
+    compose -f docker-compose.yml pull
+  )
 }
 
-# 安装功能
-install_panel() {
-  echo "🚀 开始安装面板..."
-  check_docker
-  get_config_params
-
-  echo "🔽 下载必要文件..."
-  DOCKER_COMPOSE_URL=$(get_docker_compose_url)
-  echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-  curl --fail --location --retry 3 -o docker-compose.yml "$DOCKER_COMPOSE_URL"
-  curl --fail --location --retry 3 -o Caddyfile "$CADDYFILE_URL"
-  echo "✅ 文件准备完成"
-
-  # 自动检测并配置 IPv6 支持
-  if check_ipv6_support; then
-    echo "🚀 系统支持 IPv6，自动启用 IPv6 配置..."
-    configure_docker_ipv6
-  fi
-
-  umask 077
-  cat > .env <<EOF
-JWT_SECRET=$JWT_SECRET
-METRICS_TOKEN=$METRICS_TOKEN
-BOOTSTRAP_USERNAME=admin
-BOOTSTRAP_PASSWORD=$BOOTSTRAP_PASSWORD
-PANEL_DOMAIN=$PANEL_DOMAIN
-EOF
-  chmod 600 .env
-  $DOCKER_CMD config >/dev/null
-
-  echo "🚀 启动 docker 服务..."
-  $DOCKER_CMD up -d
-
-  echo "🎉 部署完成"
-  echo "🌐 访问地址: https://$PANEL_DOMAIN"
-  echo "📖 部署完成后请阅读下使用文档，求求了啊，不要上去就是一顿操作"
-  echo "📚 文档地址: https://tes.cc/guide.html"
-  echo "💡 初始管理员账号: admin"
-  echo "🔐 初始管理员密码: $BOOTSTRAP_PASSWORD"
-  echo "⚠️  请安全保存并在首次登录后修改密码！"
-
-
+container_image_id() {
+  docker inspect -f '{{.Image}}' "$1"
 }
 
-# 更新功能
-update_panel() {
-  echo "🔄 开始更新面板..."
-  check_docker
+container_image_ref() {
+  docker inspect -f '{{.Config.Image}}' "$1"
+}
 
-  echo "🔽 下载最新配置文件..."
-  DOCKER_COMPOSE_URL=$(get_docker_compose_url)
-  echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-  curl --fail --location --retry 3 -o docker-compose.yml.candidate "$DOCKER_COMPOSE_URL"
-  curl --fail --location --retry 3 -o Caddyfile.candidate "$CADDYFILE_URL"
-  ensure_go_control_plane_env
-  $DOCKER_CMD -f docker-compose.yml.candidate config >/dev/null
-  mv docker-compose.yml.candidate docker-compose.yml
-  mv Caddyfile.candidate Caddyfile
-  echo "✅ 下载并验证完成"
+container_health() {
+  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || true
+}
 
-  # 自动检测并配置 IPv6 支持
-  if check_ipv6_support; then
-    echo "🚀 系统支持 IPv6，自动启用 IPv6 配置..."
-    configure_docker_ipv6
-  fi
-
-  # 先发送 SIGTERM 信号，让应用优雅关闭
-  docker stop -t 30 flux-control-plane 2>/dev/null || true
-  docker stop -t 10 vite-frontend 2>/dev/null || true
-  
-  # 等待 WAL 文件同步
-  echo "⏳ 等待数据同步..."
-  sleep 5
-  
-  # 然后再完全停止
-  $DOCKER_CMD down
-
-  echo "⬇️ 拉取最新镜像..."
-  $DOCKER_CMD pull
-
-  echo "🚀 启动更新后的服务..."
-  $DOCKER_CMD up -d
-
-  # 等待服务启动
-  echo "⏳ 等待服务启动..."
-
-  # 检查后端容器健康状态
-  echo "🔍 检查后端服务状态..."
-  for i in {1..90}; do
-    if docker ps --format "{{.Names}}" | grep -q "^flux-control-plane$"; then
-      BACKEND_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' flux-control-plane 2>/dev/null || echo "unknown")
-      if [[ "$BACKEND_HEALTH" == "healthy" ]]; then
-        echo "✅ 后端服务健康检查通过"
-        break
-      elif [[ "$BACKEND_HEALTH" == "starting" ]]; then
-        # 继续等待
-        :
-      elif [[ "$BACKEND_HEALTH" == "unhealthy" ]]; then
-        echo "⚠️ 后端健康状态：$BACKEND_HEALTH"
+wait_for_deployment() {
+  local domain="$1"
+  local attempt backend frontend ingress
+  for attempt in $(seq 1 180); do
+    backend=$(container_health "$BACKEND_CONTAINER")
+    frontend=$(container_health "$FRONTEND_CONTAINER")
+    ingress=$(container_health "$INGRESS_CONTAINER")
+    if [[ "$backend" == "healthy" && "$frontend" == "healthy" && "$ingress" == "healthy" ]]; then
+      if curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+        --resolve "${domain}:443:127.0.0.1" "https://${domain}/" >/dev/null; then
+        return 0
       fi
-    else
-      echo "⚠️ 后端容器未找到或未运行"
-      BACKEND_HEALTH="not_running"
     fi
-    if [ $i -eq 90 ]; then
-      echo "❌ 后端服务启动超时（90秒）"
-      echo "🔍 当前状态：$(docker inspect -f '{{.State.Health.Status}}' flux-control-plane 2>/dev/null || echo '容器不存在')"
-      echo "🛑 更新终止"
-      return 1
-    fi
-    # 每15秒显示一次进度
-    if [ $((i % 15)) -eq 1 ]; then
-      echo "⏳ 等待后端服务启动... ($i/90) 状态：${BACKEND_HEALTH:-unknown}"
+    if (( attempt % 15 == 0 )); then
+      printf '等待部署健康：backend=%s frontend=%s ingress=%s (%d/180)\n' \
+        "${backend:-missing}" "${frontend:-missing}" "${ingress:-missing}" "$attempt"
     fi
     sleep 1
   done
-
-  echo "✅ 更新完成"
+  return 1
 }
 
-
-
-# 卸载功能
-uninstall_panel() {
-  echo "🗑️ 开始卸载面板..."
-  check_docker
-
-  if [[ ! -f "docker-compose.yml" ]]; then
-    echo "⚠️ 未找到 docker-compose.yml 文件，正在下载以完成卸载..."
-    DOCKER_COMPOSE_URL=$(get_docker_compose_url)
-    echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-    curl --fail --location --retry 3 -o docker-compose.yml "$DOCKER_COMPOSE_URL"
-    curl --fail --location --retry 3 -o Caddyfile "$CADDYFILE_URL"
-    echo "✅ docker-compose.yml 与 Caddyfile 下载完成"
-  fi
-
-  read -p "确认卸载面板吗？此操作将停止并删除所有容器和数据 (y/N): " confirm
-  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    echo "❌ 取消卸载"
-    return 0
-  fi
-
-  echo "🛑 停止并删除容器、镜像、卷..."
-  $DOCKER_CMD down --rmi all --volumes --remove-orphans
-  echo "🧹 删除配置文件..."
-  rm -f docker-compose.yml Caddyfile .env
-  echo "✅ 卸载完成"
+publish_candidate_files() {
+  local directory="$1"
+  install -m 0644 "$directory/docker-compose.yml" docker-compose.yml.new
+  install -m 0644 "$directory/Caddyfile" Caddyfile.new
+  mv -f docker-compose.yml.new docker-compose.yml
+  mv -f Caddyfile.new Caddyfile
 }
 
-# 主逻辑
-main() {
+backup_sqlite_volume() {
+  local backup_directory="$1"
+  local helper_image="$2"
+  mkdir -p "$backup_directory/database"
+  docker run --rm --entrypoint /bin/sh \
+    -v "${SQLITE_VOLUME}:/data:ro" \
+    -v "$backup_directory/database:/backup" \
+    "$helper_image" -c 'cp -a /data/. /backup/'
+}
 
-  # 显示交互式菜单
+restore_sqlite_volume() {
+  local backup_directory="$1"
+  local helper_image="$2"
+  docker run --rm --entrypoint /bin/sh \
+    -v "${SQLITE_VOLUME}:/data" \
+    -v "$backup_directory/database:/backup:ro" \
+    "$helper_image" -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /backup/. /data/'
+}
+
+require_deployment_storage() {
+  [[ -f docker-compose.yml && -f Caddyfile && -f .env ]] || {
+    echo "当前目录不是完整的 Flux Panel 部署目录" >&2
+    return 1
+  }
+  docker volume inspect "$SQLITE_VOLUME" >/dev/null
+}
+
+require_current_deployment() {
+  require_deployment_storage
+  docker inspect "$BACKEND_CONTAINER" "$FRONTEND_CONTAINER" "$INGRESS_CONTAINER" >/dev/null
+}
+
+install_panel() {
+  check_runtime
+  if [[ -e docker-compose.yml || -e Caddyfile || -e .env ]] || \
+    docker inspect "$BACKEND_CONTAINER" >/dev/null 2>&1 || \
+    docker volume inspect "$SQLITE_VOLUME" >/dev/null 2>&1 || \
+    docker volume inspect flux_caddy_data >/dev/null 2>&1 || \
+    docker volume inspect flux_caddy_config >/dev/null 2>&1; then
+    echo "检测到现有部署；安装操作不会覆盖它，请使用更新" >&2
+    return 1
+  fi
+
+  local panel_domain
   while true; do
-    show_menu
-    read -p "请输入选项 (1-5): " choice
-
-    case $choice in
-      1)
-        install_panel
-        delete_self
-        exit 0
-        ;;
-      2)
-        update_panel
-        delete_self
-        exit 0
-        ;;
-      3)
-        uninstall_panel
-        delete_self
-        exit 0
-        ;;
-      4)
-        echo "👋 退出脚本"
-        delete_self
-        exit 0
-        ;;
-      *)
-        echo "❌ 无效选项，请输入 1-5"
-        echo ""
-        ;;
-    esac
+    read -r -p "面板域名（DNS 必须已指向本机）: " panel_domain
+    panel_domain=$(printf '%s' "$panel_domain" | tr '[:upper:]' '[:lower:]')
+    validate_domain "$panel_domain" && break
+    echo "请输入有效域名，例如 panel.example.com" >&2
   done
+
+  local candidate
+  candidate=$(mktemp -d "$PWD/.flux-install.XXXXXX")
+  track_temp_path "$candidate"
+  download_candidate "$candidate"
+  umask 077
+  cat > "$candidate/.env" <<EOF
+JWT_SECRET=$(generate_random)
+METRICS_TOKEN=$(generate_random)
+BOOTSTRAP_USERNAME=admin
+BOOTSTRAP_PASSWORD=$(generate_random)
+PANEL_DOMAIN=$panel_domain
+EOF
+  chmod 0600 "$candidate/.env"
+  validate_candidate "$candidate"
+  pull_candidate "$candidate"
+  install -m 0600 "$candidate/.env" .env.new
+  mv -f .env.new .env
+  publish_candidate_files "$candidate"
+
+  if ! compose up -d || ! wait_for_deployment "$panel_domain"; then
+    echo "部署健康检查失败，正在清理本次安装" >&2
+    compose down --volumes --remove-orphans 2>/dev/null || true
+    rm -f docker-compose.yml Caddyfile .env
+    return 1
+  fi
+
+  echo "面板部署完成: https://${panel_domain}"
+  echo "初始管理员账号: admin"
+  echo "初始管理员密码: $(read_env .env BOOTSTRAP_PASSWORD)"
+  echo "请安全保存密码并在首次登录后修改"
+  rm -rf "$candidate"
 }
 
-# 执行主函数
+restore_image_reference() {
+  local image_id="$1"
+  local image_ref="$2"
+  docker image inspect "$image_id" >/dev/null
+  if [[ "$image_ref" != *@sha256:* ]]; then
+    docker tag "$image_id" "$image_ref"
+  fi
+}
+
+rollback_update() {
+  local backup_directory="$1"
+  local old_backend_id="$2"
+  local old_backend_ref="$3"
+  local old_frontend_id="$4"
+  local old_frontend_ref="$5"
+  local old_ingress_id="$6"
+  local old_ingress_ref="$7"
+
+  compose down --remove-orphans 2>/dev/null || true
+  install -m 0644 "$backup_directory/docker-compose.yml" docker-compose.yml.new
+  install -m 0644 "$backup_directory/Caddyfile" Caddyfile.new
+  install -m 0600 "$backup_directory/.env" .env.new
+  mv -f docker-compose.yml.new docker-compose.yml
+  mv -f Caddyfile.new Caddyfile
+  mv -f .env.new .env
+  restore_image_reference "$old_backend_id" "$old_backend_ref"
+  restore_image_reference "$old_frontend_id" "$old_frontend_ref"
+  restore_image_reference "$old_ingress_id" "$old_ingress_ref"
+  restore_sqlite_volume "$backup_directory" "$old_backend_id"
+  compose up -d
+  wait_for_deployment "$(read_env .env PANEL_DOMAIN)"
+}
+
+update_panel() {
+  check_runtime
+  require_current_deployment
+
+  local backup_directory candidate
+  backup_directory=$(mktemp -d "$PWD/.flux-backup.XXXXXX")
+  candidate=$(mktemp -d "$PWD/.flux-update.XXXXXX")
+  track_temp_path "$backup_directory"
+  track_temp_path "$candidate"
+  chmod 0700 "$backup_directory" "$candidate"
+  cp docker-compose.yml Caddyfile .env "$backup_directory/"
+  cp .env "$candidate/.env"
+  prepare_existing_env "$candidate/.env"
+  download_candidate "$candidate"
+  validate_candidate "$candidate"
+
+  local old_backend_id old_backend_ref old_frontend_id old_frontend_ref old_ingress_id old_ingress_ref
+  old_backend_id=$(container_image_id "$BACKEND_CONTAINER")
+  old_backend_ref=$(container_image_ref "$BACKEND_CONTAINER")
+  old_frontend_id=$(container_image_id "$FRONTEND_CONTAINER")
+  old_frontend_ref=$(container_image_ref "$FRONTEND_CONTAINER")
+  old_ingress_id=$(container_image_id "$INGRESS_CONTAINER")
+  old_ingress_ref=$(container_image_ref "$INGRESS_CONTAINER")
+
+  pull_candidate "$candidate"
+  docker stop -t 30 "$BACKEND_CONTAINER"
+  if ! backup_sqlite_volume "$backup_directory" "$old_backend_id"; then
+    echo "SQLite 快照失败，正在恢复旧后端" >&2
+    docker start "$BACKEND_CONTAINER" >/dev/null
+    rm -rf "$candidate" "$backup_directory"
+    return 1
+  fi
+  UPDATE_BACKUP_DIRECTORY="$backup_directory"
+  UPDATE_OLD_BACKEND_ID="$old_backend_id"
+  UPDATE_OLD_BACKEND_REF="$old_backend_ref"
+  UPDATE_OLD_FRONTEND_ID="$old_frontend_id"
+  UPDATE_OLD_FRONTEND_REF="$old_frontend_ref"
+  UPDATE_OLD_INGRESS_ID="$old_ingress_id"
+  UPDATE_OLD_INGRESS_REF="$old_ingress_ref"
+  UPDATE_ROLLBACK_ACTIVE=true
+  if ! compose down; then
+    UPDATE_ROLLBACK_ACTIVE=false
+    echo "停止旧部署失败，正在重新启动旧部署" >&2
+    compose up -d
+    rm -rf "$candidate" "$backup_directory"
+    return 1
+  fi
+  install -m 0600 "$candidate/.env" .env.new
+  mv -f .env.new .env
+  publish_candidate_files "$candidate"
+
+  local panel_domain
+  panel_domain=$(read_env .env PANEL_DOMAIN)
+  if ! compose up -d || ! wait_for_deployment "$panel_domain"; then
+    echo "新版本部署失败，正在恢复配置、镜像和 SQLite 数据" >&2
+    if rollback_update "$backup_directory" \
+      "$old_backend_id" "$old_backend_ref" \
+      "$old_frontend_id" "$old_frontend_ref" \
+      "$old_ingress_id" "$old_ingress_ref"; then
+      UPDATE_ROLLBACK_ACTIVE=false
+      preserve_temp_path "$backup_directory"
+      echo "旧版本已恢复；备份保留于 $backup_directory" >&2
+    else
+      UPDATE_ROLLBACK_ACTIVE=false
+      preserve_temp_path "$backup_directory"
+      echo "自动回滚失败；备份保留于 $backup_directory" >&2
+    fi
+    rm -rf "$candidate"
+    return 1
+  fi
+
+  UPDATE_ROLLBACK_ACTIVE=false
+  UPDATE_BACKUP_DIRECTORY=""
+  UPDATE_OLD_BACKEND_ID=""
+  UPDATE_OLD_BACKEND_REF=""
+  UPDATE_OLD_FRONTEND_ID=""
+  UPDATE_OLD_FRONTEND_REF=""
+  UPDATE_OLD_INGRESS_ID=""
+  UPDATE_OLD_INGRESS_REF=""
+  rm -rf "$candidate" "$backup_directory"
+  echo "面板更新完成"
+}
+
+uninstall_panel() {
+  check_runtime
+  require_deployment_storage
+  read -r -p "确认卸载面板并删除 SQLite 与 Caddy 卷吗？(y/N): " confirm
+  [[ "$confirm" == "y" || "$confirm" == "Y" ]] || return 0
+  compose down --volumes --remove-orphans
+  rm -f docker-compose.yml Caddyfile .env
+  echo "面板已卸载"
+}
+
+show_menu() {
+  printf '%s\n' \
+    "===============================================" \
+    "             Flux Panel 管理" \
+    "===============================================" \
+    "1. 安装面板" \
+    "2. 更新面板" \
+    "3. 卸载面板" \
+    "4. 退出"
+}
+
+main() {
+  show_menu
+  read -r -p "请输入选项 (1-4): " choice
+  case "$choice" in
+    1) install_panel ;;
+    2) update_panel ;;
+    3) uninstall_panel ;;
+    4) return ;;
+    *) echo "无效选项" >&2; return 1 ;;
+  esac
+}
+
 main
