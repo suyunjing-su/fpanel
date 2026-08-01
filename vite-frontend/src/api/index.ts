@@ -110,7 +110,7 @@ export const batchDeleteForwards = (ids: number[]) =>
 export const forceDeleteForward = (id: number) =>
   Network.post("/forward/force-delete", { id });
 
-// 转发服务控制操作 - 通过Java后端接口
+// 转发服务控制操作 - 通过原生 Go 控制面接口
 export const pauseForwardService = (forwardId: number) =>
   Network.post("/forward/pause", { id: forwardId });
 export const resumeForwardService = (forwardId: number) =>
