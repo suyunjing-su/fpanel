@@ -1,6 +1,7 @@
 package udp
 
 import (
+	"net"
 	"sync"
 	"time"
 
@@ -28,19 +29,19 @@ func (p *connPool) WithLogger(logger logger.Logger) *connPool {
 	return p
 }
 
-func (p *connPool) Get(key any) (c *conn, ok bool) {
+func (p *connPool) Get(key any) (c net.Conn, ok bool) {
 	if p == nil {
 		return
 	}
 
 	v, ok := p.m.Load(key)
 	if ok {
-		c, ok = v.(*conn)
+		c, ok = v.(net.Conn)
 	}
 	return
 }
 
-func (p *connPool) Set(key any, c *conn) {
+func (p *connPool) Set(key any, c net.Conn) {
 	if p == nil {
 		return
 	}
@@ -69,7 +70,7 @@ func (p *connPool) Close() {
 	close(p.closed)
 
 	p.m.Range(func(k, v any) bool {
-		if c, ok := v.(*conn); ok && c != nil {
+		if c, ok := v.(net.Conn); ok && c != nil {
 			c.Close()
 		}
 		return true
@@ -86,26 +87,28 @@ func (p *connPool) idleCheck() {
 			size := 0
 			idles := 0
 			p.m.Range(func(key, value any) bool {
-				c, ok := value.(*conn)
+				c, ok := value.(net.Conn)
 				if !ok || c == nil {
 					p.Delete(key)
 					return true
 				}
 				size++
 
-				if c.IsIdle() {
+				if idle, ok := c.(interface{ IsIdle() bool }); ok && idle.IsIdle() {
 					idles++
 					p.Delete(key)
 					c.Close()
 					return true
 				}
 
-				c.SetIdle(true)
+				if idle, ok := c.(interface{ SetIdle(bool) }); ok {
+					idle.SetIdle(true)
+				}
 
 				return true
 			})
 
-			if idles > 0 {
+			if idles > 0 && p.logger != nil {
 				p.logger.Debugf("connection pool: size=%d, idle=%d", size, idles)
 			}
 		case <-p.closed:

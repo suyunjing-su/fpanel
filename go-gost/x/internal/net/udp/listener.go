@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/go-gost/core/common/bufpool"
+	connlimiter "github.com/go-gost/core/limiter/conn"
 	"github.com/go-gost/core/logger"
+	climiter "github.com/go-gost/x/limiter/conn/wrapper"
 )
 
 type ListenConfig struct {
@@ -18,6 +20,7 @@ type ListenConfig struct {
 	ReadBufferSize int
 	TTL            time.Duration
 	Keepalive      bool
+	ConnLimiter    connlimiter.ConnLimiter
 	Logger         logger.Logger
 }
 type listener struct {
@@ -85,7 +88,7 @@ func (ln *listener) listenLoop() {
 		}
 
 		if err := c.WriteQueue(b[:n]); err != nil {
-			ln.config.Logger.Warn("data discarded: ", err)
+			ln.warnf("data discarded: %v", err)
 		}
 	}
 }
@@ -110,21 +113,54 @@ func (ln *listener) Close() error {
 }
 
 func (ln *listener) getConn(raddr net.Addr) *conn {
-	c, ok := ln.connPool.Get(raddr.String())
-	if ok && !c.isClosed() {
-		return c
+	stored, ok := ln.connPool.Get(raddr.String())
+	if ok {
+		if c, ok := unwrapConn(stored); ok && !c.isClosed() {
+			return c
+		}
 	}
 
-	c = newConn(ln.conn, ln.Addr(), raddr, ln.config.ReadQueueSize, ln.config.Keepalive)
+	c := newConn(ln.conn, ln.Addr(), raddr, ln.config.ReadQueueSize, ln.config.Keepalive)
+	queued := net.Conn(c)
+	if ln.config.ConnLimiter != nil {
+		host, _, _ := net.SplitHostPort(raddr.String())
+		if host == "" {
+			host = raddr.String()
+		}
+		if lim := ln.config.ConnLimiter.Limiter(host); lim != nil {
+			if !lim.Allow(1) {
+				c.Close()
+				ln.warnf("connection limiter rejected UDP client %s", raddr)
+				return nil
+			}
+			queued = climiter.WrapConn(lim, c)
+		}
+	}
 	select {
-	case ln.cqueue <- c:
-		ln.connPool.Set(raddr.String(), c)
+	case ln.cqueue <- queued:
+		ln.connPool.Set(raddr.String(), queued)
 		return c
 	default:
-		c.Close()
-		ln.config.Logger.Warnf("connection queue is full, client %s discarded", raddr)
+		queued.Close()
+		ln.warnf("connection queue is full, client %s discarded", raddr)
 		return nil
 	}
+}
+
+func (ln *listener) warnf(format string, args ...any) {
+	if ln.config != nil && ln.config.Logger != nil {
+		ln.config.Logger.Warnf(format, args...)
+	}
+}
+
+func unwrapConn(value net.Conn) (*conn, bool) {
+	if c, ok := value.(*conn); ok {
+		return c, true
+	}
+	if wrapper, ok := value.(interface{ Unwrap() net.Conn }); ok {
+		return unwrapConn(wrapper.Unwrap())
+	}
+	return nil, false
 }
 
 // conn is a server side connection for UDP client peer, it implements net.Conn and net.PacketConn.
