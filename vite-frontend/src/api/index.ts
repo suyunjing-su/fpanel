@@ -77,16 +77,10 @@ export const batchDeleteNodes = (ids: number[]) =>
   Network.post<BatchDeleteResult>("/node/batch-delete", { ids });
 export const getNodeInstallCommand = (id: number) =>
   Network.post("/node/install", { id });
-export const checkNodeStatus = (nodeId?: number) => {
-  const params = nodeId ? { nodeId } : {};
-  return Network.post("/node/check-status", params);
-};
 
 // 隧道CRUD操作 - 全部使用POST请求
 export const createTunnel = (data: any) => Network.post("/tunnel/create", data);
 export const getTunnelList = () => Network.post("/tunnel/list");
-export const getTunnelById = (id: number) =>
-  Network.post("/tunnel/get", { id });
 export const updateTunnel = (data: any) => Network.post("/tunnel/update", data);
 export const deleteTunnel = (id: number) =>
   Network.post("/tunnel/delete", { id });

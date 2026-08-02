@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync" // 新增：用于管理连接状态的互斥锁
@@ -29,6 +30,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/quic-go/quic-go"
 	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	psnet "github.com/shirou/gopsutil/v3/net"
@@ -68,18 +70,15 @@ func buildNodeWebSocketURL(addr string) (string, error) {
 	return base + "/system-info", nil
 }
 
-func buildNodeHandshakeHeaders(secret string, version string, httpPort int, tlsPort int, socksPort int) http.Header {
+func buildNodeHandshakeHeaders(secret string, version string) http.Header {
 	headers := http.Header{}
 	if strings.TrimSpace(secret) != "" {
 		headers.Set("Authorization", "Bearer "+secret)
 	}
 
-	// Send node metadata via headers to avoid exposing protocol switches in URL.
+	// Send non-sensitive node metadata via headers.
 	headers.Set("X-Flux-Type", "1")
 	headers.Set("X-Flux-Version", version)
-	headers.Set("X-Flux-Http", fmt.Sprintf("%d", httpPort))
-	headers.Set("X-Flux-Tls", fmt.Sprintf("%d", tlsPort))
-	headers.Set("X-Flux-Socks", fmt.Sprintf("%d", socksPort))
 
 	return headers
 }
@@ -115,6 +114,7 @@ type SystemInfo struct {
 	BytesTransmitted   uint64                 `json:"bytes_transmitted"`
 	CPUUsage           float64                `json:"cpu_usage"`
 	MemoryUsage        float64                `json:"memory_usage"`
+	DiskUsage          float64                `json:"disk_usage"`
 	ControllerStatuses []controller.Status    `json:"controllers"`
 	TOT                coretot.AggregateStats `json:"tot,omitempty"`
 }
@@ -133,6 +133,10 @@ type CPUInfo struct {
 // MemoryInfo 内存信息
 type MemoryInfo struct {
 	Usage float64 `json:"usage"` // 内存使用率（百分比）
+}
+
+type DiskInfo struct {
+	Usage float64 `json:"usage"` // 磁盘使用率（百分比）
 }
 
 // CommandMessage 命令消息结构体
@@ -327,7 +331,7 @@ func (w *WebSocketReporter) connect() error {
 		}
 		dialer := *websocket.DefaultDialer
 		dialer.HandshakeTimeout = 10 * time.Second
-		headers := buildNodeHandshakeHeaders(w.secret, w.version, cfg.Http, cfg.Tls, cfg.Socks)
+		headers := buildNodeHandshakeHeaders(w.secret, w.version)
 		conn, _, err := dialer.Dial(u.String(), headers)
 		if err != nil {
 			w.failController(address, err)
@@ -423,6 +427,7 @@ func (w *WebSocketReporter) collectSystemInfo() SystemInfo {
 	networkStats := getNetworkStats()
 	cpuInfo := getCPUInfo()
 	memoryInfo := getMemoryInfo()
+	diskInfo := getDiskInfo()
 
 	return SystemInfo{
 		Uptime:           getUptime(),
@@ -430,6 +435,7 @@ func (w *WebSocketReporter) collectSystemInfo() SystemInfo {
 		BytesTransmitted: networkStats.BytesTransmitted,
 		CPUUsage:         cpuInfo.Usage,
 		MemoryUsage:      memoryInfo.Usage,
+		DiskUsage:        diskInfo.Usage,
 		ControllerStatuses: func() []controller.Status {
 			if w.controllers == nil {
 				return nil
@@ -507,8 +513,7 @@ func (w *WebSocketReporter) receiveMessages() {
 				return
 			}
 
-			// 设置读取超时
-			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+			conn.SetReadDeadline(time.Time{})
 
 			messageType, message, err := conn.ReadMessage()
 			if err != nil {
@@ -1247,6 +1252,28 @@ func (w *WebSocketReporter) handleSetProtocol(data interface{}) error {
 		return fmt.Errorf("解析协议设置失败: %v", err)
 	}
 
+	var current struct {
+		HTTP  int `json:"http"`
+		TLS   int `json:"tls"`
+		SOCKS int `json:"socks"`
+	}
+	content, err := os.ReadFile("config.json")
+	if err != nil {
+		return fmt.Errorf("读取config.json失败: %v", err)
+	}
+	if err := json.Unmarshal(content, &current); err != nil {
+		return fmt.Errorf("解析现有配置失败: %v", err)
+	}
+	if req.HTTP == nil {
+		req.HTTP = &current.HTTP
+	}
+	if req.TLS == nil {
+		req.TLS = &current.TLS
+	}
+	if req.SOCKS == nil {
+		req.SOCKS = &current.SOCKS
+	}
+
 	for name, value := range map[string]*int{"http": req.HTTP, "tls": req.TLS, "socks": req.SOCKS} {
 		if value != nil && *value != 0 && *value != 1 {
 			return fmt.Errorf("%s 取值必须为0或1", name)
@@ -1425,8 +1452,7 @@ func getNetworkStats() NetworkStats {
 
 	// 汇总所有非回环接口的流量
 	for _, io := range ioCounters {
-		// 跳过回环接口
-		if io.Name == "lo" || strings.HasPrefix(io.Name, "lo") {
+		if isLoopbackInterface(io.Name) {
 			continue
 		}
 
@@ -1437,12 +1463,19 @@ func getNetworkStats() NetworkStats {
 	return stats
 }
 
+func isLoopbackInterface(name string) bool {
+	iface, err := net.InterfaceByName(name)
+	if err == nil {
+		return iface.Flags&net.FlagLoopback != 0
+	}
+	return name == "lo" || strings.HasPrefix(name, "lo")
+}
+
 // getCPUInfo 获取CPU信息
 func getCPUInfo() CPUInfo {
 	var cpuInfo CPUInfo
 
-	// 获取CPU使用率
-	percentages, err := cpu.Percent(time.Second, false)
+	percentages, err := cpu.Percent(0, false)
 	if err == nil && len(percentages) > 0 {
 		cpuInfo.Usage = percentages[0]
 	}
@@ -1464,17 +1497,32 @@ func getMemoryInfo() MemoryInfo {
 	return memInfo
 }
 
+func getDiskInfo() DiskInfo {
+	path := "/"
+	if runtime.GOOS == "windows" {
+		path = os.Getenv("SystemDrive") + `\`
+		if path == `\` {
+			path = `C:\`
+		}
+	}
+	usage, err := disk.Usage(path)
+	if err != nil {
+		return DiskInfo{}
+	}
+	return DiskInfo{Usage: usage.UsedPercent}
+}
+
 // StartWebSocketReporterWithConfig 使用配置字段启动WebSocket报告器
-func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
+func StartWebSocketReporterWithConfig(addr string, secret string, version string) *WebSocketReporter {
 	pool, err := controller.New([]string{addr})
 	if err != nil {
 		fmt.Printf("❌ 启动WebSocket报告器失败: %v\n", err)
 		return nil
 	}
-	return StartWebSocketReporterWithPool(pool, secret, http, tls, socks, version)
+	return StartWebSocketReporterWithPool(pool, secret, version)
 }
 
-func StartWebSocketReporterWithPool(pool *controller.Pool, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
+func StartWebSocketReporterWithPool(pool *controller.Pool, secret string, version string) *WebSocketReporter {
 	addresses := pool.Candidates()
 	if len(addresses) == 0 {
 		fmt.Printf("❌ 启动WebSocket报告器失败: 无可用控制器\n")

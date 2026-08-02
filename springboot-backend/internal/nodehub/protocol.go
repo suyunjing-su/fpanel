@@ -23,6 +23,7 @@ type SystemInfo struct {
 	BytesTransmitted   uint64             `json:"bytes_transmitted"`
 	CPUUsage           float64            `json:"cpu_usage"`
 	MemoryUsage        float64            `json:"memory_usage"`
+	DiskUsage          float64            `json:"disk_usage"`
 	ControllerStatuses []ControllerStatus `json:"controllers"`
 	TOT                TOTTelemetry       `json:"tot"`
 }

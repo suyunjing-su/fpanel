@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -88,7 +87,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.log.Warn("failed to encode controller diagnostics", "node_id", identity.id, "error", err)
 			return
 		}
-		if err := h.nodes.SetTelemetry(r.Context(), identity.id, info.Uptime, info.BytesReceived, info.BytesTransmitted, info.CPUUsage, info.MemoryUsage, string(statuses), nodes.TOTTelemetry{
+		if err := h.nodes.SetTelemetry(r.Context(), identity.id, info.Uptime, info.BytesReceived, info.BytesTransmitted, info.CPUUsage, info.MemoryUsage, info.DiskUsage, string(statuses), nodes.TOTTelemetry{
 			Sessions:        info.TOT.Sessions,
 			ActivePaths:     info.TOT.ActivePaths,
 			PendingFrames:   info.TOT.PendingFrames,
@@ -104,7 +103,13 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.replace(identity.id, s)
 	defer h.remove(identity.id, s)
 	h.markOnline(r.Context(), identity.id, r)
-	s.readLoop(h.log)
+	done := make(chan struct{})
+	go func() {
+		s.readLoop(h.log)
+		close(done)
+	}()
+	h.syncProtocolPolicy(identity.id)
+	<-done
 }
 
 type nodeIdentity struct{ id int64 }
@@ -142,22 +147,42 @@ func (h *Hub) remove(id int64, current *session) {
 	}
 }
 
-func connectionMetadata(r *http.Request) (string, int, int, int) {
-	value := func(header string) string {
-		return strings.TrimSpace(r.Header.Get(header))
-	}
-	flag := func(header string) int {
-		parsed, _ := strconv.Atoi(value(header))
-		return parsed
-	}
-	return value("X-Flux-Version"), flag("X-Flux-Http"), flag("X-Flux-Tls"), flag("X-Flux-Socks")
+func connectionVersion(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Flux-Version"))
 }
 
 func (h *Hub) markOnline(ctx context.Context, id int64, r *http.Request) {
-	version, httpFlag, tlsFlag, socksFlag := connectionMetadata(r)
-	if err := h.nodes.SetConnectionState(ctx, id, 1, version, httpFlag, tlsFlag, socksFlag); err != nil {
+	version := connectionVersion(r)
+	if err := h.nodes.SetStatus(ctx, id, 1, version); err != nil {
 		h.log.Warn("failed to mark node online", "node_id", id, "error", err)
 	}
+}
+
+func (h *Hub) syncProtocolPolicy(nodeID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.SetProtocolPolicy(ctx, nodeID); err != nil {
+		h.log.Warn("failed to synchronize inbound protocol blocking policy", "node_id", nodeID, "error", err)
+	}
+}
+
+func (h *Hub) SetProtocolPolicy(ctx context.Context, nodeID int64) error {
+	node, err := h.nodes.Get(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]int{"http": node.HTTP, "tls": node.TLS, "socks": node.Socks})
+	if err != nil {
+		return err
+	}
+	response, err := h.Command(ctx, nodeID, CommandMessage{Type: "SetProtocol", Data: payload})
+	if err != nil {
+		return err
+	}
+	if !response.Success {
+		return errors.New(response.Message)
+	}
+	return nil
 }
 
 func (s *session) renewReadDeadline() error {
@@ -192,7 +217,6 @@ func (s *session) readLoop(log *slog.Logger) {
 			if s.onTelemetry != nil {
 				s.onTelemetry(telemetry)
 			}
-			_ = s.sendPlain([]byte(`{"type":"call"}`))
 			continue
 		}
 		var response CommandResponse

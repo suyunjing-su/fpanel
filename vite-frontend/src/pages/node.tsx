@@ -69,6 +69,7 @@ interface Node {
   systemInfo?: {
     cpuUsage: number;
     memoryUsage: number;
+    diskUsage: number;
     uploadTraffic: number;
     downloadTraffic: number;
     uploadSpeed: number;
@@ -102,7 +103,6 @@ export default function NodePage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
-  const [protocolDisabled, setProtocolDisabled] = useState(false);
   const [form, setForm] = useState<NodeForm>({
     id: null,
     name: "",
@@ -158,10 +158,11 @@ export default function NodePage() {
               ? {
                   cpuUsage: Number(node.cpu_usage) || 0,
                   memoryUsage: Number(node.memory_usage) || 0,
+                  diskUsage: Number(node.disk_usage) || 0,
                   uploadTraffic: Number(node.bytes_transmitted) || 0,
                   downloadTraffic: Number(node.bytes_received) || 0,
-                  uploadSpeed: 0,
-                  downloadSpeed: 0,
+                  uploadSpeed: Number(node.upload_speed) || 0,
+                  downloadSpeed: Number(node.download_speed) || 0,
                   uptime: Number(node.uptime) || 0,
                 }
               : null,
@@ -396,7 +397,6 @@ export default function NodePage() {
     setIsEdit(false);
     setDialogVisible(true);
     resetForm();
-    setProtocolDisabled(true);
   };
 
   // 编辑节点
@@ -417,8 +417,6 @@ export default function NodePage() {
       tls: typeof node.tls === "number" ? node.tls : 1,
       socks: typeof node.socks === "number" ? node.socks : 1,
     });
-    const offline = node.connectionStatus !== "online";
-    setProtocolDisabled(offline);
     setDialogVisible(true);
   };
 
@@ -510,36 +508,20 @@ export default function NodePage() {
         tcpListenAddr: form.tcpListenAddr,
         udpListenAddr: form.udpListenAddr,
         interfaceName: form.interfaceName,
+        http: form.http,
+        tls: form.tls,
+        socks: form.socks,
       };
 
       const res = await apiCall(data);
       if (res.code === 0) {
-        toast.success(isEdit ? "更新成功" : "创建成功");
-        setDialogVisible(false);
-
-        if (isEdit) {
-          setNodeList((prev) =>
-            prev.map((n) =>
-              n.id === form.id
-                ? {
-                    ...n,
-                    name: form.name,
-                    serverIp: form.serverIp,
-                    port: form.port,
-                    maxBandwidthMbps: data.maxBandwidthMbps,
-                    tcpListenAddr: form.tcpListenAddr,
-                    udpListenAddr: form.udpListenAddr,
-                    interfaceName: form.interfaceName,
-                    http: form.http,
-                    tls: form.tls,
-                    socks: form.socks,
-                  }
-                : n,
-            ),
-          );
+        if (isEdit && res.data?.policyPending) {
+          toast.success("策略已保存，节点当前离线或命令未确认；将在下次连接时自动同步");
         } else {
-          loadNodes();
+          toast.success(isEdit ? "更新成功" : "创建成功");
         }
+        setDialogVisible(false);
+        await loadNodes();
       } else {
         toast.error(res.msg || (isEdit ? "更新失败" : "创建失败"));
       }
@@ -909,6 +891,31 @@ export default function NodePage() {
                         aria-label="内存使用率"
                       />
                     </div>
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span>磁盘</span>
+                        <span className="font-mono">
+                          {node.connectionStatus === "online" && node.systemInfo
+                            ? `${node.systemInfo.diskUsage.toFixed(1)}%`
+                            : "-"}
+                        </span>
+                      </div>
+                      <Progress
+                        value={
+                          node.connectionStatus === "online" && node.systemInfo
+                            ? node.systemInfo.diskUsage
+                            : 0
+                        }
+                        color={getProgressColor(
+                          node.connectionStatus === "online" && node.systemInfo
+                            ? node.systemInfo.diskUsage
+                            : 0,
+                          node.connectionStatus !== "online",
+                        )}
+                        size="sm"
+                        aria-label="磁盘使用率"
+                      />
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
@@ -1163,35 +1170,36 @@ export default function NodePage() {
                         }
                       />
                     </div>
-                    {/* Node-reported protocol capabilities */}
                     <div>
                       <div className="text-sm font-medium text-default-700 mb-2">
-                        节点协议能力
+                        入站协议阻断策略
                       </div>
                       <div className="text-xs text-default-500 mb-2">
-                        以下状态由在线节点上报，不能在面板中直接修改；如需变更，请更新节点本地配置并重新连接。
+                        启用后，节点会拒绝匹配协议的入站连接。保存后在线节点立即应用，离线节点会在下次连接时自动同步。
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-default-50 dark:bg-default-100 p-3 rounded-md border border-default-200 dark:border-default-100/30">
                         {[
-                          ["HTTP", form.http],
-                          ["TLS", form.tls],
-                          ["SOCKS", form.socks],
-                        ].map(([protocol, enabled]) => (
-                          <div
-                            key={protocol}
-                            className="px-3 py-3 rounded-lg bg-white dark:bg-default-50 border border-default-200 dark:border-default-100/30"
+                          ["阻断 HTTP", "http"],
+                          ["阻断 TLS", "tls"],
+                          ["阻断 SOCKS", "socks"],
+                        ].map(([label, field]) => (
+                          <label
+                            key={field}
+                            className="flex items-center justify-between gap-3 px-3 py-3 rounded-lg bg-white dark:bg-default-50 border border-default-200 dark:border-default-100/30 cursor-pointer"
                           >
-                            <div className="text-sm font-medium text-default-700">
-                              {protocol}
-                            </div>
-                            <div className="mt-1 text-xs text-default-500">
-                              {protocolDisabled
-                                ? "等待节点上报"
-                                : enabled === 1
-                                  ? "节点已开启"
-                                  : "节点已关闭"}
-                            </div>
-                          </div>
+                            <span className="text-sm font-medium text-default-700">{label}</span>
+                            <input
+                              type="checkbox"
+                              checked={form[field as "http" | "tls" | "socks"] === 1}
+                              onChange={(event) =>
+                                setForm((prev) => ({
+                                  ...prev,
+                                  [field]: event.target.checked ? 1 : 0,
+                                }))
+                              }
+                              className="h-4 w-4 rounded border-default-300 text-primary focus:ring-primary"
+                            />
+                          </label>
                         ))}
                       </div>
                     </div>
@@ -1199,7 +1207,7 @@ export default function NodePage() {
                     <Alert
                       color="primary"
                       variant="flat"
-                      description="协议能力来自节点本地 GOST 配置。面板只负责展示在线状态，不会将心跳快照误写回节点配置。"
+                      description="面板是策略的权威来源；节点本地配置只保存已成功应用的副本，并会在每次连接时自动收敛。"
                     />
                   </div>
                 </AccordionItem>

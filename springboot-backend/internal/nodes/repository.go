@@ -52,6 +52,9 @@ type Node struct {
 	BytesTransmitted uint64             `json:"bytes_transmitted,omitempty"`
 	CPUUsage         float64            `json:"cpu_usage,omitempty"`
 	MemoryUsage      float64            `json:"memory_usage,omitempty"`
+	DiskUsage        float64            `json:"disk_usage,omitempty"`
+	UploadSpeed      float64            `json:"upload_speed,omitempty"`
+	DownloadSpeed    float64            `json:"download_speed,omitempty"`
 	MaxBandwidthMbps *int               `json:"maxBandwidthMbps"`
 	InterfaceName    string             `json:"interfaceName"`
 	TCPListenAddr    string             `json:"tcpListenAddr"`
@@ -85,7 +88,7 @@ type Repository struct{ db *sql.DB }
 func NewRepository(db *sql.DB) *Repository { return &Repository{db: db} }
 
 func (r *Repository) List(ctx context.Context) ([]Node, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr,controller_statuses,tot_sessions,tot_active_paths,tot_pending_frames,tot_sent_frames,tot_received_frames,tot_retransmits,tot_duplicate_frames,tot_path_failures FROM nodes ORDER BY id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,disk_usage,upload_speed,download_speed,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr,controller_statuses,tot_sessions,tot_active_paths,tot_pending_frames,tot_sent_frames,tot_received_frames,tot_retransmits,tot_duplicate_frames,tot_path_failures FROM nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -94,7 +97,7 @@ func (r *Repository) List(ctx context.Context) ([]Node, error) {
 	for rows.Next() {
 		var node Node
 		var controllerStatuses string
-		if err := rows.Scan(&node.ID, &node.Name, &node.IP, &node.ServerIP, &node.PortStart, &node.PortEnd, &node.Version, &node.HTTP, &node.TLS, &node.Socks, &node.Status, &node.Uptime, &node.BytesReceived, &node.BytesTransmitted, &node.CPUUsage, &node.MemoryUsage, &node.MaxBandwidthMbps, &node.InterfaceName, &node.TCPListenAddr, &node.UDPListenAddr, &controllerStatuses, &node.TOT.Sessions, &node.TOT.ActivePaths, &node.TOT.PendingFrames, &node.TOT.SentFrames, &node.TOT.ReceivedFrames, &node.TOT.Retransmits, &node.TOT.DuplicateFrames, &node.TOT.PathFailures); err != nil {
+		if err := rows.Scan(&node.ID, &node.Name, &node.IP, &node.ServerIP, &node.PortStart, &node.PortEnd, &node.Version, &node.HTTP, &node.TLS, &node.Socks, &node.Status, &node.Uptime, &node.BytesReceived, &node.BytesTransmitted, &node.CPUUsage, &node.MemoryUsage, &node.DiskUsage, &node.UploadSpeed, &node.DownloadSpeed, &node.MaxBandwidthMbps, &node.InterfaceName, &node.TCPListenAddr, &node.UDPListenAddr, &controllerStatuses, &node.TOT.Sessions, &node.TOT.ActivePaths, &node.TOT.PendingFrames, &node.TOT.SentFrames, &node.TOT.ReceivedFrames, &node.TOT.Retransmits, &node.TOT.DuplicateFrames, &node.TOT.PathFailures); err != nil {
 			return nil, fmt.Errorf("scan node: %w", err)
 		}
 		if err := json.Unmarshal([]byte(controllerStatuses), &node.Controllers); err != nil {
@@ -109,7 +112,7 @@ func (r *Repository) List(ctx context.Context) ([]Node, error) {
 func (r *Repository) Get(ctx context.Context, id int64) (Node, error) {
 	var n Node
 	var controllerStatuses string
-	err := r.db.QueryRowContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr,controller_statuses,tot_sessions,tot_active_paths,tot_pending_frames,tot_sent_frames,tot_received_frames,tot_retransmits,tot_duplicate_frames,tot_path_failures FROM nodes WHERE id=?`, id).Scan(&n.ID, &n.Name, &n.IP, &n.ServerIP, &n.PortStart, &n.PortEnd, &n.Version, &n.HTTP, &n.TLS, &n.Socks, &n.Status, &n.Uptime, &n.BytesReceived, &n.BytesTransmitted, &n.CPUUsage, &n.MemoryUsage, &n.MaxBandwidthMbps, &n.InterfaceName, &n.TCPListenAddr, &n.UDPListenAddr, &controllerStatuses, &n.TOT.Sessions, &n.TOT.ActivePaths, &n.TOT.PendingFrames, &n.TOT.SentFrames, &n.TOT.ReceivedFrames, &n.TOT.Retransmits, &n.TOT.DuplicateFrames, &n.TOT.PathFailures)
+	err := r.db.QueryRowContext(ctx, `SELECT id,name,ip,server_ip,port_start,port_end,version,http,tls,socks,status,uptime,bytes_received,bytes_transmitted,cpu_usage,memory_usage,disk_usage,upload_speed,download_speed,max_bandwidth_mbps,interface_name,tcp_listen_addr,udp_listen_addr,controller_statuses,tot_sessions,tot_active_paths,tot_pending_frames,tot_sent_frames,tot_received_frames,tot_retransmits,tot_duplicate_frames,tot_path_failures FROM nodes WHERE id=?`, id).Scan(&n.ID, &n.Name, &n.IP, &n.ServerIP, &n.PortStart, &n.PortEnd, &n.Version, &n.HTTP, &n.TLS, &n.Socks, &n.Status, &n.Uptime, &n.BytesReceived, &n.BytesTransmitted, &n.CPUUsage, &n.MemoryUsage, &n.DiskUsage, &n.UploadSpeed, &n.DownloadSpeed, &n.MaxBandwidthMbps, &n.InterfaceName, &n.TCPListenAddr, &n.UDPListenAddr, &controllerStatuses, &n.TOT.Sessions, &n.TOT.ActivePaths, &n.TOT.PendingFrames, &n.TOT.SentFrames, &n.TOT.ReceivedFrames, &n.TOT.Retransmits, &n.TOT.DuplicateFrames, &n.TOT.PathFailures)
 	if err != nil {
 		return n, err
 	}
@@ -197,28 +200,48 @@ func (r *Repository) SetStatus(ctx context.Context, id int64, status int, versio
 	_, err := r.db.ExecContext(ctx, "UPDATE nodes SET status=?,version=?,updated_at=? WHERE id=?", status, version, time.Now().UnixMilli(), id)
 	return err
 }
-func (r *Repository) SetConnectionState(ctx context.Context, id int64, status int, version string, httpFlag, tlsFlag, socksFlag int) error {
-	if status != 0 && status != 1 {
-		return errors.New("invalid node status")
-	}
-	for _, v := range []int{httpFlag, tlsFlag, socksFlag} {
-		if v != 0 && v != 1 {
-			return errors.New("invalid node protocol flag")
-		}
-	}
-	_, err := r.db.ExecContext(ctx, `UPDATE nodes SET status=?,version=?,http=?,tls=?,socks=?,updated_at=? WHERE id=?`, status, version, httpFlag, tlsFlag, socksFlag, time.Now().UnixMilli(), id)
-	return err
-}
-func (r *Repository) SetTelemetry(ctx context.Context, id int64, uptime, received, transmitted uint64, cpu, memory float64, controllerStatuses string, telemetry ...TOTTelemetry) error {
+func (r *Repository) SetTelemetry(ctx context.Context, id int64, uptime, received, transmitted uint64, cpu, memory, disk float64, controllerStatuses string, telemetry ...TOTTelemetry) error {
 	if !json.Valid([]byte(controllerStatuses)) {
 		return errors.New("invalid controller diagnostics")
+	}
+	if disk < 0 || disk > 100 {
+		return errors.New("invalid disk usage")
 	}
 	var tot TOTTelemetry
 	if len(telemetry) > 0 {
 		tot = telemetry[0]
 	}
-	_, err := r.db.ExecContext(ctx, `UPDATE nodes SET uptime=?,bytes_received=?,bytes_transmitted=?,cpu_usage=?,memory_usage=?,controller_statuses=?,tot_sessions=?,tot_active_paths=?,tot_pending_frames=?,tot_sent_frames=?,tot_received_frames=?,tot_retransmits=?,tot_duplicate_frames=?,tot_path_failures=?,updated_at=? WHERE id=?`, uptime, received, transmitted, cpu, memory, controllerStatuses, tot.Sessions, tot.ActivePaths, tot.PendingFrames, tot.SentFrames, tot.ReceivedFrames, tot.Retransmits, tot.DuplicateFrames, tot.PathFailures, time.Now().UnixMilli(), id)
-	return err
+
+	transaction, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+
+	var previousReceived, previousTransmitted uint64
+	var previousAt int64
+	if err := transaction.QueryRowContext(ctx, `SELECT bytes_received,bytes_transmitted,telemetry_at FROM nodes WHERE id=?`, id).Scan(&previousReceived, &previousTransmitted, &previousAt); err != nil {
+		return err
+	}
+	now := time.Now().UnixMilli()
+	uploadSpeed, downloadSpeed := 0.0, 0.0
+	if previousAt > 0 && now > previousAt && received >= previousReceived && transmitted >= previousTransmitted {
+		elapsed := float64(now-previousAt) / 1000
+		downloadSpeed = float64(received-previousReceived) / elapsed
+		uploadSpeed = float64(transmitted-previousTransmitted) / elapsed
+	}
+	res, err := transaction.ExecContext(ctx, `UPDATE nodes SET uptime=?,bytes_received=?,bytes_transmitted=?,cpu_usage=?,memory_usage=?,disk_usage=?,upload_speed=?,download_speed=?,telemetry_at=?,controller_statuses=?,tot_sessions=?,tot_active_paths=?,tot_pending_frames=?,tot_sent_frames=?,tot_received_frames=?,tot_retransmits=?,tot_duplicate_frames=?,tot_path_failures=?,updated_at=? WHERE id=?`, uptime, received, transmitted, cpu, memory, disk, uploadSpeed, downloadSpeed, now, controllerStatuses, tot.Sessions, tot.ActivePaths, tot.PendingFrames, tot.SentFrames, tot.ReceivedFrames, tot.Retransmits, tot.DuplicateFrames, tot.PathFailures, now, id)
+	if err != nil {
+		return err
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return transaction.Commit()
 }
 func (r *Repository) Delete(ctx context.Context, id int64) error {
 	_, err := r.DeleteWithName(ctx, id)

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-RELEASE_VERSION="3.0.30-beta"
+RELEASE_VERSION="3.0.31-beta"
 RELEASE_BASE_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}"
 CHECKSUMS_URL="${RELEASE_BASE_URL}/SHA256SUMS"
 BINARY_DIR="/usr/local/lib/flux-agent"

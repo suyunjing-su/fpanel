@@ -633,7 +633,12 @@ func run() error {
 			return
 		}
 		refreshQueue.Wake()
-		httpapi.WriteJSON(w, 200, httpapi.Success(nil))
+		if err := hub.SetProtocolPolicy(r.Context(), request.ID); err != nil {
+			log.Warn("node inbound protocol blocking policy is pending synchronization", "node_id", request.ID, "error", err)
+			httpapi.WriteJSON(w, 200, httpapi.Success(map[string]any{"policyPending": true}))
+			return
+		}
+		httpapi.WriteJSON(w, 200, httpapi.Success(map[string]any{"policyPending": false}))
 	})
 	mux.HandleFunc("POST /api/v1/node/delete", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {

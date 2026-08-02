@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/suyunjing-su/fpanel/backend/internal/database"
 )
@@ -158,7 +159,7 @@ func TestControllerDiagnosticsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	statuses := `[{"address":"https://primary.example.com","active":true,"consecutiveFailures":2,"lastFailureAt":123,"lastError":"unavailable"}]`
-	if err := repository.SetTelemetry(context.Background(), id, 10, 20, 30, 4.5, 6.7, statuses, TOTTelemetry{
+	if err := repository.SetTelemetry(context.Background(), id, 10, 20, 30, 4.5, 6.7, 8.9, statuses, TOTTelemetry{
 		Sessions:        2,
 		ActivePaths:     4,
 		PendingFrames:   3,
@@ -174,14 +175,71 @@ func TestControllerDiagnosticsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if node.Uptime != 10 || len(node.Controllers) != 1 || node.Controllers[0].ConsecutiveFailures != 2 || node.Controllers[0].LastError != "unavailable" {
+	if node.Uptime != 10 || node.DiskUsage != 8.9 || len(node.Controllers) != 1 || node.Controllers[0].ConsecutiveFailures != 2 || node.Controllers[0].LastError != "unavailable" {
 		t.Fatalf("controller diagnostics did not round trip: %#v", node)
 	}
 	if node.TOT.Sessions != 2 || node.TOT.ActivePaths != 4 || node.TOT.Retransmits != 7 || node.TOT.PathFailures != 1 {
 		t.Fatalf("TOT telemetry did not round trip: %#v", node.TOT)
 	}
-	if err := repository.SetTelemetry(context.Background(), id, 0, 0, 0, 0, 0, "invalid"); err == nil {
+	if _, err := db.Exec(`UPDATE nodes SET bytes_received=100,bytes_transmitted=200,telemetry_at=? WHERE id=?`, time.Now().Add(-time.Second).UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetTelemetry(context.Background(), id, 11, 400, 800, 5, 7, 9, statuses); err != nil {
+		t.Fatal(err)
+	}
+	node, err = repository.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.DownloadSpeed <= 0 || node.UploadSpeed <= 0 {
+		t.Fatalf("telemetry rates were not calculated: download=%v upload=%v", node.DownloadSpeed, node.UploadSpeed)
+	}
+	if err := repository.SetTelemetry(context.Background(), id, 12, 1, 1, 5, 7, 9, statuses); err != nil {
+		t.Fatal(err)
+	}
+	node, err = repository.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.DownloadSpeed != 0 || node.UploadSpeed != 0 {
+		t.Fatalf("counter reset retained stale rates: download=%v upload=%v", node.DownloadSpeed, node.UploadSpeed)
+	}
+	if err := repository.SetTelemetry(context.Background(), id, 0, 0, 0, 0, 0, 0, "invalid"); err == nil {
 		t.Fatal("invalid controller diagnostics were accepted")
+	}
+}
+
+func TestSetStatusPreservesProtocolPolicy(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "nodes.db"), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+	id, err := repository.Create(context.Background(), CreateRequest{
+		Name:      "edge",
+		ServerIP:  "edge.example.com",
+		PortStart: 1000,
+		PortEnd:   2000,
+		HTTP:      1,
+		TLS:       0,
+		Socks:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetStatus(context.Background(), id, 1, "3.0.31"); err != nil {
+		t.Fatal(err)
+	}
+
+	node, err := repository.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Status != 1 || node.Version != "3.0.31" || node.HTTP != 1 || node.TLS != 0 || node.Socks != 1 {
+		t.Fatalf("status update changed stored protocol policy: %#v", node)
 	}
 }
 
