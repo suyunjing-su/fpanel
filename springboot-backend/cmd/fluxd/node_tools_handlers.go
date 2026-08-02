@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	installReleaseVersion = "3.0.27-beta"
+	installReleaseVersion = "3.0.28-beta"
 	diagnosisPingCount    = 4
 	diagnosisPingTimeout  = 5000
 	externalPingHost      = "www.google.com"

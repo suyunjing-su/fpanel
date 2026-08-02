@@ -1,6 +1,6 @@
 services:
   backend:
-    image: cloudlink2/fps-backend:3.0.27-beta
+    image: cloudlink2/fps-backend:3.0.28-beta
     container_name: flux-control-plane
     restart: unless-stopped
     environment:
@@ -32,7 +32,7 @@ services:
         max-file: "5"
 
   frontend:
-    image: cloudlink2/fp-frontend:3.0.27-beta
+    image: cloudlink2/fp-frontend:3.0.28-beta
     container_name: vite-frontend
     restart: unless-stopped
     expose:
@@ -61,9 +61,9 @@ services:
     environment:
       PANEL_DOMAIN: ${PANEL_DOMAIN:?PANEL_DOMAIN is required}
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${PANEL_BIND_ADDRESS:-0.0.0.0}:80:80"
+      - "${PANEL_BIND_ADDRESS:-0.0.0.0}:443:443"
+      - "${PANEL_BIND_ADDRESS:-0.0.0.0}:443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

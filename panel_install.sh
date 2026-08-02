@@ -3,12 +3,13 @@ set -Eeuo pipefail
 
 export LC_ALL=C
 
-RELEASE_VERSION="3.0.27-beta"
+RELEASE_VERSION="3.0.28-beta"
 RELEASE_BASE_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}"
 CHECKSUMS_URL="${RELEASE_BASE_URL}/SHA256SUMS"
 BACKEND_CONTAINER="flux-control-plane"
 FRONTEND_CONTAINER="vite-frontend"
 INGRESS_CONTAINER="flux-ingress"
+CLOUDFLARE_CONTAINER="flux-cloudflared"
 SQLITE_VOLUME="sqlite_data"
 DOCKER_CMD=()
 TEMP_PATHS=()
@@ -130,9 +131,11 @@ download_candidate() {
   curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
     "$CHECKSUMS_URL" -o "$directory/SHA256SUMS"
   verify_download "$directory/SHA256SUMS" "$compose_asset" "$directory/docker-compose.yml"
+  verify_download "$directory/SHA256SUMS" docker-compose-cloudflare.yml "$directory/docker-compose-cloudflare.yml"
   verify_download "$directory/SHA256SUMS" Caddyfile "$directory/Caddyfile"
+  verify_download "$directory/SHA256SUMS" Caddyfile.cloudflare "$directory/Caddyfile.cloudflare"
   rm -f "$directory/SHA256SUMS"
-  chmod 0644 "$directory/docker-compose.yml" "$directory/Caddyfile"
+  chmod 0644 "$directory/docker-compose.yml" "$directory/docker-compose-cloudflare.yml" "$directory/Caddyfile" "$directory/Caddyfile.cloudflare"
 }
 
 generate_random() {
@@ -160,13 +163,43 @@ validate_domain() {
   [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]
 }
 
+validate_bind_address() {
+  local address="$1"
+  local octet
+  local -a octets
+  [[ "$address" == "0.0.0.0" ]] && return 0
+  [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS='.' read -r -a octets <<< "$address"
+  for octet in "${octets[@]}"; do
+    (( 10#$octet <= 255 )) || return 1
+  done
+}
+
+validate_tunnel_token() {
+  local token="$1"
+  [[ ${#token} -ge 20 && ${#token} -le 4096 && ! "$token" =~ [[:space:]] ]]
+}
+
 prepare_existing_env() {
   local file="$1"
-  local panel_domain jwt_secret metrics_token bootstrap_username bootstrap_password
+  local panel_domain panel_bind_address jwt_secret metrics_token bootstrap_username bootstrap_password
   [[ -f "$file" ]] || { echo "缺少 .env" >&2; return 1; }
   chmod 0600 "$file"
   panel_domain=$(read_env "$file" PANEL_DOMAIN)
   validate_domain "$panel_domain" || { echo ".env 中的 PANEL_DOMAIN 无效" >&2; return 1; }
+  panel_bind_address=$(read_env "$file" PANEL_BIND_ADDRESS)
+  if [[ -z "$panel_bind_address" ]]; then
+    upsert_env "$file" PANEL_BIND_ADDRESS 0.0.0.0
+  elif ! validate_bind_address "$panel_bind_address"; then
+    echo ".env 中的 PANEL_BIND_ADDRESS 必须是 IPv4 地址或 0.0.0.0" >&2
+    return 1
+  fi
+  local tunnel_token
+  tunnel_token=$(read_env "$file" CLOUDFLARE_TUNNEL_TOKEN)
+  if [[ -n "$tunnel_token" ]] && ! validate_tunnel_token "$tunnel_token"; then
+    echo ".env 中的 CLOUDFLARE_TUNNEL_TOKEN 格式无效" >&2
+    return 1
+  fi
   jwt_secret=$(read_env "$file" JWT_SECRET)
   metrics_token=$(read_env "$file" METRICS_TOKEN)
   bootstrap_username=$(read_env "$file" BOOTSTRAP_USERNAME)
@@ -183,6 +216,23 @@ prepare_existing_env() {
   if [[ ${#bootstrap_password} -lt 12 ]]; then
     upsert_env "$file" BOOTSTRAP_PASSWORD "$(generate_random)"
   fi
+}
+
+configure_candidate_deployment() {
+  local directory="$1"
+  local mode="$2"
+  case "$mode" in
+    direct)
+      ;;
+    cloudflare)
+      install -m 0644 "$directory/docker-compose-cloudflare.yml" "$directory/docker-compose.yml"
+      install -m 0644 "$directory/Caddyfile.cloudflare" "$directory/Caddyfile"
+      ;;
+    *)
+      echo "未知部署模式: $mode" >&2
+      return 1
+      ;;
+  esac
 }
 
 validate_candidate() {
@@ -214,6 +264,35 @@ pull_candidate() {
   )
 }
 
+probe_ingress_bindings() {
+  local directory="$1"
+  local bind_address="$2"
+  local ingress_image probe_name output
+  ingress_image=$( (
+    cd "$directory"
+    compose -f docker-compose.yml config --images | awk '$0 ~ /^caddy(:|@)/ {print; exit}'
+  ) )
+  [[ -n "$ingress_image" ]] || { echo "无法解析 Caddy 镜像" >&2; return 1; }
+
+  probe_name="flux-ingress-port-probe-$$"
+  if ! output=$(docker run -d --rm --name "$probe_name" \
+    --entrypoint /bin/sh \
+    -p "${bind_address}:80:80" \
+    -p "${bind_address}:443:443" \
+    -p "${bind_address}:443:443/udp" \
+    "$ingress_image" -c 'sleep 30' 2>&1); then
+    docker rm -f "$probe_name" >/dev/null 2>&1 || true
+    printf '%s\n' \
+      "Flux Panel 未启动：${bind_address} 的 80/TCP、443/TCP 或 443/UDP 已被现有服务占用。" \
+      "安装器不会停止、修改或覆盖现有服务。" \
+      "若该主机有已指向 PANEL_DOMAIN 的独立 IPv4 地址，请重新安装并选择该地址。" \
+      "若只有同一个 IP，必须由现有反向代理显式为 PANEL_DOMAIN 路由到 Flux ingress；安装器不会修改它。" \
+      "Docker 端口预检详情：${output}" >&2
+    return 1
+  fi
+  docker rm -f "$probe_name" >/dev/null
+}
+
 container_image_id() {
   docker inspect -f '{{.Image}}' "$1"
 }
@@ -226,22 +305,44 @@ container_health() {
   docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || true
 }
 
+deployment_mode() {
+  local file="$1"
+  if [[ -n "$(read_env "$file" CLOUDFLARE_TUNNEL_TOKEN)" ]]; then
+    printf '%s\n' cloudflare
+  else
+    printf '%s\n' direct
+  fi
+}
+
 wait_for_deployment() {
   local domain="$1"
-  local attempt backend frontend ingress
+  local bind_address="$2"
+  local mode="${3:-direct}"
+  local health_address="$bind_address"
+  [[ "$health_address" == "0.0.0.0" ]] && health_address="127.0.0.1"
+  local attempt backend frontend ingress cloudflared
   for attempt in $(seq 1 180); do
     backend=$(container_health "$BACKEND_CONTAINER")
     frontend=$(container_health "$FRONTEND_CONTAINER")
     ingress=$(container_health "$INGRESS_CONTAINER")
-    if [[ "$backend" == "healthy" && "$frontend" == "healthy" && "$ingress" == "healthy" ]]; then
-      if curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
-        --resolve "${domain}:443:127.0.0.1" "https://${domain}/" >/dev/null; then
+    cloudflared=healthy
+    if [[ "$mode" == "cloudflare" ]]; then
+      cloudflared=$(container_health "$CLOUDFLARE_CONTAINER")
+    fi
+    if [[ "$backend" == "healthy" && "$frontend" == "healthy" && "$ingress" == "healthy" && "$cloudflared" == "running" ]]; then
+      if [[ "$mode" == "cloudflare" ]]; then
+        if docker exec "$INGRESS_CONTAINER" wget --no-verbose --tries=1 --spider \
+          --header="Host: ${domain}" http://127.0.0.1/ >/dev/null 2>&1; then
+          return 0
+        fi
+      elif curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+        --resolve "${domain}:443:${health_address}" "https://${domain}/" >/dev/null; then
         return 0
       fi
     fi
     if (( attempt % 15 == 0 )); then
-      printf '等待部署健康：backend=%s frontend=%s ingress=%s (%d/180)\n' \
-        "${backend:-missing}" "${frontend:-missing}" "${ingress:-missing}" "$attempt"
+      printf '等待部署健康：backend=%s frontend=%s ingress=%s cloudflared=%s (%d/180)\n' \
+        "${backend:-missing}" "${frontend:-missing}" "${ingress:-missing}" "${cloudflared:-missing}" "$attempt"
     fi
     sleep 1
   done
@@ -299,13 +400,42 @@ install_panel() {
     return 1
   fi
 
-  local panel_domain
+  local panel_domain panel_bind_address deployment tunnel_token
   while true; do
-    read -r -p "面板域名（DNS 必须已指向本机）: " panel_domain
+    read -r -p "面板域名（DNS 必须已指向本机或 Cloudflare Tunnel）: " panel_domain
     panel_domain=$(printf '%s' "$panel_domain" | tr '[:upper:]' '[:lower:]')
     validate_domain "$panel_domain" && break
     echo "请输入有效域名，例如 panel.example.com" >&2
   done
+  printf '%s\n' "请选择部署入口："
+  printf '%s\n' "1. 直连 Caddy（需要独占所选 IPv4 的 80/443）"
+  printf '%s\n' "2. Cloudflare Tunnel（不发布主机 80/443，不修改已有服务）"
+  read -r -p "请输入选项 (1-2): " deployment
+  case "$deployment" in
+    1)
+      deployment=direct
+      read -r -p "Flux 入口 IPv4（默认 0.0.0.0；已有服务占用时请输入该域名解析到的独立 IPv4）: " panel_bind_address
+      panel_bind_address=${panel_bind_address:-0.0.0.0}
+      validate_bind_address "$panel_bind_address" || {
+        echo "入口地址必须是 IPv4 地址或 0.0.0.0" >&2
+        return 1
+      }
+      ;;
+    2)
+      deployment=cloudflare
+      panel_bind_address=127.0.0.1
+      read -r -s -p "Cloudflare Tunnel token: " tunnel_token
+      printf '\n'
+      validate_tunnel_token "$tunnel_token" || {
+        echo "Cloudflare Tunnel token 格式无效" >&2
+        return 1
+      }
+      ;;
+    *)
+      echo "无效部署入口选项" >&2
+      return 1
+      ;;
+  esac
 
   local candidate
   candidate=$(mktemp -d "$PWD/.flux-install.XXXXXX")
@@ -318,15 +448,21 @@ METRICS_TOKEN=$(generate_random)
 BOOTSTRAP_USERNAME=admin
 BOOTSTRAP_PASSWORD=$(generate_random)
 PANEL_DOMAIN=$panel_domain
+PANEL_BIND_ADDRESS=$panel_bind_address
+CLOUDFLARE_TUNNEL_TOKEN=${tunnel_token:-}
 EOF
   chmod 0600 "$candidate/.env"
+  configure_candidate_deployment "$candidate" "$deployment"
   validate_candidate "$candidate"
   pull_candidate "$candidate"
+  if [[ "$deployment" == "direct" ]] && ! probe_ingress_bindings "$candidate" "$panel_bind_address"; then
+    return 1
+  fi
   install -m 0600 "$candidate/.env" .env.new
   mv -f .env.new .env
   publish_candidate_files "$candidate"
 
-  if ! compose up -d || ! wait_for_deployment "$panel_domain"; then
+  if ! compose up -d || ! wait_for_deployment "$panel_domain" "$panel_bind_address" "$deployment"; then
     echo "部署健康检查失败，正在清理本次安装" >&2
     compose down --volumes --remove-orphans 2>/dev/null || true
     rm -f docker-compose.yml Caddyfile .env
@@ -370,7 +506,11 @@ rollback_update() {
   restore_image_reference "$old_ingress_id" "$old_ingress_ref"
   restore_sqlite_volume "$backup_directory" "$old_backend_id"
   compose up -d
-  wait_for_deployment "$(read_env .env PANEL_DOMAIN)"
+  local panel_domain panel_bind_address mode
+  panel_domain=$(read_env .env PANEL_DOMAIN)
+  panel_bind_address=$(read_env .env PANEL_BIND_ADDRESS)
+  mode=$(deployment_mode .env)
+  wait_for_deployment "$panel_domain" "${panel_bind_address:-0.0.0.0}" "$mode"
 }
 
 update_panel() {
@@ -386,7 +526,10 @@ update_panel() {
   cp docker-compose.yml Caddyfile .env "$backup_directory/"
   cp .env "$candidate/.env"
   prepare_existing_env "$candidate/.env"
+  local mode
+  mode=$(deployment_mode "$candidate/.env")
   download_candidate "$candidate"
+  configure_candidate_deployment "$candidate" "$mode"
   validate_candidate "$candidate"
 
   local old_backend_id old_backend_ref old_frontend_id old_frontend_ref old_ingress_id old_ingress_ref
@@ -424,9 +567,11 @@ update_panel() {
   mv -f .env.new .env
   publish_candidate_files "$candidate"
 
-  local panel_domain
+  local panel_domain panel_bind_address
   panel_domain=$(read_env .env PANEL_DOMAIN)
-  if ! compose up -d || ! wait_for_deployment "$panel_domain"; then
+  panel_bind_address=$(read_env .env PANEL_BIND_ADDRESS)
+  panel_bind_address=${panel_bind_address:-0.0.0.0}
+  if ! compose up -d || ! wait_for_deployment "$panel_domain" "$panel_bind_address" "$mode"; then
     echo "新版本部署失败，正在恢复配置、镜像和 SQLite 数据" >&2
     if rollback_update "$backup_directory" \
       "$old_backend_id" "$old_backend_ref" \

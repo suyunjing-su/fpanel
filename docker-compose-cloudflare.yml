@@ -60,13 +60,8 @@ services:
     restart: unless-stopped
     environment:
       PANEL_DOMAIN: ${PANEL_DOMAIN:?PANEL_DOMAIN is required}
-    ports:
-      - "${PANEL_BIND_ADDRESS:-0.0.0.0}:80:80"
-      - "${PANEL_BIND_ADDRESS:-0.0.0.0}:443:443"
-      - "${PANEL_BIND_ADDRESS:-0.0.0.0}:443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
       - caddy_config:/config
     depends_on:
       frontend:
@@ -85,12 +80,32 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.3
+    container_name: flux-cloudflared
+    restart: unless-stopped
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN is required}
+    command: tunnel --no-autoupdate run
+    depends_on:
+      ingress:
+        condition: service_healthy
+    networks:
+      - gost-network
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
 volumes:
   sqlite_data:
     name: sqlite_data
-    driver: local
-  caddy_data:
-    name: flux_caddy_data
     driver: local
   caddy_config:
     name: flux_caddy_config
@@ -100,8 +115,6 @@ networks:
   gost-network:
     name: gost-network
     driver: bridge
-    enable_ipv6: true
     ipam:
       config:
         - subnet: 172.20.0.0/16
-        - subnet: fd00:dead:beef::/48

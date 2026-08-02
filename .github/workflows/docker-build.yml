@@ -1,7 +1,7 @@
 name: Build and Push Images Based on Version
 
 env:
-  VERSION: "3.0.27-beta"
+  VERSION: "3.0.28-beta"
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       - beta
 
 concurrency:
-  group: flux-release-3.0.27-beta
+  group: flux-release-3.0.28-beta
   cancel-in-progress: false
 
 jobs:
@@ -199,7 +199,9 @@ jobs:
           [[ "$BACKEND_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$FRONTEND_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           CADDY_DIGEST=$(docker buildx imagetools inspect caddy:2.8.4-alpine --format '{{.Manifest.Digest}}')
+          CLOUDFLARED_DIGEST=$(docker buildx imagetools inspect cloudflare/cloudflared:2026.7.3 --format '{{.Manifest.Digest}}')
           [[ "$CADDY_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$CLOUDFLARED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
 
           mkdir release
           install -m 0755 ./downloaded/gost-amd64 ./release/gost-amd64
@@ -208,22 +210,30 @@ jobs:
           install -m 0755 ./panel_install.sh ./release/panel_install.sh
           install -m 0644 ./docker-compose-v4.yml ./release/docker-compose-v4.yml
           install -m 0644 ./docker-compose-v6.yml ./release/docker-compose-v6.yml
+          install -m 0644 ./docker-compose-cloudflare.yml ./release/docker-compose-cloudflare.yml
           install -m 0644 ./Caddyfile ./release/Caddyfile
+          install -m 0644 ./Caddyfile.cloudflare ./release/Caddyfile.cloudflare
 
-          for compose_file in ./release/docker-compose-v4.yml ./release/docker-compose-v6.yml; do
+          for compose_file in ./release/docker-compose-v4.yml ./release/docker-compose-v6.yml ./release/docker-compose-cloudflare.yml; do
             sed -i \
               -e "s|cloudlink2/fps-backend:${{ needs.check-version.outputs.version }}|cloudlink2/fps-backend@${BACKEND_DIGEST}|" \
               -e "s|cloudlink2/fp-frontend:${{ needs.check-version.outputs.version }}|cloudlink2/fp-frontend@${FRONTEND_DIGEST}|" \
               -e "s|caddy:2.8.4-alpine|caddy@${CADDY_DIGEST}|" \
+              -e "s|cloudflare/cloudflared:2026.7.3|cloudflare/cloudflared@${CLOUDFLARED_DIGEST}|" \
               "$compose_file"
             grep -Fq "cloudlink2/fps-backend@${BACKEND_DIGEST}" "$compose_file"
             grep -Fq "cloudlink2/fp-frontend@${FRONTEND_DIGEST}" "$compose_file"
             grep -Fq "caddy@${CADDY_DIGEST}" "$compose_file"
+            if grep -Fq "cloudflare/cloudflared" "$compose_file"; then
+              grep -Fq "cloudflare/cloudflared@${CLOUDFLARED_DIGEST}" "$compose_file"
+            fi
           done
 
           cd release
           sha256sum \
             Caddyfile \
+            Caddyfile.cloudflare \
+            docker-compose-cloudflare.yml \
             docker-compose-v4.yml \
             docker-compose-v6.yml \
             gost-amd64 \
