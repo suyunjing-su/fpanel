@@ -194,9 +194,10 @@ export default function IndexPage() {
             .onSuccess(() => {
               const result = gt.getValidate();
               const payload = JSON.stringify(result);
-              setForm((prev) => ({ ...prev, captchaId: '', captchaProvider: 'geetest', captchaToken: payload, captchaPayload: payload }));
+              setForm((prev) => ({ ...prev, captchaId, captchaProvider: 'geetest', captchaToken: payload, captchaPayload: payload }));
               setShowCaptcha(false);
               void performLogin({
+                captchaId,
                 captchaProvider: 'geetest',
                 captchaToken: payload,
                 captchaPayload: payload

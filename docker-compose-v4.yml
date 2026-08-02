@@ -1,6 +1,6 @@
 services:
   backend:
-    image: cloudlink2/fps-backend:3.0.28-beta
+    image: cloudlink2/fps-backend:3.0.29-beta
     container_name: flux-control-plane
     restart: unless-stopped
     environment:
@@ -32,7 +32,7 @@ services:
         max-file: "5"
 
   frontend:
-    image: cloudlink2/fp-frontend:3.0.28-beta
+    image: cloudlink2/fp-frontend:3.0.29-beta
     container_name: vite-frontend
     restart: unless-stopped
     expose:

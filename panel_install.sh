@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 export LC_ALL=C
 
-RELEASE_VERSION="3.0.28-beta"
+RELEASE_VERSION="3.0.29-beta"
 RELEASE_BASE_URL="https://github.com/suyunjing-su/fpanel/releases/download/${RELEASE_VERSION}"
 CHECKSUMS_URL="${RELEASE_BASE_URL}/SHA256SUMS"
 BACKEND_CONTAINER="flux-control-plane"
