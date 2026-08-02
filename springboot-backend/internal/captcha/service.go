@@ -80,6 +80,7 @@ type providerConfig struct {
 }
 
 type geetestPayload struct {
+	CaptchaID     string `json:"captcha_id"`
 	LotNumber     string `json:"lot_number"`
 	CaptchaOutput string `json:"captcha_output"`
 	PassToken     string `json:"pass_token"`

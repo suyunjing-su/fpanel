@@ -76,7 +76,7 @@ func TestValidateGeeTest(t *testing.T) {
 		"captcha_geetest_id":  "captcha-id",
 		"captcha_geetest_key": "captcha-key",
 	}
-	payload := `{"lot_number":"lot","captcha_output":"output","pass_token":"pass","gen_time":"time"}`
+	payload := `{"captcha_id":"captcha-id","lot_number":"lot","captcha_output":"output","pass_token":"pass","gen_time":"time"}`
 	if err := New(config, Options{HTTPClient: server.Client(), GeeTestEndpoint: server.URL}).Validate(context.Background(), Proof{Provider: "geetest", Payload: payload}); err != nil {
 		t.Fatal(err)
 	}

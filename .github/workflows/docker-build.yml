@@ -1,7 +1,7 @@
 name: Build and Push Images Based on Version
 
 env:
-  VERSION: "3.0.29-beta"
+  VERSION: "3.0.30-beta"
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       - beta
 
 concurrency:
-  group: flux-release-3.0.29-beta
+  group: flux-release-3.0.30-beta
   cancel-in-progress: false
 
 jobs:
